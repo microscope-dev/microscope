@@ -12,7 +12,7 @@ use std::{
 
 use microscope_data::{
     capture::records::NONE,
-    object::{ChunkData, ChunkRow, DimensionRow, shift_capture_times},
+    object::{ChunkData, ChunkRow, DimensionRow, TimeUnit, shift_capture_times},
     sanitize::{Builtin, HashKey, Sanitizer, sanitize_chunk},
 };
 
@@ -22,6 +22,7 @@ use super::{
     machine::Instant,
     poster::{PosterAction, PosterMachine, PosterOutcome},
     spool::{MAX_POST_BYTES, Spool},
+    wire::{PolicyDirective, WatchDirective},
 };
 use crate::profiler::{
     Cuts, Preset, Profile, RecordOptions, Save, SharedBpfEngine, SyscallLevel, Watch,
@@ -29,6 +30,7 @@ use crate::profiler::{
 };
 
 const AGENT_DEV_MAX_SYSCALL_CAP: u32 = 20_000;
+const EMPTY_FLUSH_GRACE: Duration = Duration::from_millis(400);
 
 struct SharedState {
     server: String,
@@ -37,10 +39,68 @@ struct SharedState {
     need_token: bool,
     spool_seq: u64,
     spool: Spool,
+    watch: Option<WatchDirective>,
+    watch_seq: u64,
+    flush_requested: Option<(u64, std::time::Instant)>,
+    flush_completed: u64,
+    policy: Option<PolicyDirective>,
+    policy_seq: u64,
+}
+
+#[derive(Clone)]
+pub struct PipelineControl {
+    flush_trigger: Arc<AtomicBool>,
+    shared: Arc<(Mutex<SharedState>, Condvar)>,
+}
+
+impl PipelineControl {
+    pub fn apply_watch(&self, watch: Option<WatchDirective>) {
+        let trigger_cut = watch.is_some();
+        let (lock, cvar) = &*self.shared;
+        let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        guard.watch = watch;
+        guard.watch_seq = guard.watch_seq.saturating_add(1);
+        drop(guard);
+        if trigger_cut {
+            self.flush_trigger.store(true, Ordering::SeqCst);
+        }
+        cvar.notify_all();
+    }
+
+    pub fn request_flush(&self, flush_id: u64) {
+        self.flush_trigger.store(true, Ordering::SeqCst);
+        let (lock, cvar) = &*self.shared;
+        let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        if guard
+            .flush_requested
+            .is_none_or(|(existing, _)| flush_id > existing)
+        {
+            guard.flush_requested = Some((flush_id, std::time::Instant::now()));
+        }
+        drop(guard);
+        cvar.notify_all();
+    }
+
+    #[must_use]
+    pub fn completed_flush_id(&self) -> u64 {
+        let (lock, _) = &*self.shared;
+        let guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        guard.flush_completed
+    }
+
+    pub fn apply_policy(&self, policy: PolicyDirective) {
+        let (lock, cvar) = &*self.shared;
+        let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        guard.policy = Some(policy);
+        guard.policy_seq = guard.policy_seq.saturating_add(1);
+        drop(guard);
+        cvar.notify_all();
+    }
 }
 
 pub struct Pipeline {
     stop: Arc<AtomicBool>,
+    flush_trigger: Arc<AtomicBool>,
     shared: Arc<(Mutex<SharedState>, Condvar)>,
     recorder: Option<JoinHandle<()>>,
     poster: Option<JoinHandle<()>>,
@@ -69,6 +129,7 @@ impl Pipeline {
         ));
 
         let stop = Arc::new(AtomicBool::new(false));
+        let flush_trigger = Arc::new(AtomicBool::new(false));
         let shared = Arc::new((
             Mutex::new(SharedState {
                 server,
@@ -77,11 +138,18 @@ impl Pipeline {
                 need_token: false,
                 spool_seq: 0,
                 spool,
+                watch: None,
+                watch_seq: 0,
+                flush_requested: None,
+                flush_completed: 0,
+                policy: None,
+                policy_seq: 0,
             }),
             Condvar::new(),
         ));
 
         let rec_stop = Arc::clone(&stop);
+        let rec_trigger = Arc::clone(&flush_trigger);
         let rec_shared = Arc::clone(&shared);
         let rec_sanitizer = Arc::clone(&sanitizer);
         let rec_config = record.clone();
@@ -91,8 +159,9 @@ impl Pipeline {
             .spawn(move || {
                 recorder_loop(
                     &rec_stop,
+                    &rec_trigger,
                     &rec_shared,
-                    &rec_config,
+                    rec_config,
                     &host_name,
                     &tags,
                     &rec_sanitizer,
@@ -110,10 +179,19 @@ impl Pipeline {
 
         Ok(Self {
             stop,
+            flush_trigger,
             shared,
             recorder: Some(recorder),
             poster: Some(poster),
         })
+    }
+
+    #[must_use]
+    pub fn control(&self) -> PipelineControl {
+        PipelineControl {
+            flush_trigger: Arc::clone(&self.flush_trigger),
+            shared: Arc::clone(&self.shared),
+        }
     }
 
     pub fn set_auth(&self, agent_id: Option<i64>, token: Option<String>) {
@@ -199,6 +277,24 @@ const fn preset_code(preset: Preset) -> u8 {
         Preset::Production => 0,
         Preset::Development => 1,
         Preset::Maximum => 2,
+    }
+}
+
+fn parse_policy_preset(name: &str) -> Option<Preset> {
+    match name {
+        "prod" | "production" => Some(Preset::Production),
+        "dev" | "development" => Some(Preset::Development),
+        "max" | "maximum" => Some(Preset::Maximum),
+        _ => None,
+    }
+}
+
+fn parse_policy_time_unit(name: &str) -> Option<TimeUnit> {
+    match name {
+        "1ns" | "ns" => Some(TimeUnit::Ns),
+        "1us" | "us" => Some(TimeUnit::Us),
+        "1ms" | "ms" => Some(TimeUnit::Ms),
+        _ => None,
     }
 }
 
@@ -441,8 +537,9 @@ fn sleep_interruptible(stop: &AtomicBool, total: Duration) {
 
 fn recorder_loop(
     stop: &AtomicBool,
+    flush_trigger: &AtomicBool,
     shared: &(Mutex<SharedState>, Condvar),
-    record: &RecordConfig,
+    mut record: RecordConfig,
     host_name: &str,
     tags: &BTreeMap<String, String>,
     sanitizer: &Sanitizer,
@@ -457,10 +554,44 @@ fn recorder_loop(
         }
     };
 
-    let mut options = build_record_options(record, shared_bpf.as_ref());
-    let trigger = AtomicBool::new(false);
+    let mut options = build_record_options(&record, shared_bpf.as_ref());
+    let mut last_policy_seq = 0_u64;
 
     while !stop.load(Ordering::Relaxed) {
+        let (lock, _) = shared;
+        let policy_update = {
+            let guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+            if guard.policy_seq == last_policy_seq {
+                None
+            } else {
+                last_policy_seq = guard.policy_seq;
+                guard.policy.clone()
+            }
+        };
+        if let Some(policy) = policy_update {
+            let preset_changed = if let Some(preset_name) = policy.preset.as_deref()
+                && let Some(preset) = parse_policy_preset(preset_name)
+                && preset != record.preset
+            {
+                record.preset = preset;
+                true
+            } else {
+                false
+            };
+            let unit_changed = if let Some(unit_name) = policy.time_unit.as_deref()
+                && let Some(unit) = parse_policy_time_unit(unit_name)
+                && unit != record.time_unit
+            {
+                record.time_unit = unit;
+                true
+            } else {
+                false
+            };
+            if preset_changed || unit_changed {
+                options = build_record_options(&record, shared_bpf.as_ref());
+            }
+        }
+
         let Some(pid) = find_target_pid(&record.process) else {
             sleep_interruptible(stop, Duration::from_millis(200));
             continue;
@@ -468,21 +599,28 @@ fn recorder_loop(
 
         let mut publish = |_profile: Profile| {};
         let mut on_segment = |segment: Profile| {
-            enqueue_profile(segment, shared, record, host_name, tags, sanitizer);
+            enqueue_profile(segment, shared, &record, host_name, tags, sanitizer);
         };
         let mut watch = Watch {
             every: Duration::MAX,
             publish: &mut publish,
             stop,
             save: Some(Save {
-                trigger: &trigger,
+                trigger: flush_trigger,
                 to: &mut on_segment,
             }),
         };
 
         match record_attached(pid, &options, &mut watch) {
             Ok(attached) => {
-                enqueue_profile(attached.profile, shared, record, host_name, tags, sanitizer);
+                enqueue_profile(
+                    attached.profile,
+                    shared,
+                    &record,
+                    host_name,
+                    tags,
+                    sanitizer,
+                );
             }
             Err(error) => {
                 if shared_bpf
@@ -493,7 +631,7 @@ fn recorder_loop(
                         "microscope agent: syscall BPF failed to load ({error}); falling back to samples only"
                     );
                     shared_bpf = None;
-                    options = build_record_options(record, None);
+                    options = build_record_options(&record, None);
                     continue;
                 }
                 if !stop.load(Ordering::Relaxed) {
@@ -519,7 +657,7 @@ fn jitter() -> f64 {
 
 #[expect(
     clippy::too_many_lines,
-    reason = "drives the poster state machine against the spool and ingest endpoint"
+    reason = "drives the poster state machine with dynamic watch intervals and flush coordination"
 )]
 fn poster_loop(
     stop: &AtomicBool,
@@ -533,17 +671,45 @@ fn poster_loop(
     let mut machine = PosterMachine::new(now(), post_interval);
     let (lock, cvar) = shared;
     let mut last_seq = 0_u64;
+    let mut last_watch_seq = 0_u64;
+    let mut last_flush_seen = 0_u64;
     let mut max_batch_chunks = usize::MAX;
 
     while !stop.load(Ordering::Relaxed) {
-        let (has_chunks, has_token, seq) = {
-            let guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let (has_chunks, has_token, seq, watch_update, flush_req) = {
+            let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+            let watch_update = if guard.watch_seq == last_watch_seq {
+                None
+            } else {
+                last_watch_seq = guard.watch_seq;
+                Some(guard.watch.clone())
+            };
+            let flush_req = guard.flush_requested;
+            if let Some((fid, req_at)) = flush_req
+                && guard.spool.is_empty()
+                && req_at.elapsed() >= EMPTY_FLUSH_GRACE
+            {
+                guard.flush_completed = guard.flush_completed.max(fid);
+                guard.flush_requested = None;
+                machine.clear_flush(fid);
+            }
             (
                 !guard.spool.is_empty(),
                 guard.token.is_some() && guard.agent_id.is_some(),
                 guard.spool_seq,
+                watch_update,
+                guard.flush_requested,
             )
         };
+        if let Some(watch_opt) = watch_update {
+            machine.apply_watch(watch_opt.as_ref(), now());
+        }
+        if let Some((fid, _)) = flush_req
+            && fid > last_flush_seen
+        {
+            last_flush_seen = fid;
+            machine.request_flush(fid, now());
+        }
         if seq != last_seq {
             let was_empty = last_seq == 0;
             last_seq = seq;
@@ -557,14 +723,20 @@ fn poster_loop(
             PosterAction::NeedToken => {
                 let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
                 guard.need_token = true;
-                let _ = cvar.wait_timeout(guard, Duration::from_millis(200));
+                let _ = cvar.wait_timeout(guard, Duration::from_millis(100));
             }
             PosterAction::Wait { until } => {
-                let wait = now().until(until).min(Duration::from_millis(250));
+                let cap = if machine.pending_flush().is_some() {
+                    Duration::from_millis(50)
+                } else {
+                    Duration::from_millis(200)
+                };
+                let wait = now().until(until).min(cap);
                 let guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
                 let _ = cvar.wait_timeout(guard, wait);
             }
             PosterAction::Post => {
+                let active_flush_id = machine.pending_flush();
                 let (token, batch) = {
                     let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
                     let (Some(token), Some(agent_id)) = (guard.token.clone(), guard.agent_id)
@@ -596,24 +768,36 @@ fn poster_loop(
                     }
                 };
 
-                let reply = client.ingest(&token, &batch.post);
+                let reply = client.ingest_with_flush(&token, &batch.post, active_flush_id);
                 let outcome = match reply {
                     IngestReply::Accepted { last_chunk } => {
                         max_batch_chunks = usize::MAX;
-                        let _ = lock
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .spool
-                            .ack(batch.owner_gen, last_chunk);
+                        let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+                        let _ = guard.spool.ack(batch.owner_gen, last_chunk);
+                        if guard.spool.is_empty()
+                            && let Some(fid) = active_flush_id
+                        {
+                            guard.flush_completed = guard.flush_completed.max(fid);
+                            if guard.flush_requested.is_some_and(|(cur, _)| cur <= fid) {
+                                guard.flush_requested = None;
+                            }
+                        }
+                        drop(guard);
                         PosterOutcome::Accepted { last_chunk }
                     }
                     IngestReply::Overlap { last_chunk } => {
                         max_batch_chunks = usize::MAX;
-                        let _ = lock
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .spool
-                            .ack(batch.owner_gen, last_chunk);
+                        let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+                        let _ = guard.spool.ack(batch.owner_gen, last_chunk);
+                        if guard.spool.is_empty()
+                            && let Some(fid) = active_flush_id
+                        {
+                            guard.flush_completed = guard.flush_completed.max(fid);
+                            if guard.flush_requested.is_some_and(|(cur, _)| cur <= fid) {
+                                guard.flush_requested = None;
+                            }
+                        }
+                        drop(guard);
                         PosterOutcome::Overlap { last_chunk }
                     }
                     IngestReply::Unauthorized => {

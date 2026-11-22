@@ -5573,6 +5573,40 @@ button.machines-row:hover,
   font-size: 11px;
 }
 
+.scope-watching {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.scope-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  display: inline-block;
+}
+
+.pane-lag {
+  margin-left: auto;
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+
+.pane-lag-fresh {
+  color: var(--accent);
+}
+
 .fleet-pane-label {
   font-weight: 600;
   font-size: 12px;

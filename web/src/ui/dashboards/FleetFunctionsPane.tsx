@@ -14,6 +14,7 @@ import {
   LinkToggle,
   PaneAuthGate,
   PaneEmptyState,
+  PaneLagBadge,
   PaneLockedState,
   updatePaneParams,
   usePaneScope,
@@ -29,6 +30,54 @@ interface FnRow {
 }
 
 type SortCol = "total" | "self" | "delta";
+
+function buildLoadedFunctions(res: FlameResponse) {
+  const isDiff = Array.isArray(res.baseTotal) && res.baseWeight !== undefined;
+  const tree = treeFromColumns({
+    own: Float64Array.from(res.own),
+    total: Float64Array.from(res.total),
+    key: Uint32Array.from(res.key),
+    depth: Uint32Array.from(res.depth),
+    keys: res.keys,
+    weight: res.weight,
+    samples: res.samples,
+    baseOwn: isDiff && res.baseOwn ? Float64Array.from(res.baseOwn) : null,
+    baseTotal: isDiff && res.baseTotal ? Float64Array.from(res.baseTotal) : null,
+    baseWeight: isDiff ? (res.baseWeight ?? 0) : null,
+  });
+
+  const agg = new Map<string, { self: number; total: number; baseTotal: number }>();
+  for (let i = 0; i < tree.count; i += 1) {
+    const name = nameOf(tree, i);
+    const entry = agg.get(name) ?? { self: 0, total: 0, baseTotal: 0 };
+    entry.self += tree.own[i] ?? 0;
+    let ancestorSame = false;
+    let p = tree.parent[i] ?? -1;
+    while (p >= 0) {
+      if (nameOf(tree, p) === name) {
+        ancestorSame = true;
+        break;
+      }
+      p = tree.parent[p] ?? -1;
+    }
+    if (!ancestorSame) {
+      entry.total += tree.total[i] ?? 0;
+      entry.baseTotal += tree.baseTotal?.[i] ?? 0;
+    }
+    agg.set(name, entry);
+  }
+
+  const rows: FnRow[] = [...agg.entries()].map(([name, val]) => ({
+    name,
+    self: val.self,
+    total: val.total,
+    share: tree.weight > 0 ? val.total / tree.weight : 0,
+    baseTotal: isDiff ? val.baseTotal : null,
+    delta: isDiff ? val.total - val.baseTotal : null,
+  }));
+
+  return { rows, unit: res.unit, isDiff, locked: res.locked };
+}
 
 export function FleetFunctionsPane(props: PaneProps) {
   const [filter, setFilter] = createSignal("");
@@ -54,54 +103,18 @@ export function FleetFunctionsPane(props: PaneProps) {
     }
     const res: FlameResponse = await dashboardsApi.queryFlame(ps.scope(), ps.sessionId(), false);
     markViewFetched();
-    const isDiff = Array.isArray(res.baseTotal) && res.baseWeight !== undefined;
-    const tree = treeFromColumns({
-      own: Float64Array.from(res.own),
-      total: Float64Array.from(res.total),
-      key: Uint32Array.from(res.key),
-      depth: Uint32Array.from(res.depth),
-      keys: res.keys,
-      weight: res.weight,
-      samples: res.samples,
-      baseOwn: isDiff && res.baseOwn ? Float64Array.from(res.baseOwn) : null,
-      baseTotal: isDiff && res.baseTotal ? Float64Array.from(res.baseTotal) : null,
-      baseWeight: isDiff ? (res.baseWeight ?? 0) : null,
-    });
-
-    const agg = new Map<string, { self: number; total: number; baseTotal: number }>();
-    for (let i = 0; i < tree.count; i += 1) {
-      const name = nameOf(tree, i);
-      const entry = agg.get(name) ?? { self: 0, total: 0, baseTotal: 0 };
-      entry.self += tree.own[i] ?? 0;
-      let ancestorSame = false;
-      let p = tree.parent[i] ?? -1;
-      while (p >= 0) {
-        if (nameOf(tree, p) === name) {
-          ancestorSame = true;
-          break;
-        }
-        p = tree.parent[p] ?? -1;
-      }
-      if (!ancestorSame) {
-        entry.total += tree.total[i] ?? 0;
-        entry.baseTotal += tree.baseTotal?.[i] ?? 0;
-      }
-      agg.set(name, entry);
-    }
-
-    const rows: FnRow[] = [...agg.entries()].map(([name, val]) => ({
-      name,
-      self: val.self,
-      total: val.total,
-      share: tree.weight > 0 ? val.total / tree.weight : 0,
-      baseTotal: isDiff ? val.baseTotal : null,
-      delta: isDiff ? val.total - val.baseTotal : null,
-    }));
-
-    return { rows, unit: res.unit, isDiff, locked: res.locked };
+    return buildLoadedFunctions(res);
   }, loadKey);
 
-  const current = loaded.data;
+  const streamed = createMemo(() => {
+    const entry = ps.streamed();
+    if (!entry || entry.kind !== "flame") {
+      return null;
+    }
+    return buildLoadedFunctions(entry.data as FlameResponse);
+  });
+
+  const current = createMemo(() => (ps.streamActive() ? streamed() : loaded.data()));
 
   const shown = createMemo(() => {
     const cur = current();
@@ -138,6 +151,7 @@ export function FleetFunctionsPane(props: PaneProps) {
               onInput={(e) => setFilter(e.currentTarget.value)}
             />
             <LinkToggle linked={ps.linked()} onToggle={ps.toggleLinked} />
+            <PaneLagBadge linked={ps.linked()} streamed={ps.streamed()} />
           </div>
           <div class="pane-body">
             <Switch fallback={<div class="empty muted">Loading functions…</div>}>

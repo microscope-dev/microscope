@@ -15,7 +15,7 @@ pub const DEFAULT_PATH: &str = "/etc/microscope/agent.toml";
 pub const DEFAULT_STATE_DIR: &str = "/var/lib/microscope/agent";
 const MAX_TAGS: usize = 32;
 pub const DEFAULT_CHUNK_MS: u64 = 5_000;
-pub const DEFAULT_POST_MS: u64 = 10_000;
+pub const DEFAULT_POST_MS: u64 = 60_000;
 pub const DEFAULT_SPOOL_MIB: u32 = 256;
 
 #[derive(Debug, Default, Deserialize)]

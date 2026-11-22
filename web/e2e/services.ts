@@ -192,8 +192,15 @@ function proxy(target: () => string): Handler {
       },
     );
     upstream.on("error", () => {
-      response.writeHead(502);
+      if (!response.headersSent) {
+        response.writeHead(502);
+      }
       response.end();
+    });
+    response.on("close", () => {
+      if (!response.writableEnded) {
+        upstream.destroy();
+      }
     });
     request.pipe(upstream);
   };

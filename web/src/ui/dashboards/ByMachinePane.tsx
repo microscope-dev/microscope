@@ -12,6 +12,7 @@ import {
   LinkToggle,
   PaneAuthGate,
   PaneEmptyState,
+  PaneLagBadge,
   PaneLockedState,
   usePaneScope,
 } from "./paneScope";
@@ -36,7 +37,13 @@ export function ByMachinePane(props: PaneProps) {
     return res;
   }, loadKey);
 
-  const data = loaded.data;
+  const data = createMemo<ByMachineResponse | null>(() => {
+    if (ps.streamActive()) {
+      const entry = ps.streamed();
+      return entry && entry.kind === "by_machine" ? (entry.data as ByMachineResponse) : null;
+    }
+    return loaded.data();
+  });
 
   const maxCell = createMemo(() => {
     const res = data();
@@ -69,6 +76,7 @@ export function ByMachinePane(props: PaneProps) {
                 </span>
               )}
             </Show>
+            <PaneLagBadge linked={ps.linked()} streamed={ps.streamed()} />
           </div>
           <div class="pane-body">
             <Switch fallback={<div class="empty muted">Loading machines…</div>}>

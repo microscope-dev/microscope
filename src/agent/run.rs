@@ -3,6 +3,8 @@ use std::{
     os::fd::AsFd as _,
     path::{Path, PathBuf},
     process::ExitCode,
+    sync::{Arc, Condvar, Mutex, PoisonError},
+    thread,
     time::Duration,
 };
 
@@ -16,13 +18,14 @@ use nix::{
 };
 
 use super::{
-    client::{self, Client, Reply},
+    client::{self, Client, PollReply, Reply},
     cloud::{self, Cloud},
     config::{self, Config},
+    control::{ControlAction, ControlEffect, ControlMachine, ControlOutcome},
     host::{self, Root},
     inventory,
-    machine::{Action, Effect, Instant, Machine, State},
-    recorder::{self, Pipeline},
+    machine::{Action, Effect, Instant, Machine, Outcome, State},
+    recorder::{self, Pipeline, PipelineControl},
     store::{Enrollment, Status, Store, Stored},
     wire::{KeyPair, PreviousRun},
 };
@@ -74,6 +77,193 @@ impl Signals {
     }
 }
 
+struct ControlBridgeState {
+    stop: bool,
+    token: Option<String>,
+    need_token: bool,
+    revoked: bool,
+    pipeline: Option<PipelineControl>,
+}
+
+struct PollHandle {
+    bridge: Arc<(Mutex<ControlBridgeState>, Condvar)>,
+}
+
+impl PollHandle {
+    fn start(config: &Config, pipeline: Option<PipelineControl>) -> Result<Self> {
+        let client = Client::new(config.server.clone(), config.ca_file.as_deref())?;
+        let (projects, services) = config.record.as_ref().map_or_else(
+            || (Vec::new(), Vec::new()),
+            |rec| (vec![rec.project.clone()], vec![rec.service.clone()]),
+        );
+        let bridge = Arc::new((
+            Mutex::new(ControlBridgeState {
+                stop: false,
+                token: None,
+                need_token: false,
+                revoked: false,
+                pipeline,
+            }),
+            Condvar::new(),
+        ));
+        let worker_bridge = Arc::clone(&bridge);
+        let _ = thread::Builder::new()
+            .name("microscope-agent-poll".into())
+            .spawn(move || {
+                poll_loop(&worker_bridge, &client, projects, services);
+            })?;
+        Ok(Self { bridge })
+    }
+
+    fn set_token(&self, token: Option<String>) {
+        let (lock, cvar) = &*self.bridge;
+        let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        guard.token = token;
+        if guard.token.is_some() {
+            guard.need_token = false;
+        }
+        drop(guard);
+        cvar.notify_all();
+    }
+
+    fn set_pipeline(&self, pipeline: Option<PipelineControl>) {
+        let (lock, cvar) = &*self.bridge;
+        let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        guard.pipeline = pipeline;
+        drop(guard);
+        cvar.notify_all();
+    }
+
+    fn take_revoked(&self) -> bool {
+        let (lock, _) = &*self.bridge;
+        let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let rev = guard.revoked;
+        guard.revoked = false;
+        rev
+    }
+
+    fn take_need_token(&self) -> bool {
+        let (lock, _) = &*self.bridge;
+        let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let needed = guard.need_token;
+        guard.need_token = false;
+        needed
+    }
+
+    fn stop(&self) {
+        let (lock, cvar) = &*self.bridge;
+        let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        guard.stop = true;
+        guard.token = None;
+        guard.pipeline = None;
+        drop(guard);
+        cvar.notify_all();
+    }
+}
+
+fn poll_loop(
+    bridge: &(Mutex<ControlBridgeState>, Condvar),
+    client: &Client,
+    projects: Vec<String>,
+    services: Vec<String>,
+) {
+    let started = std::time::Instant::now();
+    let now = || Instant(started.elapsed());
+    let mut machine = ControlMachine::new(now(), projects, services);
+    let (lock, cvar) = bridge;
+
+    loop {
+        let (stop, token, pipeline) = {
+            let guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+            (guard.stop, guard.token.clone(), guard.pipeline.clone())
+        };
+        if stop {
+            return;
+        }
+        if let Some(p) = &pipeline {
+            let done = p.completed_flush_id();
+            if done > machine.last_flush_id() {
+                machine.mark_flush_done(done, now());
+            }
+        }
+        if token.is_some() && machine.needs_token() {
+            machine.token_refreshed(now());
+        }
+
+        match machine.next(now(), token.is_some()) {
+            ControlAction::Revoked => return,
+            ControlAction::NeedToken => {
+                let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+                if guard.stop {
+                    return;
+                }
+                if guard.token.is_none() {
+                    guard.need_token = true;
+                }
+                let _ = cvar.wait_timeout(guard, Duration::from_millis(200));
+            }
+            ControlAction::Wait { until } => {
+                let wait = now().until(until).min(Duration::from_millis(200));
+                let guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+                if guard.stop {
+                    return;
+                }
+                let _ = cvar.wait_timeout(guard, wait);
+            }
+            ControlAction::Poll(req) => {
+                let Some(tok) = token else {
+                    continue;
+                };
+                let reply = client.poll(&tok, &req);
+                let outcome = match reply {
+                    PollReply::Directive(resp) => ControlOutcome::Directive(resp),
+                    PollReply::Unauthorized => {
+                        let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+                        if guard.token.as_deref() == Some(tok.as_str()) {
+                            guard.token = None;
+                            guard.need_token = true;
+                        }
+                        drop(guard);
+                        ControlOutcome::Unauthorized
+                    }
+                    PollReply::Refused { retry_after, .. } => ControlOutcome::Retry { retry_after },
+                    PollReply::Unreachable(_) => ControlOutcome::Retry { retry_after: None },
+                };
+                let effects = machine.on(outcome, now(), jitter());
+                for effect in effects {
+                    match effect {
+                        ControlEffect::Revoked => {
+                            let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+                            guard.revoked = true;
+                            guard.token = None;
+                            drop(guard);
+                            return;
+                        }
+                        ControlEffect::SetWatch(watch) => {
+                            if let Some(p) = &pipeline {
+                                p.apply_watch(watch);
+                            }
+                        }
+                        ControlEffect::Flush(flush) => {
+                            if let Some(p) = &pipeline {
+                                p.request_flush(flush.id);
+                            } else {
+                                machine.mark_flush_done(flush.id, now());
+                            }
+                        }
+                        ControlEffect::ApplyPolicy(policy) => {
+                            if let Some(p) = &pipeline {
+                                p.apply_policy(policy);
+                            }
+                        }
+                        ControlEffect::Burst(_) => {}
+                    }
+                }
+            }
+        }
+    }
+}
+
 struct Agent {
     config: Config,
     store: Store,
@@ -89,6 +279,7 @@ struct Agent {
     started: std::time::Instant,
     last_logged: Option<(&'static str, Option<String>)>,
     pipeline: Option<Pipeline>,
+    poll: Option<PollHandle>,
 }
 
 fn log(message: &str) {
@@ -206,6 +397,11 @@ impl Agent {
             None
         };
 
+        let poll = Some(PollHandle::start(
+            &config,
+            pipeline.as_ref().map(Pipeline::control),
+        )?);
+
         Ok(Self {
             machine: Machine::new(Instant(Duration::ZERO), enrolled, config.server.loopback()),
             config,
@@ -221,6 +417,7 @@ impl Agent {
             started,
             last_logged: None,
             pipeline,
+            poll,
         })
     }
 
@@ -278,6 +475,9 @@ impl Agent {
             if let Some(pipeline) = &self.pipeline {
                 pipeline.set_auth(Some(token.agent_id), Some(token.token.clone()));
             }
+            if let Some(poll) = &self.poll {
+                poll.set_token(Some(token.token.clone()));
+            }
             self.status.last_refresh = Some(client::unix_now());
             if refreshing {
                 self.previous_run = None;
@@ -297,6 +497,9 @@ impl Agent {
             self.token = None;
             if let Some(pipeline) = &self.pipeline {
                 pipeline.set_auth(None, None);
+            }
+            if let Some(poll) = &self.poll {
+                poll.set_token(None);
             }
             if let Err(store_error) = self.store.forget() {
                 log(&format!("cannot delete the key: {store_error}"));
@@ -416,15 +619,55 @@ impl Agent {
                         }
                     }
                 }
+                if let Some(poll) = &self.poll {
+                    poll.stop();
+                }
+                match PollHandle::start(&self.config, self.pipeline.as_ref().map(Pipeline::control))
+                {
+                    Ok(poll) => {
+                        poll.set_token(self.token.clone());
+                        self.poll = Some(poll);
+                    }
+                    Err(error) => {
+                        log(&format!("cannot restart control poll: {error:#}"));
+                        self.poll = None;
+                    }
+                }
+            } else if let Some(poll) = &self.poll {
+                poll.set_pipeline(self.pipeline.as_ref().map(Pipeline::control));
             }
         }
         self.machine.config_changed(self.now());
         self.save_status(None);
     }
 
+    fn apply_control_revoked(&mut self) {
+        let now = self.now();
+        if self.machine.on(Outcome::Revoked, now, jitter()) == Effect::ForgetKey {
+            self.key = None;
+            self.token = None;
+            if let Some(mut pipeline) = self.pipeline.take() {
+                pipeline.stop();
+            }
+            if let Some(poll) = &self.poll {
+                poll.set_token(None);
+                poll.set_pipeline(None);
+            }
+            if let Err(store_error) = self.store.forget() {
+                log(&format!("cannot delete the key: {store_error}"));
+            }
+        }
+        self.save_status(Some(
+            "this agent was revoked; it needs a new enrollment key to come back".to_owned(),
+        ));
+    }
+
     fn run(&mut self, signals: &Signals, path: Option<&Path>) {
         let mut fingerprint = self.config.fingerprint;
         loop {
+            if self.poll.as_ref().is_some_and(PollHandle::take_revoked) {
+                self.apply_control_revoked();
+            }
             let now = self.now();
             let wait = match self.machine.next(now) {
                 Action::Enroll { previous } => {
@@ -442,10 +685,8 @@ impl Agent {
             let watching = matches!(self.machine.state(), State::Blocked { .. } | State::Revoked);
             let wait = if watching {
                 wait.min(CONFIG_CHECK)
-            } else if self.pipeline.is_some() {
-                wait.min(Duration::from_millis(500))
             } else {
-                wait
+                wait.min(Duration::from_millis(200))
             };
             match signals.wait(wait) {
                 Some(Wake::Stop) => return,
@@ -458,9 +699,16 @@ impl Agent {
                     }
                 }
                 None => {
-                    if let Some(pipeline) = &self.pipeline
-                        && pipeline.take_need_token()
-                    {
+                    if self.poll.as_ref().is_some_and(PollHandle::take_revoked) {
+                        self.apply_control_revoked();
+                        continue;
+                    }
+                    let need_refresh = self
+                        .pipeline
+                        .as_ref()
+                        .is_some_and(Pipeline::take_need_token)
+                        || self.poll.as_ref().is_some_and(PollHandle::take_need_token);
+                    if need_refresh {
                         self.machine.request_refresh(self.now());
                     }
                 }
@@ -469,6 +717,9 @@ impl Agent {
     }
 
     fn stop(&mut self) {
+        if let Some(poll) = self.poll.take() {
+            poll.stop();
+        }
         if let Some(mut pipeline) = self.pipeline.take() {
             pipeline.stop();
         }

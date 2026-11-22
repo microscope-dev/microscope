@@ -4,14 +4,18 @@ import { account } from "../src/account";
 import {
   activeView,
   clearActiveView,
+  computeLagMs,
   dashboardsApi,
   dashboardsHash,
   DEFAULT_SCOPE,
   ensureSessionUrl,
   formatBytes,
+  formatDataLag,
   formatDimensionLabel,
   normalizeScope,
+  openDashboardStream,
   parseDashboardsHash,
+  parseSseChunk,
   registerViewHooks,
   scopeToSearch,
   searchToScope,
@@ -231,6 +235,88 @@ describe("dashboards URL and formatting helpers", () => {
       vi.unstubAllGlobals();
       account.setState(prevAccount);
       clearActiveView();
+    }
+  });
+
+  it("parses chunked SSE streams and formats pane lag cleanly", () => {
+    const first = parseSseChunk("", ': ping\n\nevent: status\ndata: {"watching":');
+    expect(first.events).toEqual([]);
+    const second = parseSseChunk(
+      first.rest,
+      'true}\r\n\r\nevent: pane\ndata: {"id":"p1"}\n\npartial',
+    );
+    expect(second.events).toEqual([
+      { event: "status", data: '{"watching":true}' },
+      { event: "pane", data: '{"id":"p1"}' },
+    ]);
+    expect(second.rest).toBe("partial");
+
+    expect(formatDataLag(null)).toBeNull();
+    expect(formatDataLag(500)).toBe("fresh");
+    expect(formatDataLag(4_800)).toBe("5s behind");
+    expect(formatDataLag(125_000)).toBe("2m behind");
+    expect(computeLagMs(1_000_000_000_000, 1_003_500_000_000, 10_000, 11_500)).toBe(5_000);
+  });
+
+  it("streams status, pane, dimensions, and heartbeat events over POST /api/query/stream", async () => {
+    const enc = new TextEncoder();
+    const events: string[] = [];
+    let aborted = false;
+
+    const fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(
+      (_url: string, init?: RequestInit) => {
+        init?.signal?.addEventListener("abort", () => {
+          aborted = true;
+        });
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              enc.encode(
+                'event: status\ndata: {"watching":true,"watchedMachines":4,"effectiveIntervalMs":5000,"locked":false,"serverTimeNs":1000000000,"newestDataNs":999000000}\n\n',
+              ),
+            );
+            controller.enqueue(
+              enc.encode(
+                'event: pane\ndata: {"id":"p0","kind":"flame","serverTimeNs":1000000000,"newestDataNs":999000000,"data":{"nodes":1}}\n\n',
+              ),
+            );
+            controller.enqueue(
+              enc.encode(
+                'event: heartbeat\ndata: {"serverTimeNs":2000000000,"newestDataNs":1999000000,"watchedMachines":4,"effectiveIntervalMs":5000}\n\n',
+              ),
+            );
+          },
+        });
+        return Promise.resolve(
+          new Response(body, {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          }),
+        );
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const handle = openDashboardStream(
+        {
+          scope: { ...DEFAULT_SCOPE, refresh: "s5" },
+          panes: [{ kind: "flame", id: "p0", invert: false }],
+        },
+        {
+          onOpen: () => events.push("open"),
+          onStatus: (ev) => events.push(`status:${ev.watching}:${ev.watchedMachines}`),
+          onPane: (ev) => events.push(`pane:${ev.id}:${ev.kind}`),
+          onHeartbeat: (ev) => events.push(`hb:${ev.watchedMachines}`),
+        },
+      );
+      await vi.waitFor(() => {
+        expect(events).toContain("hb:4");
+      });
+      expect(events).toEqual(["open", "status:true:4", "pane:p0:flame", "hb:4"]);
+      handle.close();
+      expect(aborted).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
     }
   });
 });

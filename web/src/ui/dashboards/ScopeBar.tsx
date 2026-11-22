@@ -1,5 +1,6 @@
-import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js";
 
+import { useAccount } from "../../account";
 import {
   activeView,
   addScopeFilter,
@@ -10,6 +11,7 @@ import {
   formatDimensionLabel,
   formatTimeShort,
   openDashboards,
+  openDashboardStream,
   openSaveDashboardDialog,
   RANGE_PRESETS,
   REFRESH_MS,
@@ -18,11 +20,46 @@ import {
   removeScopeFilter,
   setScopeSelection,
   setSingleScopeFilter,
+  type StreamPaneSpec,
   updateViewScope,
   useActiveView,
 } from "../../dashboards";
+import { KIND } from "../../documents";
 import { ago } from "../../fleet";
 import { flash } from "../../tab";
+import type { Layout, Pane } from "../../workbench/layout";
+import { useLayout } from "../../workbench/store";
+
+function collectStreamPanes(layout: Layout): StreamPaneSpec[] {
+  const out: StreamPaneSpec[] = [];
+  for (const id of Object.keys(layout.panes).toSorted()) {
+    const pane = layout.panes[id as keyof typeof layout.panes] as Pane | undefined;
+    if (!pane) {
+      continue;
+    }
+    const params = pane.params as {
+      unlinkedScope?: unknown;
+      invert?: boolean;
+      groupBy?: string;
+      dimension?: string;
+    } | null;
+    if (params?.unlinkedScope) {
+      continue;
+    }
+    if (pane.kind === KIND.fleetFlame || pane.kind === KIND.fleetTree) {
+      out.push({ kind: "flame", id, invert: params?.invert === true });
+    } else if (pane.kind === KIND.fleetFunctions) {
+      out.push({ kind: "flame", id, invert: false });
+    } else if (pane.kind === KIND.fleetOverTime) {
+      out.push({ kind: "over_time", id, group_by: params?.groupBy ?? "service.version" });
+    } else if (pane.kind === KIND.fleetByMachine) {
+      out.push({ kind: "by_machine", id });
+    } else if (pane.kind === KIND.fleetBreakdown) {
+      out.push({ kind: "breakdown", id, dimension: params?.dimension ?? "service.name" });
+    }
+  }
+  return out;
+}
 
 function compareValueOf(compare: CompareSpec | null | undefined): string {
   if (!compare) {
@@ -104,6 +141,7 @@ function setMachineFilter(hostname: string | null) {
 }
 
 export function ScopeBar() {
+  const nowAccount = useAccount();
   const isActive = useActiveView((v) => v.active);
   const title = useActiveView((v) => v.title);
   const mode = useActiveView((v) => v.mode);
@@ -114,21 +152,187 @@ export function ScopeBar() {
   const lastFetchedAt = useActiveView((v) => v.lastFetchedAt);
   const sessionId = useActiveView((v) => v.sessionId);
   const revision = useActiveView((v) => v.revision);
+  const streamActive = useActiveView((v) => v.streamActive);
+  const watching = useActiveView((v) => v.watching);
+  const watchedMachines = useActiveView((v) => v.watchedMachines);
+  const effectiveIntervalMs = useActiveView((v) => v.effectiveIntervalMs);
+  const streamPanes = useLayout(
+    (layout) => collectStreamPanes(layout),
+    (a, b) => JSON.stringify(a) === JSON.stringify(b),
+  );
 
   const [addOpen, setAddOpen] = createSignal(false);
   const [addDim, setAddDim] = createSignal("k8s.pod.name");
   const [addVal, setAddVal] = createSignal("");
   const [nowSec, setNowSec] = createSignal(Math.floor(Date.now() / 1000));
+  const [tabVisible, setTabVisible] = createSignal(
+    typeof document === "undefined" || document.visibilityState !== "hidden",
+  );
+  const [flushing, setFlushing] = createSignal(false);
   let dimsReqSeq = 0;
 
+  if (typeof document !== "undefined") {
+    const onVisibility = () => {
+      setTabVisible(document.visibilityState !== "hidden");
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    onCleanup(() => {
+      document.removeEventListener("visibilitychange", onVisibility);
+    });
+  }
+
+  const streamKey = createMemo(() => {
+    if (
+      !isActive() ||
+      nowAccount().kind !== "in" ||
+      locked() ||
+      !tabVisible() ||
+      scope().time_range.kind !== "relative" ||
+      scope().refresh === "off"
+    ) {
+      return null;
+    }
+    return JSON.stringify({
+      scope: scope(),
+      session_id: sessionId(),
+      panes: streamPanes(),
+    });
+  });
+
+  createEffect(streamKey, (key) => {
+    if (key === null) {
+      activeView.setState({
+        streamActive: false,
+        streamConnected: false,
+        watching: false,
+        watchedMachines: 0,
+        effectiveIntervalMs: null,
+      });
+      return;
+    }
+    const reqScope = activeView.getState().scope;
+    const reqSession = activeView.getState().sessionId;
+    const panes = streamPanes();
+    activeView.setState({ streamActive: true });
+    let alive = true;
+    const handle = openDashboardStream(
+      {
+        scope: reqScope,
+        ...(reqSession === null ? {} : { session_id: reqSession }),
+        panes,
+      },
+      {
+        onOpen: () => {
+          if (alive) {
+            activeView.setState({ streamConnected: true });
+          }
+        },
+        onStatus: (ev) => {
+          if (!alive) {
+            return;
+          }
+          const nowMs = Date.now();
+          activeView.setState({
+            streamConnected: true,
+            watching: ev.watching,
+            watchedMachines: ev.watchedMachines,
+            effectiveIntervalMs: ev.effectiveIntervalMs,
+            locked: ev.locked,
+            newestDataNs: ev.newestDataNs,
+            serverTimeNs: ev.serverTimeNs,
+            streamUpdatedAt: nowMs,
+            clockMs: nowMs,
+          });
+        },
+        onPane: (ev) => {
+          if (!alive) {
+            return;
+          }
+          const nowMs = Date.now();
+          activeView.setState((prev) => ({
+            lastFetchedAt: nowMs,
+            newestDataNs: ev.newestDataNs ?? prev.newestDataNs,
+            serverTimeNs: ev.serverTimeNs,
+            streamUpdatedAt: nowMs,
+            clockMs: nowMs,
+            streamedPanes: {
+              ...prev.streamedPanes,
+              [ev.id]: {
+                kind: ev.kind,
+                data: ev.data,
+                serverTimeNs: ev.serverTimeNs,
+                newestDataNs: ev.newestDataNs,
+                receivedAt: nowMs,
+              },
+            },
+          }));
+        },
+        onDimensions: (ev) => {
+          if (!alive) {
+            return;
+          }
+          activeView.setState({
+            dimensions: ev.data,
+            lastFetchedAt: Date.now(),
+          });
+        },
+        onHeartbeat: (ev) => {
+          if (!alive) {
+            return;
+          }
+          const nowMs = Date.now();
+          activeView.setState({
+            watchedMachines: ev.watchedMachines,
+            effectiveIntervalMs: ev.effectiveIntervalMs,
+            newestDataNs: ev.newestDataNs,
+            serverTimeNs: ev.serverTimeNs,
+            streamUpdatedAt: nowMs,
+            clockMs: nowMs,
+          });
+        },
+        onDisconnect: () => {
+          if (alive) {
+            activeView.setState({ streamConnected: false });
+          }
+        },
+        onFatal: () => {
+          if (alive) {
+            activeView.setState({
+              streamActive: false,
+              streamConnected: false,
+              watching: false,
+              watchedMachines: 0,
+              effectiveIntervalMs: null,
+            });
+          }
+        },
+      },
+    );
+    return () => {
+      alive = false;
+      handle.close();
+      activeView.setState({
+        streamActive: false,
+        streamConnected: false,
+        watching: false,
+        watchedMachines: 0,
+        effectiveIntervalMs: null,
+      });
+    };
+  });
+
   createEffect(
-    () => [isActive(), scope().refresh] as const,
-    ([active, refresh]) => {
+    () => [isActive(), scope().refresh, streamActive()] as const,
+    ([active, refresh, streaming]) => {
       if (!active) {
         return;
       }
-      const tick = setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 5_000);
-      const ms = REFRESH_MS[refresh];
+      const tick = setInterval(() => {
+        const nowMs = Date.now();
+        setNowSec(Math.floor(nowMs / 1000));
+        activeView.setState({ clockMs: nowMs });
+      }, 2_000);
+      const ms = streaming ? null : REFRESH_MS[refresh];
       const timer = ms === null ? null : setInterval(() => bumpViewRevision(), ms);
       return () => {
         clearInterval(tick);
@@ -143,15 +347,16 @@ export function ScopeBar() {
     () =>
       [
         isActive(),
+        streamActive(),
         scope().org_id,
         scope().project_ids.join(","),
         scope().time_range,
         sessionId(),
         revision(),
       ] as const,
-    ([active, orgId]) => {
+    ([active, streaming, orgId]) => {
       const reqSeq = ++dimsReqSeq;
-      if (!active) {
+      if (!active || streaming) {
         return;
       }
       let cancelled = false;
@@ -191,6 +396,50 @@ export function ScopeBar() {
       };
     },
   );
+
+  const onManualRefresh = () => {
+    if (flushing()) {
+      return;
+    }
+    const cur = activeView.getState();
+    const shouldFlush = cur.scope.time_range.kind === "relative" && nowAccount().kind === "in";
+    if (!shouldFlush) {
+      bumpViewRevision();
+      return;
+    }
+    setFlushing(true);
+    const runFlush = async () => {
+      try {
+        const report = await dashboardsApi.flush(cur.scope, cur.sessionId);
+        if (report.timedOut.length > 0) {
+          const names = report.timedOut.slice(0, 3).map((m) => m.hostname);
+          const extra = report.timedOut.length > 3 ? ` (+${report.timedOut.length - 3} more)` : "";
+          flash(`Timed out waiting for ${names.join(", ")}${extra}.`);
+        }
+      } catch {
+      } finally {
+        setFlushing(false);
+        if (!activeView.getState().streamActive) {
+          bumpViewRevision();
+        }
+      }
+    };
+    void runFlush();
+  };
+
+  const watchLabel = createMemo(() => {
+    if (!watching()) {
+      return null;
+    }
+    const count = watchedMachines();
+    const base = count === 1 ? "1 watched" : `${count} watched`;
+    const eff = effectiveIntervalMs();
+    const req = REFRESH_MS[scope().refresh];
+    if (eff !== null && req !== null && eff > req + 500) {
+      return `${base} · ${(eff / 1000).toFixed(0)}s`;
+    }
+    return base;
+  });
 
   const services = createMemo(() => dims()?.indexed["service.name"] ?? []);
   const envs = createMemo(() => dims()?.indexed["deployment.environment"] ?? []);
@@ -471,8 +720,21 @@ export function ScopeBar() {
             </For>
           </select>
 
-          <button type="button" class="tb ghost" onClick={bumpViewRevision}>
-            Refresh
+          <Show when={watchLabel()}>
+            {(label) => (
+              <span
+                class="scope-watching"
+                data-testid="scope-watching"
+                title="Live machines in scope posting at this refresh interval"
+              >
+                <span class="scope-live-dot" aria-hidden="true" />
+                <span>{label()}</span>
+              </span>
+            )}
+          </Show>
+
+          <button type="button" class="tb ghost" disabled={flushing()} onClick={onManualRefresh}>
+            {flushing() ? "Refreshing…" : "Refresh"}
           </button>
 
           <Show when={freshness()}>

@@ -13,6 +13,7 @@ import {
   LinkToggle,
   PaneAuthGate,
   PaneEmptyState,
+  PaneLagBadge,
   PaneLockedState,
   updatePaneParams,
   usePaneScope,
@@ -86,7 +87,13 @@ export function OverTimePane(props: PaneProps) {
     return res;
   }, loadKey);
 
-  const data = loaded.data;
+  const data = createMemo<OverTimeResponse | null>(() => {
+    if (ps.streamActive()) {
+      const entry = ps.streamed();
+      return entry && entry.kind === "over_time" ? (entry.data as OverTimeResponse) : null;
+    }
+    return loaded.data();
+  });
 
   const chart = createMemo(() => {
     const res = data();
@@ -287,6 +294,7 @@ export function OverTimePane(props: PaneProps) {
                 </span>
               )}
             </Show>
+            <PaneLagBadge linked={ps.linked()} streamed={ps.streamed()} />
           </div>
           <div class="pane-body fleet-chart-body">
             <Switch fallback={<div class="empty muted">Loading time series…</div>}>

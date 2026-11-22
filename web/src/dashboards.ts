@@ -105,6 +105,18 @@ export interface PinEstimate {
   dataExpiresAt: number | null;
 }
 
+export interface TimedOutMachine {
+  machineId: number;
+  hostname: string;
+}
+
+export interface FlushReport {
+  flushId: number;
+  requested: number;
+  flushed: number;
+  timedOut: TimedOutMachine[];
+}
+
 export interface FlameResponse {
   nodes: number;
   weight: number;
@@ -124,6 +136,7 @@ export interface FlameResponse {
   baseOwn?: number[];
   baseTotal?: number[];
   baseWeight?: number;
+  flush?: FlushReport;
 }
 
 export interface OverTimeSeries {
@@ -149,6 +162,7 @@ export interface OverTimeResponse {
   prunedBlocks: number;
   cacheHits: number;
   locked: boolean;
+  flush?: FlushReport;
 }
 
 export interface MachineRow {
@@ -170,6 +184,7 @@ export interface ByMachineResponse {
   prunedBlocks: number;
   cacheHits: number;
   locked: boolean;
+  flush?: FlushReport;
 }
 
 export interface BreakdownRow {
@@ -191,6 +206,7 @@ export interface BreakdownResponse {
   prunedBlocks: number;
   cacheHits: number;
   locked: boolean;
+  flush?: FlushReport;
 }
 
 export interface ScopeProject {
@@ -213,6 +229,50 @@ export interface DimensionsResponse {
   machines: ScopeMachine[];
   indexed: Record<string, string[]>;
   adhoc: Record<string, string[]>;
+  flush?: FlushReport;
+}
+
+export type StreamPaneSpec =
+  | { kind: "flame"; id: string; invert?: boolean }
+  | { kind: "over_time"; id: string; group_by?: string }
+  | { kind: "by_machine"; id: string }
+  | { kind: "breakdown"; id: string; dimension?: string };
+
+export interface StreamStatusEvent {
+  watching: boolean;
+  watchedMachines: number;
+  effectiveIntervalMs: number | null;
+  locked: boolean;
+  serverTimeNs: number;
+  newestDataNs: number | null;
+}
+
+export interface StreamPaneEvent {
+  id: string;
+  kind: "flame" | "over_time" | "by_machine" | "breakdown";
+  serverTimeNs: number;
+  newestDataNs: number | null;
+  data: unknown;
+}
+
+export interface StreamDimensionsEvent {
+  serverTimeNs: number;
+  data: DimensionsResponse;
+}
+
+export interface StreamHeartbeatEvent {
+  serverTimeNs: number;
+  newestDataNs: number | null;
+  watchedMachines: number;
+  effectiveIntervalMs: number | null;
+}
+
+export interface StreamedPaneData {
+  kind: "flame" | "over_time" | "by_machine" | "breakdown";
+  data: unknown;
+  serverTimeNs: number;
+  newestDataNs: number | null;
+  receivedAt: number;
 }
 
 export const DEFAULT_SCOPE: ViewScope = {
@@ -309,35 +369,308 @@ export const dashboardsApi = {
   unpinSession: (id: number) => request<undefined>("POST", `/api/sessions/${id}/unpin`, {}),
   deleteSession: (id: number) => request<undefined>("DELETE", `/api/sessions/${id}`),
 
-  queryFlame: (scope: ViewScope, sessionId: number | null, invert = false) =>
+  queryFlame: (
+    scope: ViewScope,
+    sessionId: number | null,
+    invert = false,
+    options?: { fresh?: boolean; flushTimeoutMs?: number },
+  ) =>
     request<FlameResponse>("POST", "/api/query/flame", {
       scope,
       ...(sessionId === null ? {} : { session_id: sessionId }),
       invert,
+      ...(options?.fresh ? { fresh: true } : {}),
+      ...(options?.flushTimeoutMs === undefined
+        ? {}
+        : { flush_timeout_ms: options.flushTimeoutMs }),
     }),
-  queryOverTime: (scope: ViewScope, sessionId: number | null, groupBy: string) =>
+  queryOverTime: (
+    scope: ViewScope,
+    sessionId: number | null,
+    groupBy: string,
+    options?: { fresh?: boolean; flushTimeoutMs?: number },
+  ) =>
     request<OverTimeResponse>("POST", "/api/query/over-time", {
       scope,
       ...(sessionId === null ? {} : { session_id: sessionId }),
       group_by: groupBy,
+      ...(options?.fresh ? { fresh: true } : {}),
+      ...(options?.flushTimeoutMs === undefined
+        ? {}
+        : { flush_timeout_ms: options.flushTimeoutMs }),
     }),
-  queryByMachine: (scope: ViewScope, sessionId: number | null) =>
+  queryByMachine: (
+    scope: ViewScope,
+    sessionId: number | null,
+    options?: { fresh?: boolean; flushTimeoutMs?: number },
+  ) =>
     request<ByMachineResponse>("POST", "/api/query/by-machine", {
       scope,
       ...(sessionId === null ? {} : { session_id: sessionId }),
+      ...(options?.fresh ? { fresh: true } : {}),
+      ...(options?.flushTimeoutMs === undefined
+        ? {}
+        : { flush_timeout_ms: options.flushTimeoutMs }),
     }),
-  queryBreakdown: (scope: ViewScope, sessionId: number | null, dimension: string) =>
+  queryBreakdown: (
+    scope: ViewScope,
+    sessionId: number | null,
+    dimension: string,
+    options?: { fresh?: boolean; flushTimeoutMs?: number },
+  ) =>
     request<BreakdownResponse>("POST", "/api/query/breakdown", {
       scope,
       ...(sessionId === null ? {} : { session_id: sessionId }),
       dimension,
+      ...(options?.fresh ? { fresh: true } : {}),
+      ...(options?.flushTimeoutMs === undefined
+        ? {}
+        : { flush_timeout_ms: options.flushTimeoutMs }),
     }),
-  queryDimensions: (scope: ViewScope, sessionId: number | null) =>
+  queryDimensions: (
+    scope: ViewScope,
+    sessionId: number | null,
+    options?: { fresh?: boolean; flushTimeoutMs?: number },
+  ) =>
     request<DimensionsResponse>("POST", "/api/query/dimensions", {
       scope,
       ...(sessionId === null ? {} : { session_id: sessionId }),
+      ...(options?.fresh ? { fresh: true } : {}),
+      ...(options?.flushTimeoutMs === undefined
+        ? {}
+        : { flush_timeout_ms: options.flushTimeoutMs }),
+    }),
+  flush: (scope: ViewScope, sessionId: number | null, timeoutMs?: number) =>
+    request<FlushReport>("POST", "/api/query/flush", {
+      scope,
+      ...(sessionId === null ? {} : { session_id: sessionId }),
+      ...(timeoutMs === undefined ? {} : { timeout_ms: timeoutMs }),
     }),
 };
+
+export interface ParsedSseEvent {
+  event: string;
+  data: string;
+}
+
+export function parseSseChunk(
+  buffer: string,
+  chunk: string,
+): { events: ParsedSseEvent[]; rest: string } {
+  const combined = (buffer + chunk).replaceAll("\r\n", "\n");
+  const events: ParsedSseEvent[] = [];
+  let offset = 0;
+  for (;;) {
+    const sep = combined.indexOf("\n\n", offset);
+    if (sep === -1) {
+      break;
+    }
+    const block = combined.slice(offset, sep);
+    offset = sep + 2;
+    let eventName = "message";
+    const dataLines: string[] = [];
+    for (const line of block.split("\n")) {
+      if (line === "" || line.startsWith(":")) {
+        continue;
+      }
+      const colon = line.indexOf(":");
+      const field = colon === -1 ? line : line.slice(0, colon);
+      let value = colon === -1 ? "" : line.slice(colon + 1);
+      if (value.startsWith(" ")) {
+        value = value.slice(1);
+      }
+      if (field === "event") {
+        eventName = value;
+      } else if (field === "data") {
+        dataLines.push(value);
+      }
+    }
+    if (dataLines.length > 0) {
+      events.push({ event: eventName, data: dataLines.join("\n") });
+    }
+  }
+  return { events, rest: combined.slice(offset) };
+}
+
+export interface DashboardStreamCallbacks {
+  onOpen?: () => void;
+  onStatus?: (event: StreamStatusEvent) => void;
+  onPane?: (event: StreamPaneEvent) => void;
+  onDimensions?: (event: StreamDimensionsEvent) => void;
+  onHeartbeat?: (event: StreamHeartbeatEvent) => void;
+  onDisconnect?: () => void;
+  onFatal?: (status: number) => void;
+}
+
+export function openDashboardStream(
+  body: { scope: ViewScope; session_id?: number; panes: StreamPaneSpec[] },
+  callbacks: DashboardStreamCallbacks,
+): { close: () => void } {
+  let closed = false;
+  let controller: AbortController | null = null;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let backoffMs = 500;
+
+  const scheduleReconnect = () => {
+    if (closed) {
+      return;
+    }
+    const delay = backoffMs;
+    backoffMs = Math.min(backoffMs * 2, 5_000);
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      void connect();
+    }, delay);
+  };
+
+  const dispatch = (ev: ParsedSseEvent) => {
+    try {
+      const parsed = JSON.parse(ev.data) as unknown;
+      if (ev.event === "status") {
+        callbacks.onStatus?.(parsed as StreamStatusEvent);
+      } else if (ev.event === "pane") {
+        callbacks.onPane?.(parsed as StreamPaneEvent);
+      } else if (ev.event === "dimensions") {
+        callbacks.onDimensions?.(parsed as StreamDimensionsEvent);
+      } else if (ev.event === "heartbeat") {
+        callbacks.onHeartbeat?.(parsed as StreamHeartbeatEvent);
+      }
+    } catch {}
+  };
+
+  const connect = async () => {
+    if (closed) {
+      return;
+    }
+    const ctrl = new AbortController();
+    controller = ctrl;
+    try {
+      const response = await fetch("/api/query/stream", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+        },
+        body: JSON.stringify(body),
+        signal: ctrl.signal,
+      });
+      if (closed) {
+        return;
+      }
+      if (!response.ok || !response.body) {
+        if (
+          response.status === 400 ||
+          response.status === 401 ||
+          response.status === 403 ||
+          response.status === 404 ||
+          response.status === 503
+        ) {
+          closed = true;
+          callbacks.onFatal?.(response.status);
+          return;
+        }
+        callbacks.onDisconnect?.();
+        scheduleReconnect();
+        return;
+      }
+      backoffMs = 500;
+      callbacks.onOpen?.();
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      const pump = async (): Promise<void> => {
+        const { done, value } = await reader.read();
+        if (done || closed) {
+          return;
+        }
+        const chunk = decoder.decode(value, { stream: true });
+        const parsed = parseSseChunk(buffer, chunk);
+        buffer = parsed.rest;
+        for (const ev of parsed.events) {
+          dispatch(ev);
+        }
+        await pump();
+      };
+      try {
+        await pump();
+        const trailing = decoder.decode();
+        if (trailing !== "" && !closed) {
+          const parsed = parseSseChunk(buffer, trailing);
+          for (const ev of parsed.events) {
+            dispatch(ev);
+          }
+        }
+      } finally {
+        reader.releaseLock();
+      }
+      if (!closed) {
+        callbacks.onDisconnect?.();
+        scheduleReconnect();
+      }
+    } catch {
+      if (!closed) {
+        callbacks.onDisconnect?.();
+        scheduleReconnect();
+      }
+    } finally {
+      if (controller === ctrl) {
+        controller = null;
+      }
+    }
+  };
+
+  void connect();
+
+  return {
+    close: () => {
+      closed = true;
+      if (reconnectTimer !== null) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      controller?.abort();
+      controller = null;
+    },
+  };
+}
+
+export function computeLagMs(
+  newestDataNs: number | null,
+  serverTimeNs: number | null,
+  receivedAtMs: number | null,
+  nowMs: number,
+): number | null {
+  if (newestDataNs === null) {
+    return null;
+  }
+  if (serverTimeNs !== null && receivedAtMs !== null) {
+    const serverLag = Math.max(0, (serverTimeNs - newestDataNs) / 1_000_000);
+    const elapsed = Math.max(0, nowMs - receivedAtMs);
+    return Math.round(serverLag + elapsed);
+  }
+  return Math.max(0, Math.round(nowMs - newestDataNs / 1_000_000));
+}
+
+export function formatDataLag(lagMs: number | null): string | null {
+  if (lagMs === null || !Number.isFinite(lagMs)) {
+    return null;
+  }
+  if (lagMs < 2_000) {
+    return "fresh";
+  }
+  const secs = Math.round(lagMs / 1_000);
+  if (secs < 60) {
+    return `${secs}s behind`;
+  }
+  const mins = Math.round(secs / 60);
+  if (mins < 60) {
+    return `${mins}m behind`;
+  }
+  const hours = Math.round(mins / 60);
+  return `${hours}h behind`;
+}
 
 export function normalizeScope(raw: Partial<ViewScope> | null | undefined): ViewScope {
   if (!raw) {
@@ -568,6 +901,16 @@ export interface ActiveViewState {
   loading: boolean;
   error: string | null;
   movedToSession: boolean;
+  streamActive: boolean;
+  streamConnected: boolean;
+  watching: boolean;
+  watchedMachines: number;
+  effectiveIntervalMs: number | null;
+  newestDataNs: number | null;
+  serverTimeNs: number | null;
+  streamUpdatedAt: number | null;
+  streamedPanes: Record<string, StreamedPaneData>;
+  clockMs: number;
 }
 
 const INACTIVE_VIEW: ActiveViewState = {
@@ -596,6 +939,16 @@ const INACTIVE_VIEW: ActiveViewState = {
   loading: false,
   error: null,
   movedToSession: false,
+  streamActive: false,
+  streamConnected: false,
+  watching: false,
+  watchedMachines: 0,
+  effectiveIntervalMs: null,
+  newestDataNs: null,
+  serverTimeNs: null,
+  streamUpdatedAt: null,
+  streamedPanes: {},
+  clockMs: Date.now(),
 };
 
 export const activeView = createState<ActiveViewState>(() => ({ ...INACTIVE_VIEW }));
@@ -734,9 +1087,11 @@ export function updateViewScope(
   }
   const nextScope = updater(cur.scope);
   const shouldMove = options?.persist !== false && cur.mode === "dashboard" && !cur.movedToSession;
+  const orgChanged = nextScope.org_id !== cur.scope.org_id;
   activeView.setState({
     scope: nextScope,
     revision: cur.revision + 1,
+    ...(orgChanged ? { streamedPanes: {}, newestDataNs: null } : {}),
   });
   if (options?.persist !== false) {
     viewDirty = true;
@@ -756,6 +1111,14 @@ function enqueueSave(task: () => Promise<void>): Promise<void> {
   const next = saveChain.then(task, task);
   saveChain = next.catch(() => {});
   return next;
+}
+
+function mergeSavedScope(current: ViewScope, saved: ViewScope, orgId: number): ViewScope {
+  const normalized = normalizeScope({ ...saved, org_id: orgId });
+  if (current.time_range.kind === "relative") {
+    return { ...normalized, time_range: current.time_range };
+  }
+  return normalized;
 }
 
 function flushSessionSaveNow(
@@ -800,7 +1163,7 @@ function flushSessionSaveNow(
     const patch: Partial<ActiveViewState> = {
       expiresAt: saved.expiresAt,
       ...(viewMutationSeq === seqBefore
-        ? { scope: normalizeScope({ ...saved.scope, org_id: saved.orgId }) }
+        ? { scope: mergeSavedScope(latest.scope, saved.scope, saved.orgId) }
         : {}),
       ...(shouldMove ? { mode: "session", movedToSession: true } : {}),
     };
@@ -863,7 +1226,7 @@ export async function ensureSessionUrl(): Promise<string | null> {
           expiresAt: created.expiresAt,
           keptAt: created.keptAt,
           ...(viewMutationSeq === seqBefore
-            ? { scope: normalizeScope({ ...created.scope, org_id: created.orgId }) }
+            ? { scope: mergeSavedScope(latest.scope, created.scope, created.orgId) }
             : {}),
         });
         onMoveToSession?.(created.id);
@@ -885,7 +1248,7 @@ export async function ensureSessionUrl(): Promise<string | null> {
         activeView.setState({
           ...(shouldMove ? { mode: "session", movedToSession: true } : {}),
           ...(viewMutationSeq === seqBefore
-            ? { scope: normalizeScope({ ...saved.scope, org_id: saved.orgId }) }
+            ? { scope: mergeSavedScope(latest.scope, saved.scope, saved.orgId) }
             : {}),
         });
         if (shouldMove) {

@@ -3,11 +3,14 @@ import { createMemo, createSignal, Match, Show, Switch } from "solid-js";
 
 import { checkAccount, useAccount } from "../../account";
 import {
+  computeLagMs,
   DEFAULT_SCOPE,
+  formatDataLag,
   normalizeScope,
   scopeKey,
-  useActiveView,
+  type StreamedPaneData,
   type TimeRange,
+  useActiveView,
   type ViewScope,
 } from "../../dashboards";
 import { KIND } from "../../documents";
@@ -84,6 +87,8 @@ export interface PaneScopeResult {
   setLocalScope: (updater: (prev: ViewScope) => ViewScope) => void;
   queryKey: () => string;
   signedIn: () => boolean;
+  streamActive: () => boolean;
+  streamed: () => StreamedPaneData | null;
 }
 
 export function usePaneScope(id: () => PaneId, pane: () => Pane): PaneScopeResult {
@@ -93,6 +98,8 @@ export function usePaneScope(id: () => PaneId, pane: () => Pane): PaneScopeResul
   const barRevision = useActiveView((v) => v.revision);
   const barLocked = useActiveView((v) => v.locked);
   const barActive = useActiveView((v) => v.active);
+  const barStreamActive = useActiveView((v) => v.streamActive);
+  const barStreamedPanes = useActiveView((v) => v.streamedPanes);
 
   const [localRev, setLocalRev] = createSignal(0);
 
@@ -107,6 +114,10 @@ export function usePaneScope(id: () => PaneId, pane: () => Pane): PaneScopeResul
   const revision = createMemo(() => (linked() ? barRevision() : localRev()));
   const locked = createMemo(() => linked() && barLocked());
   const signedIn = createMemo(() => now().kind === "in");
+  const streamActive = createMemo(() => linked() && barStreamActive());
+  const streamed = createMemo<StreamedPaneData | null>(() =>
+    linked() ? (barStreamedPanes()[id()] ?? null) : null,
+  );
 
   const toggleLinked = () => {
     if (local() === null) {
@@ -125,7 +136,9 @@ export function usePaneScope(id: () => PaneId, pane: () => Pane): PaneScopeResul
   };
 
   const queryKey = createMemo(() =>
-    signedIn() && !locked() ? scopeKey(scope(), sessionId(), revision()) : "idle",
+    signedIn() && !locked() && !streamActive()
+      ? scopeKey(scope(), sessionId(), revision())
+      : "idle",
   );
 
   return {
@@ -138,7 +151,39 @@ export function usePaneScope(id: () => PaneId, pane: () => Pane): PaneScopeResul
     setLocalScope,
     queryKey,
     signedIn,
+    streamActive,
+    streamed,
   };
+}
+
+export function PaneLagBadge(props: { linked: boolean; streamed: StreamedPaneData | null }) {
+  const clockMs = useActiveView((v) => v.clockMs);
+  const newestDataNs = useActiveView((v) => v.newestDataNs);
+  const serverTimeNs = useActiveView((v) => v.serverTimeNs);
+  const streamUpdatedAt = useActiveView((v) => v.streamUpdatedAt);
+  const label = createMemo(() => {
+    if (!props.linked) {
+      return null;
+    }
+    const pane = props.streamed;
+    const lag = pane
+      ? computeLagMs(pane.newestDataNs, pane.serverTimeNs, pane.receivedAt, clockMs())
+      : computeLagMs(newestDataNs(), serverTimeNs(), streamUpdatedAt(), clockMs());
+    return formatDataLag(lag);
+  });
+
+  return (
+    <Show when={label()}>
+      {(text) => (
+        <span
+          class={`pane-lag ${text() === "fresh" ? "pane-lag-fresh" : ""}`}
+          data-testid="pane-lag"
+        >
+          {text()}
+        </span>
+      )}
+    </Show>
+  );
 }
 
 export function LinkToggle(props: { linked: boolean; onToggle: () => void }) {

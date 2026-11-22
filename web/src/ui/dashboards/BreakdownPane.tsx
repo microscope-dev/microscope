@@ -15,6 +15,7 @@ import {
   LinkToggle,
   PaneAuthGate,
   PaneEmptyState,
+  PaneLagBadge,
   PaneLockedState,
   updatePaneParams,
   usePaneScope,
@@ -67,7 +68,13 @@ export function BreakdownPane(props: PaneProps) {
     return res;
   }, loadKey);
 
-  const data = loaded.data;
+  const data = createMemo<BreakdownResponse | null>(() => {
+    if (ps.streamActive()) {
+      const entry = ps.streamed();
+      return entry && entry.kind === "breakdown" ? (entry.data as BreakdownResponse) : null;
+    }
+    return loaded.data();
+  });
 
   return (
     <PaneAuthGate>
@@ -86,6 +93,7 @@ export function BreakdownPane(props: PaneProps) {
               </For>
             </select>
             <LinkToggle linked={ps.linked()} onToggle={ps.toggleLinked} />
+            <PaneLagBadge linked={ps.linked()} streamed={ps.streamed()} />
           </div>
           <div class="pane-body">
             <Switch fallback={<div class="empty muted">Loading breakdown…</div>}>

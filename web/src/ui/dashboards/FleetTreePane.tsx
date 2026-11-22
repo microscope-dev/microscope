@@ -14,10 +14,31 @@ import {
   LinkToggle,
   PaneAuthGate,
   PaneEmptyState,
+  PaneLagBadge,
   PaneLockedState,
   updatePaneParams,
   usePaneScope,
 } from "./paneScope";
+
+function buildLoadedTree(res: FlameResponse) {
+  const isDiff = Array.isArray(res.baseTotal) && res.baseWeight !== undefined;
+  return {
+    tree: treeFromColumns({
+      own: Float64Array.from(res.own),
+      total: Float64Array.from(res.total),
+      key: Uint32Array.from(res.key),
+      depth: Uint32Array.from(res.depth),
+      keys: res.keys,
+      weight: res.weight,
+      samples: res.samples,
+      baseOwn: isDiff && res.baseOwn ? Float64Array.from(res.baseOwn) : null,
+      baseTotal: isDiff && res.baseTotal ? Float64Array.from(res.baseTotal) : null,
+      baseWeight: isDiff ? (res.baseWeight ?? 0) : null,
+    }),
+    unit: res.unit,
+    locked: res.locked,
+  };
+}
 
 export function FleetTreePane(props: PaneProps) {
   const [expanded, setExpanded] = createSignal<Set<number>>(new Set());
@@ -44,26 +65,18 @@ export function FleetTreePane(props: PaneProps) {
     }
     const res: FlameResponse = await dashboardsApi.queryFlame(ps.scope(), ps.sessionId(), invert());
     markViewFetched();
-    const isDiff = Array.isArray(res.baseTotal) && res.baseWeight !== undefined;
-    return {
-      tree: treeFromColumns({
-        own: Float64Array.from(res.own),
-        total: Float64Array.from(res.total),
-        key: Uint32Array.from(res.key),
-        depth: Uint32Array.from(res.depth),
-        keys: res.keys,
-        weight: res.weight,
-        samples: res.samples,
-        baseOwn: isDiff && res.baseOwn ? Float64Array.from(res.baseOwn) : null,
-        baseTotal: isDiff && res.baseTotal ? Float64Array.from(res.baseTotal) : null,
-        baseWeight: isDiff ? (res.baseWeight ?? 0) : null,
-      }),
-      unit: res.unit,
-      locked: res.locked,
-    };
+    return buildLoadedTree(res);
   }, loadKey);
 
-  const current = loaded.data;
+  const streamed = createMemo(() => {
+    const entry = ps.streamed();
+    if (!entry || entry.kind !== "flame") {
+      return null;
+    }
+    return buildLoadedTree(entry.data as FlameResponse);
+  });
+
+  const current = createMemo(() => (ps.streamActive() ? streamed() : loaded.data()));
 
   const visibleRows = createMemo(() => {
     const cur = current();
@@ -118,6 +131,7 @@ export function FleetTreePane(props: PaneProps) {
               {invert() ? "Bottom-up" : "Top-down"}
             </button>
             <LinkToggle linked={ps.linked()} onToggle={ps.toggleLinked} />
+            <PaneLagBadge linked={ps.linked()} streamed={ps.streamed()} />
           </div>
           <div class="pane-body">
             <Switch fallback={<div class="empty muted">Loading call tree…</div>}>

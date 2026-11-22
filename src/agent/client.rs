@@ -9,16 +9,29 @@ use microscope_data::sanitize::EncodedPost;
 use super::{
     machine::Outcome,
     wire::{
-        ENROLL_PATH, EnrollKey, ErrorBody, ErrorCode, GOODBYE_PATH, INGEST_PATH, IngestResponse,
-        KeyPair, PreviousRun, REFRESH_PATH, SIGNATURE_HEADER, Server, TokenResponse,
-        inventory_hash,
+        ENROLL_PATH, EnrollKey, ErrorBody, ErrorCode, FLUSH_HEADER, GOODBYE_PATH, INGEST_PATH,
+        IngestResponse, KeyPair, POLL_PATH, PollRequest, PollResponse, PreviousRun, REFRESH_PATH,
+        SIGNATURE_HEADER, Server, TokenResponse, inventory_hash,
     },
 };
 
 pub const TIMEOUT: Duration = Duration::from_secs(5);
 pub const INGEST_TIMEOUT: Duration = Duration::from_secs(15);
+pub const POLL_TIMEOUT: Duration = Duration::from_secs(65);
 pub const GOODBYE_TIMEOUT: Duration = Duration::from_secs(2);
 const BODY_LIMIT: u64 = 64 * 1024;
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum PollReply {
+    Directive(PollResponse),
+    Unauthorized,
+    Refused {
+        status: u16,
+        retry_after: Option<Duration>,
+        message: String,
+    },
+    Unreachable(String),
+}
 
 #[derive(serde::Deserialize)]
 struct IngestErrorBody {
@@ -115,6 +128,7 @@ pub fn unix_now() -> i64 {
 pub struct Client {
     agent: ureq::Agent,
     ingest: ureq::Agent,
+    poll: ureq::Agent,
     goodbye: ureq::Agent,
     server: Server,
     offset: i64,
@@ -162,21 +176,76 @@ impl Client {
         Ok(Self {
             agent: agent(TIMEOUT, ca_file)?,
             ingest: agent(INGEST_TIMEOUT, ca_file)?,
+            poll: agent(POLL_TIMEOUT, ca_file)?,
             goodbye: agent(GOODBYE_TIMEOUT, ca_file)?,
             server,
             offset: 0,
         })
     }
 
-    pub fn ingest(&self, token: &str, post: &EncodedPost) -> IngestReply {
+    pub fn poll(&self, token: &str, request: &PollRequest) -> PollReply {
         let authorization = format!("Bearer {token}");
+        let body = json(request);
         let mut response = match self
+            .poll
+            .post(self.server.url(POLL_PATH))
+            .header("content-type", "application/json")
+            .header("authorization", &authorization)
+            .send(body.as_bytes())
+        {
+            Ok(response) => response,
+            Err(error) => return PollReply::Unreachable(error.to_string()),
+        };
+
+        let status = response.status().as_u16();
+        let retry_after = response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse().ok())
+            .map(Duration::from_secs);
+        let text = response
+            .body_mut()
+            .with_config()
+            .limit(BODY_LIMIT)
+            .read_to_string()
+            .unwrap_or_default();
+
+        match status {
+            200 => serde_json::from_str::<PollResponse>(&text).map_or_else(
+                |error| PollReply::Unreachable(format!("bad poll answer: {error}")),
+                PollReply::Directive,
+            ),
+            401 | 403 => PollReply::Unauthorized,
+            _ => PollReply::Refused {
+                status,
+                retry_after,
+                message: text,
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn ingest(&self, token: &str, post: &EncodedPost) -> IngestReply {
+        self.ingest_with_flush(token, post, None)
+    }
+
+    pub fn ingest_with_flush(
+        &self,
+        token: &str,
+        post: &EncodedPost,
+        flush_id: Option<u64>,
+    ) -> IngestReply {
+        let authorization = format!("Bearer {token}");
+        let mut req = self
             .ingest
             .post(self.server.url(INGEST_PATH))
             .header("content-type", "application/octet-stream")
-            .header("authorization", &authorization)
-            .send(post.as_bytes())
-        {
+            .header("authorization", &authorization);
+        if let Some(id) = flush_id {
+            req = req.header(FLUSH_HEADER, id.to_string());
+        }
+        let mut response = match req.send(post.as_bytes()) {
             Ok(response) => response,
             Err(error) => return IngestReply::Unreachable(error.to_string()),
         };

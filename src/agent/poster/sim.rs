@@ -307,3 +307,234 @@ fn deterministic_sim_spool_eviction_under_pressure() {
         run_seed(seed, 1_500);
     }
 }
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "deterministic control+poster simulation covering watch, flush, revocation, and faults"
+)]
+fn run_control_and_poster_seed(seed: u64) {
+    use crate::agent::{
+        control::{ControlAction, ControlEffect, ControlMachine, ControlOutcome},
+        wire::{FlushDirective, PollResponse, WatchDirective},
+    };
+
+    let scratch = Scratch::new();
+    let dir = scratch.path().join("spool");
+    let sanitizer = Sanitizer::new(&Builtin::DEFAULT, Vec::new(), HashKey::new(b"sim-ctrl"));
+    let mut rng = Rng::new(seed);
+    let mut server = MockServer::new();
+
+    let base_interval = Duration::from_secs(60);
+    let mut now = Instant(Duration::ZERO);
+    let mut spool = Spool::open(&dir, 64 * 1024 * 1024).expect("open spool");
+    let mut poster = PosterMachine::new(now, base_interval);
+    let mut control = ControlMachine::new(now, vec!["sim-proj".into()], vec!["sim-svc".into()]);
+    let mut token_gen = server.token_gen;
+    let mut version = 1_u64;
+    let mut watch_gen = 0_u64;
+    let mut active_watch: Option<WatchDirective> = None;
+    let mut flush_id = 0_u64;
+    let mut completed_flushes: BTreeSet<u64> = BTreeSet::new();
+    let mut produced = 0_u64;
+    let mut revoked_triggered = false;
+
+    for step in 0..120 {
+        now = now.after(Duration::from_secs(1 + (rng.next_u64() % 3)));
+
+        if step < 90 && rng.pct(20) {
+            if active_watch.is_some() && rng.pct(50) {
+                active_watch = None;
+            } else {
+                watch_gen += 1;
+                active_watch = Some(WatchDirective {
+                    interval_ms: if rng.pct(50) { 5_000 } else { 15_000 },
+                    lease_ms: 20_000,
+                    generation: watch_gen,
+                });
+            }
+            version += 1;
+        }
+
+        if step < 90 && rng.pct(15) {
+            flush_id += 1;
+            version += 1;
+        }
+
+        if step < 90 && rng.pct(45) {
+            let was_empty = spool.is_empty();
+            let n = spool.allocate_chunk().expect("alloc");
+            produced = n;
+            spool
+                .push(n, &make_chunk(n, &sanitizer), 42, 1_000_000_000)
+                .expect("push");
+            poster.chunk_queued(now, was_empty);
+        }
+
+        if step == 95 && seed.is_multiple_of(5) {
+            revoked_triggered = true;
+            version += 1;
+        }
+
+        if step < 90 && rng.pct(8) {
+            server.token_gen += 1;
+        }
+
+        match control.next(now, token_gen > 0) {
+            ControlAction::Revoked => {
+                assert!(revoked_triggered, "seed {seed}: unexpected revocation");
+                break;
+            }
+            ControlAction::NeedToken => {
+                token_gen = server.token_gen;
+                control.token_refreshed(now);
+            }
+            ControlAction::Wait { .. } => {}
+            ControlAction::Poll(req) => {
+                let outcome = if rng.pct(12) {
+                    ControlOutcome::Retry { retry_after: None }
+                } else if token_gen != server.token_gen {
+                    ControlOutcome::Unauthorized
+                } else {
+                    let pending_flush = (flush_id > req.last_flush_id
+                        && !completed_flushes.contains(&flush_id))
+                    .then_some(FlushDirective {
+                        id: flush_id,
+                        deadline_ms: 10_000,
+                    });
+                    ControlOutcome::Directive(PollResponse {
+                        version,
+                        revoked: revoked_triggered,
+                        watch: active_watch.clone(),
+                        flush: pending_flush,
+                        policy: None,
+                        burst: None,
+                        poll_after_ms: 500,
+                    })
+                };
+                for effect in control.on(outcome, now, rng.next_f64()) {
+                    match effect {
+                        ControlEffect::Revoked => {
+                            assert!(revoked_triggered);
+                        }
+                        ControlEffect::SetWatch(w) => {
+                            poster.apply_watch(w.as_ref(), now);
+                        }
+                        ControlEffect::Flush(f) => {
+                            if spool.is_empty() {
+                                let n = spool.allocate_chunk().expect("cut");
+                                produced = n;
+                                spool
+                                    .push(n, &make_chunk(n, &sanitizer), 42, 1_000_000_000)
+                                    .expect("push cut");
+                                poster.chunk_queued(now, true);
+                            }
+                            poster.request_flush(f.id, now);
+                        }
+                        ControlEffect::ApplyPolicy(_) | ControlEffect::Burst(_) => {}
+                    }
+                }
+            }
+        }
+
+        if control.is_revoked() {
+            break;
+        }
+
+        match poster.next(now, !spool.is_empty(), token_gen > 0) {
+            PosterAction::NeedToken => {
+                token_gen = server.token_gen;
+                poster.token_refreshed(now);
+            }
+            PosterAction::Wait { .. } => {}
+            PosterAction::Post => {
+                let active_flush = poster.pending_flush();
+                let batch = spool
+                    .peek_batch(MAX_POST_BYTES, 42, 1_000_000_000, &sanitizer)
+                    .expect("peek")
+                    .expect("batch");
+                let outcome = server.ingest(token_gen, batch.post.as_bytes(), &mut rng);
+                if let PosterOutcome::Accepted { last_chunk }
+                | PosterOutcome::Overlap { last_chunk } = outcome
+                {
+                    let _ = spool.ack(batch.owner_gen, last_chunk).expect("ack");
+                    if spool.is_empty()
+                        && let Some(fid) = active_flush
+                    {
+                        completed_flushes.insert(fid);
+                        control.mark_flush_done(fid, now);
+                    }
+                }
+                poster.on(outcome, now, !spool.is_empty(), rng.next_f64());
+            }
+        }
+    }
+
+    if revoked_triggered {
+        assert!(
+            control.is_revoked() || version > 1,
+            "seed {seed}: revocation did not take effect"
+        );
+        return;
+    }
+
+    let mut clean_rng = Rng::new(seed ^ 0xcafe_babe);
+    let mut drain_steps = 0;
+    while !spool.is_empty() && drain_steps < 500 {
+        drain_steps += 1;
+        now = now.after(Duration::from_secs(60));
+        match poster.next(now, !spool.is_empty(), token_gen > 0) {
+            PosterAction::NeedToken => {
+                token_gen = server.token_gen;
+                poster.token_refreshed(now);
+            }
+            PosterAction::Wait { until } => {
+                now = until;
+            }
+            PosterAction::Post => {
+                let batch = spool
+                    .peek_batch(MAX_POST_BYTES, 42, 1_000_000_000, &sanitizer)
+                    .expect("peek")
+                    .expect("batch");
+                let reader = ObjectReader::open(batch.post.as_bytes()).expect("valid");
+                let sections = reader.part_sections(0, None).expect("sections");
+                let decoded = decode_tables(&sections).expect("decode");
+                let max_c = decoded.chunks.iter().map(|c| c.number).max().expect("max");
+                let min_c = decoded.chunks.iter().map(|c| c.number).min().expect("min");
+                let outcome = if max_c <= server.last_chunk {
+                    PosterOutcome::Accepted {
+                        last_chunk: server.last_chunk,
+                    }
+                } else if min_c <= server.last_chunk {
+                    PosterOutcome::Overlap {
+                        last_chunk: server.last_chunk,
+                    }
+                } else {
+                    for row in &decoded.chunks {
+                        assert!(server.delivered_set.insert(row.number));
+                        server.delivered.push(row.number);
+                    }
+                    server.last_chunk = max_c;
+                    PosterOutcome::Accepted {
+                        last_chunk: server.last_chunk,
+                    }
+                };
+                if let PosterOutcome::Accepted { last_chunk }
+                | PosterOutcome::Overlap { last_chunk } = outcome
+                {
+                    let _ = spool.ack(batch.owner_gen, last_chunk).expect("ack");
+                }
+                poster.on(outcome, now, !spool.is_empty(), clean_rng.next_f64());
+            }
+        }
+    }
+
+    assert!(spool.is_empty(), "seed {seed}: spool failed to drain");
+    assert_eq!(server.delivered.len() as u64, produced);
+}
+
+#[test]
+fn deterministic_sim_control_watch_flush_and_revocation() {
+    for seed in 1..=100 {
+        run_control_and_poster_seed(seed);
+    }
+}

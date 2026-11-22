@@ -3,6 +3,7 @@ use std::{path::PathBuf, process::ExitCode};
 pub mod client;
 pub mod cloud;
 pub mod config;
+pub mod control;
 pub mod host;
 pub mod inventory;
 pub mod machine;

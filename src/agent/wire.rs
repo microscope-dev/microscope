@@ -11,10 +11,12 @@ use ring::{
 use serde::{Deserialize, Serialize};
 
 pub const SIGNATURE_HEADER: &str = "microscope-signature";
+pub const FLUSH_HEADER: &str = "x-microscope-flush";
 pub const ENROLL_PATH: &str = "/api/agent/v1/enroll";
 pub const REFRESH_PATH: &str = "/api/agent/v1/refresh";
 pub const GOODBYE_PATH: &str = "/api/agent/v1/goodbye";
 pub const INGEST_PATH: &str = "/api/agent/v1/ingest";
+pub const POLL_PATH: &str = "/api/agent/v1/poll";
 
 const CONTEXT: &[u8] = b"microscope agent request v1";
 const ED25519: &str = "ed25519";
@@ -300,6 +302,71 @@ pub struct TokenResponse {
 #[derive(Debug, Deserialize)]
 pub struct IngestResponse {
     pub last_chunk: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PollRequest {
+    #[serde(default)]
+    pub known_version: u64,
+    #[serde(default)]
+    pub last_flush_id: u64,
+    #[serde(default)]
+    pub policy_version: u64,
+    #[serde(default)]
+    pub sanitizer_version: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub projects: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub services: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WatchDirective {
+    pub interval_ms: u64,
+    pub lease_ms: u64,
+    pub generation: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlushDirective {
+    pub id: u64,
+    pub deadline_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyDirective {
+    pub version: u64,
+    pub sanitizer_version: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_unit: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BurstDirective {
+    pub id: u64,
+    pub duration_ms: u64,
+    pub preset: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PollResponse {
+    pub version: u64,
+    #[serde(default)]
+    pub revoked: bool,
+    #[serde(default)]
+    pub watch: Option<WatchDirective>,
+    #[serde(default)]
+    pub flush: Option<FlushDirective>,
+    #[serde(default)]
+    pub policy: Option<PolicyDirective>,
+    #[serde(default)]
+    pub burst: Option<BurstDirective>,
+    #[serde(default)]
+    pub poll_after_ms: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]

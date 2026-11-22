@@ -23,6 +23,7 @@ import {
   LinkToggle,
   PaneAuthGate,
   PaneEmptyState,
+  PaneLagBadge,
   PaneLockedState,
   updatePaneParams,
   usePaneScope,
@@ -36,6 +37,30 @@ interface LoadedFlame {
   truncated: boolean;
   locked: boolean;
   isDiff: boolean;
+}
+
+function buildLoadedFlame(res: FlameResponse): LoadedFlame {
+  const isDiff = Array.isArray(res.baseTotal) && res.baseWeight !== undefined;
+  return {
+    tree: treeFromColumns({
+      own: Float64Array.from(res.own),
+      total: Float64Array.from(res.total),
+      key: Uint32Array.from(res.key),
+      depth: Uint32Array.from(res.depth),
+      keys: res.keys,
+      weight: res.weight,
+      samples: res.samples,
+      baseOwn: isDiff && res.baseOwn ? Float64Array.from(res.baseOwn) : null,
+      baseTotal: isDiff && res.baseTotal ? Float64Array.from(res.baseTotal) : null,
+      baseWeight: isDiff ? (res.baseWeight ?? 0) : null,
+    }),
+    unit: res.unit,
+    blocks: res.blocks,
+    prunedBlocks: res.prunedBlocks,
+    truncated: res.truncated,
+    locked: res.locked,
+    isDiff,
+  };
 }
 
 export function FleetFlamePane(props: PaneProps) {
@@ -72,30 +97,20 @@ export function FleetFlamePane(props: PaneProps) {
     }
     const res: FlameResponse = await dashboardsApi.queryFlame(ps.scope(), ps.sessionId(), invert());
     markViewFetched();
-    const isDiff = Array.isArray(res.baseTotal) && res.baseWeight !== undefined;
-    return {
-      tree: treeFromColumns({
-        own: Float64Array.from(res.own),
-        total: Float64Array.from(res.total),
-        key: Uint32Array.from(res.key),
-        depth: Uint32Array.from(res.depth),
-        keys: res.keys,
-        weight: res.weight,
-        samples: res.samples,
-        baseOwn: isDiff && res.baseOwn ? Float64Array.from(res.baseOwn) : null,
-        baseTotal: isDiff && res.baseTotal ? Float64Array.from(res.baseTotal) : null,
-        baseWeight: isDiff ? (res.baseWeight ?? 0) : null,
-      }),
-      unit: res.unit,
-      blocks: res.blocks,
-      prunedBlocks: res.prunedBlocks,
-      truncated: res.truncated,
-      locked: res.locked,
-      isDiff,
-    };
+    return buildLoadedFlame(res);
   }, loadKey);
 
-  const current = loaded.data;
+  const streamedFlame = createMemo<LoadedFlame | null>(() => {
+    const entry = ps.streamed();
+    if (!entry || entry.kind !== "flame") {
+      return null;
+    }
+    return buildLoadedFlame(entry.data as FlameResponse);
+  });
+
+  const current = createMemo<LoadedFlame | null>(() =>
+    ps.streamActive() ? streamedFlame() : loaded.data(),
+  );
   const tree = createMemo(() => current()?.tree ?? null);
   const searched = useTreeSearch(tree, search);
 
@@ -187,6 +202,7 @@ export function FleetFlamePane(props: PaneProps) {
                 </span>
               )}
             </Show>
+            <PaneLagBadge linked={ps.linked()} streamed={ps.streamed()} />
           </div>
           <div class="pane-body">
             <Switch fallback={<div class="empty muted">Reading the flame graph…</div>}>
