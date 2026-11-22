@@ -12,9 +12,10 @@ use super::{
         ENROLL_PATH, EnrollKey, ErrorBody, ErrorCode, FLUSH_HEADER, GOODBYE_PATH, INGEST_PATH,
         INGEST_SYMBOLS_PATH, IngestResponse, KeyPair, POLL_PATH, PollRequest, PollResponse,
         PreviousRun, REFRESH_PATH, SIGNATURE_HEADER, SYMBOL_BUILD_ID_HEADER,
-        SYMBOL_ENCODING_HEADER, SYMBOL_PART_HEADER, SYMBOL_PROJECT_HEADER, SYMBOL_SERVICE_HEADER,
-        SYMBOL_SHA256_HEADER, SYMBOL_TOTAL_BYTES_HEADER, SYMBOL_TOTAL_PARTS_HEADER,
-        SYMBOL_UPLOAD_ID_HEADER, Server, SymbolUploadResponse, TokenResponse, inventory_hash,
+        SYMBOL_ENCODING_HEADER, SYMBOL_PART_HEADER, SYMBOL_PROJECT_HEADER,
+        SYMBOL_PROJECT_ID_HEADER, SYMBOL_SERVICE_HEADER, SYMBOL_SHA256_HEADER,
+        SYMBOL_TOTAL_BYTES_HEADER, SYMBOL_TOTAL_PARTS_HEADER, SYMBOL_UPLOAD_ID_HEADER, Server,
+        SymbolUploadResponse, TokenResponse, inventory_hash,
     },
 };
 
@@ -45,6 +46,7 @@ struct IngestErrorBody {
 pub enum IngestReply {
     Accepted {
         last_chunk: u64,
+        project_id: Option<i64>,
         missing_symbols: Vec<String>,
     },
     Overlap {
@@ -78,6 +80,7 @@ pub struct SymbolPartHeader<'a> {
     pub sha256: &'a str,
     pub encoding: &'a str,
     pub upload_id: Option<i64>,
+    pub project_id: Option<i64>,
     pub project: Option<&'a str>,
     pub service: Option<&'a str>,
 }
@@ -299,6 +302,7 @@ impl Client {
                 |error| IngestReply::Unreachable(format!("bad ingest answer: {error}")),
                 |body| IngestReply::Accepted {
                     last_chunk: body.last_chunk,
+                    project_id: body.project_id,
                     missing_symbols: body.missing_symbols,
                 },
             ),
@@ -344,6 +348,9 @@ impl Client {
             .header(SYMBOL_ENCODING_HEADER, header.encoding);
         if let Some(id) = header.upload_id {
             req = req.header(SYMBOL_UPLOAD_ID_HEADER, id.to_string());
+        }
+        if let Some(pid) = header.project_id {
+            req = req.header(SYMBOL_PROJECT_ID_HEADER, pid.to_string());
         }
         if let Some(project) = header.project.filter(|p| !p.is_empty()) {
             req = req.header(SYMBOL_PROJECT_HEADER, project);

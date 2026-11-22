@@ -412,20 +412,36 @@ pub fn enqueue_multi_project_cut(
         let publish_guard = publish_lock.lock().unwrap_or_else(PoisonError::into_inner);
         let (alloc, sanitizer) = {
             let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-            let svc_hint = members
-                .first()
+            let mut module_owner_pid: BTreeMap<u32, u32> = BTreeMap::new();
+            for mapping in &filtered.mappings {
+                let mod_idx = mapping.module.get();
+                if let Some(proc) = filtered.processes.get(mapping.process.get() as usize) {
+                    module_owner_pid
+                        .entry(mod_idx)
+                        .or_insert_with(|| proc.pid.get());
+                }
+            }
+            let member_service_by_pid: BTreeMap<u32, String> = members
+                .iter()
                 .filter(|m| m.service_explicit)
-                .map(|m| m.service.clone());
-            for m in &filtered.modules {
+                .map(|m| (m.pid, m.service.clone()))
+                .collect();
+            for (idx, m) in filtered.modules.iter().enumerate() {
                 if m.build_id.get() != NONE && m.path.get() != NONE {
                     let bid = filtered.string(m.build_id.get());
                     let path = filtered.string(m.path.get());
                     if !bid.is_empty() && path.starts_with('/') {
+                        let owner_pid = u32::try_from(idx)
+                            .ok()
+                            .and_then(|mod_idx| module_owner_pid.get(&mod_idx).copied());
+                        let svc_hint =
+                            owner_pid.and_then(|pid| member_service_by_pid.get(&pid).cloned());
                         guard.symbol_queue.record_binary(
                             bid,
                             std::path::PathBuf::from(path),
+                            owner_pid,
                             proj_opt.clone(),
-                            svc_hint.clone(),
+                            svc_hint,
                         );
                     }
                 }
@@ -435,6 +451,7 @@ pub fn enqueue_multi_project_cut(
                     guard.symbol_queue.record_binary(
                         bid,
                         std::path::PathBuf::from(exe),
+                        Some(member.pid),
                         proj_opt.clone(),
                         member.service_explicit.then(|| member.service.clone()),
                     );

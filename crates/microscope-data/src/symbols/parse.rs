@@ -8,14 +8,13 @@ use gimli::{
 };
 use object::{
     Architecture, CompressedData, CompressionFormat, Object as _, ObjectSection as _,
-    ObjectSymbol as _, SectionKind, SymbolKind, SymbolSection,
+    ObjectSymbol as _, RelocationFlags, SectionFlags, SectionKind, SymbolKind, SymbolSection, elf,
 };
 
 use super::index::{IndexBuilder, InlineFrame, LineSpan, NO_INDEX, SymbolSpan, SymtabSpan};
 use super::{BuildId, ParseBudget, SymbolError, SymbolIndex, SymbolMetadata, demangle_symbol};
 
 const SMALL_DECOMPRESS_CLAIM: u64 = 1024 * 1024;
-const MAX_MINI_DEBUGDATA_BYTES: usize = 32 * 1024 * 1024;
 const GO120_MAGIC: u32 = 0xffff_fff1;
 const GO_HEADER_SIZE: usize = 8 + 8 * 8;
 const GO_FUNC_SIZE: usize = 44;
@@ -58,19 +57,6 @@ pub fn parse_elf(
 
     let mut raw_symtab: Vec<(u64, u64, u32)> = Vec::new();
     let has_symtab = collect_elf_symbols(&file, &mut builder, &mut raw_symtab, budget)?;
-
-    if let Some(section) = file.section_by_name(".gnu_debugdata")
-        && let Ok(compressed) = section.data()
-        && !compressed.is_empty()
-    {
-        let _ = collect_mini_debugdata(
-            compressed,
-            &mut builder,
-            &mut raw_symtab,
-            &mut decompressed_used,
-            budget,
-        );
-    }
 
     let mut line_spans = Vec::new();
     let mut dwarf_ranges = Vec::new();
@@ -140,6 +126,16 @@ const fn arch_name(arch: Architecture) -> &'static str {
     }
 }
 
+fn is_executable_section(section: &object::Section<'_, '_>) -> bool {
+    if section.kind() == SectionKind::Text {
+        return true;
+    }
+    matches!(
+        section.flags(),
+        SectionFlags::Elf { sh_flags } if sh_flags & u64::from(elf::SHF_EXECINSTR) != 0
+    )
+}
+
 fn collect_elf_symbols(
     file: &object::File<'_>,
     builder: &mut IndexBuilder,
@@ -148,7 +144,7 @@ fn collect_elf_symbols(
 ) -> Result<bool, SymbolError> {
     let mut section_bounds: BTreeMap<usize, (u64, u64)> = BTreeMap::new();
     for section in file.sections() {
-        if section.kind() == SectionKind::Text {
+        if is_executable_section(&section) {
             let start = section.address();
             let end = start.saturating_add(section.size());
             if end > start {
@@ -164,9 +160,6 @@ fn collect_elf_symbols(
         .map(|s| (0_u8, s))
         .chain(file.dynamic_symbols().map(|s| (1_u8, s)))
     {
-        if priority == 0 {
-            had_static = true;
-        }
         if !matches!(sym.kind(), SymbolKind::Text | SymbolKind::Unknown) {
             continue;
         }
@@ -185,6 +178,9 @@ fn collect_elf_symbols(
         };
         if name.is_empty() || name.starts_with("$x") || name.starts_with("$d") {
             continue;
+        }
+        if priority == 0 {
+            had_static = true;
         }
         let size = sym.size();
         raw_entries.push((addr, size, priority, demangle_symbol(name)));
@@ -216,63 +212,6 @@ fn collect_elf_symbols(
     }
 
     Ok(had_static)
-}
-
-fn collect_mini_debugdata(
-    compressed: &[u8],
-    builder: &mut IndexBuilder,
-    out: &mut Vec<(u64, u64, u32)>,
-    decompressed_used: &mut u64,
-    budget: &ParseBudget,
-) -> Result<(), SymbolError> {
-    let remaining = budget
-        .max_decompressed_bytes
-        .saturating_sub(*decompressed_used);
-    let cap = usize::try_from(remaining)
-        .unwrap_or(MAX_MINI_DEBUGDATA_BYTES)
-        .min(MAX_MINI_DEBUGDATA_BYTES);
-    if cap == 0 {
-        return Ok(());
-    }
-    let mut reader = std::io::BufReader::new(compressed);
-    let mut writer = BoundedWriter::new(cap);
-    if lzma_rs::xz_decompress(&mut reader, &mut writer).is_err() {
-        return Ok(());
-    }
-    *decompressed_used = decompressed_used.saturating_add(writer.buf.len() as u64);
-    let Ok(mini) = object::File::parse(writer.buf.as_slice()) else {
-        return Ok(());
-    };
-    let _ = collect_elf_symbols(&mini, builder, out, budget)?;
-    Ok(())
-}
-
-struct BoundedWriter {
-    buf: Vec<u8>,
-    limit: usize,
-}
-
-impl BoundedWriter {
-    const fn new(limit: usize) -> Self {
-        Self {
-            buf: Vec::new(),
-            limit,
-        }
-    }
-}
-
-impl std::io::Write for BoundedWriter {
-    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-        if self.buf.len().saturating_add(data.len()) > self.limit {
-            return Err(std::io::Error::other("mini debugdata exceeded budget"));
-        }
-        self.buf.extend_from_slice(data);
-        Ok(data.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
 }
 
 fn read_section_budgeted<'data>(
@@ -601,8 +540,7 @@ fn parse_unit_functions(
         let (call_file, call_line) = if tag == gimli::DW_TAG_inlined_subroutine {
             let cf = entry
                 .attr_value(gimli::DW_AT_call_file)
-                .and_then(|v| v.udata_value())
-                .and_then(|idx| usize::try_from(idx).ok())
+                .and_then(attr_file_index)
                 .and_then(|idx| unit_files.get(idx).copied())
                 .unwrap_or(NO_INDEX);
             let cl = entry
@@ -675,8 +613,7 @@ fn resolve_die_info(
 
     let mut decl_file = entry
         .attr_value(gimli::DW_AT_decl_file)
-        .and_then(|v| v.udata_value())
-        .and_then(|idx| usize::try_from(idx).ok())
+        .and_then(attr_file_index)
         .and_then(|idx| unit_files.get(idx).copied())
         .unwrap_or(NO_INDEX);
     let mut decl_line = entry
@@ -725,6 +662,202 @@ fn attr_string_value(
     Some(s.to_string_lossy().into_owned())
 }
 
+fn attr_file_index(val: AttributeValue<DwarfReader<'_>>) -> Option<usize> {
+    match val {
+        AttributeValue::FileIndex(idx) => usize::try_from(idx).ok(),
+        other => other
+            .udata_value()
+            .and_then(|idx| usize::try_from(idx).ok()),
+    }
+}
+
+fn find_go_moduledata_text(
+    file: &object::File<'_>,
+    table_addr: u64,
+    nfunc: u64,
+    funcname_off: u64,
+    pcln_off: u64,
+    first_entry: u64,
+    ptr_size: usize,
+) -> Option<u64> {
+    const MODULE_PC_HEADER: u64 = 0;
+    const MODULE_FUNCNAMETAB: u64 = 1;
+    const MODULE_FTAB: u64 = 16;
+    const MODULE_FTAB_LENGTH: u64 = 17;
+    const MODULE_MINPC: u64 = 20;
+    const MODULE_TEXT: u64 = 22;
+
+    if ptr_size != 8 || table_addr == 0 {
+        return None;
+    }
+
+    let funcnametab = table_addr.checked_add(funcname_off)?;
+    let ftab = table_addr.checked_add(pcln_off)?;
+    let expected_ftab_len = nfunc.checked_add(1)?;
+
+    let writable = u64::from(elf::SHF_ALLOC | elf::SHF_WRITE);
+    let sections: Vec<(u64, &[u8])> = file
+        .sections()
+        .filter(|sec| {
+            matches!(
+                sec.flags(),
+                SectionFlags::Elf { sh_flags } if sh_flags & writable == writable
+            )
+        })
+        .filter_map(|sec| Some((sec.address(), sec.data().ok()?)))
+        .collect();
+    let relative: BTreeMap<u64, u64> = file
+        .dynamic_relocations()
+        .into_iter()
+        .flatten()
+        .filter(|(_, rel)| {
+            matches!(
+                rel.flags(),
+                RelocationFlags::Elf { r_type }
+                    if r_type == elf::R_X86_64_RELATIVE || r_type == elf::R_AARCH64_RELATIVE
+            )
+        })
+        .filter_map(|(addr, rel)| Some((addr, u64::try_from(rel.addend()).ok()?)))
+        .collect();
+
+    let read_word = |addr: u64| -> Option<u64> {
+        if let Some(&val) = relative.get(&addr) {
+            return Some(val);
+        }
+        let (start, data) = sections
+            .iter()
+            .find(|(s, d)| *s <= addr && addr - *s < d.len() as u64)?;
+        let off = usize::try_from(addr - *start).ok()?;
+        read_word_le(data, off, 8)
+    };
+
+    let mut candidates: Vec<u64> = relative
+        .iter()
+        .filter(|(_, val)| **val == table_addr)
+        .map(|(addr, _)| *addr)
+        .collect();
+    for (start, data) in &sections {
+        let align_off = usize::try_from((8 - (*start % 8)) % 8).unwrap_or(0);
+        let mut off = align_off;
+        while off.saturating_add(8) <= data.len() {
+            if read_word_le(data, off, 8) == Some(table_addr)
+                && let Some(addr) = start.checked_add(off as u64)
+            {
+                candidates.push(addr);
+            }
+            off += 8;
+        }
+    }
+    candidates.sort_unstable();
+    candidates.dedup();
+
+    candidates.into_iter().find_map(|module| {
+        let field = |idx: u64| read_word(module.checked_add(idx.checked_mul(8)?)?);
+        let text = field(MODULE_TEXT)?;
+        let valid = field(MODULE_PC_HEADER) == Some(table_addr)
+            && field(MODULE_FUNCNAMETAB) == Some(funcnametab)
+            && field(MODULE_FTAB) == Some(ftab)
+            && field(MODULE_FTAB_LENGTH) == Some(expected_ftab_len)
+            && field(MODULE_MINPC) == text.checked_add(first_entry);
+        valid.then_some(text)
+    })
+}
+
+pub fn resolve_gopclntab_text_start(file: &object::File<'_>) -> Option<u64> {
+    let sec_name = if file.section_by_name(".gopclntab").is_some() {
+        ".gopclntab"
+    } else if file.section_by_name(".data.rel.ro.gopclntab").is_some() {
+        ".data.rel.ro.gopclntab"
+    } else {
+        return None;
+    };
+    let sec = file.section_by_name(sec_name)?;
+    let table_addr = sec.address();
+    let data = sec.uncompressed_data().ok()?;
+    if data.len() < GO_HEADER_SIZE {
+        return None;
+    }
+    let magic = read_u32_le(&data, 0)?;
+    if magic != GO120_MAGIC || data[4] != 0 || data[5] != 0 {
+        return None;
+    }
+    let ptr_size = usize::from(data[7]);
+    if ptr_size != 8 && ptr_size != 4 {
+        return None;
+    }
+    let nfunc_u64 = read_word_le(&data, 8, ptr_size)?;
+    let header_text_start = read_word_le(&data, 8 + 2 * ptr_size, ptr_size)?;
+    let funcname_off_u64 = read_word_le(&data, 8 + 3 * ptr_size, ptr_size)?;
+    let pcln_off_u64 = read_word_le(&data, 8 + 7 * ptr_size, ptr_size)?;
+    let nfunc = usize::try_from(nfunc_u64).ok()?;
+    let pcln_off = usize::try_from(pcln_off_u64).ok()?;
+    if nfunc == 0 || pcln_off >= data.len() {
+        return None;
+    }
+    let ft_bytes = nfunc.checked_add(1)?.checked_mul(8)?;
+    let ftab = data.get(pcln_off..pcln_off.checked_add(ft_bytes)?)?;
+    let first_entry = u64::from(read_u32_le(ftab, 0)?);
+    let last_end = u64::from(read_u32_le(ftab, nfunc * 8)?);
+
+    let exec_ranges: Vec<(u64, u64)> = file
+        .sections()
+        .filter(is_executable_section)
+        .filter_map(|s| {
+            let start = s.address();
+            let end = start.checked_add(s.size())?;
+            (end > start).then_some((start, end))
+        })
+        .collect();
+    if exec_ranges.is_empty() {
+        return None;
+    }
+    let fits_exec = |base: u64| -> bool {
+        let Some(min_pc) = base.checked_add(first_entry) else {
+            return false;
+        };
+        let Some(max_pc) = base.checked_add(last_end) else {
+            return false;
+        };
+        max_pc > min_pc && exec_ranges.iter().any(|&(s, e)| s <= min_pc && max_pc <= e)
+    };
+
+    let embedded_text = file
+        .section_by_name(super::extract::GO_TEXT_SECTION_NAME)
+        .and_then(|s| s.data().ok())
+        .filter(|d| d.len() == 8)
+        .and_then(|d| d.try_into().ok().map(u64::from_le_bytes));
+    let runtime_text = file
+        .symbols()
+        .find(|sym| sym.name_bytes().ok() == Some(b"runtime.text"))
+        .map(|sym| sym.address());
+    let moduledata_text = find_go_moduledata_text(
+        file,
+        table_addr,
+        nfunc_u64,
+        funcname_off_u64,
+        pcln_off_u64,
+        first_entry,
+        ptr_size,
+    );
+    let text_section_addr = file
+        .section_by_name(".text")
+        .filter(is_executable_section)
+        .map(|s| s.address());
+
+    embedded_text
+        .filter(|&b| fits_exec(b))
+        .or_else(|| moduledata_text.filter(|&b| fits_exec(b)))
+        .or_else(|| runtime_text.filter(|&b| fits_exec(b)))
+        .or_else(|| {
+            (header_text_start != 0 && fits_exec(header_text_start)).then_some(header_text_start)
+        })
+        .or_else(|| text_section_addr.filter(|&b| fits_exec(b)))
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "parses Go 1.16/1.18/1.20+ pclntab header, resolves textStart via embedded/moduledata/symtab/.text, and indexes function ranges"
+)]
 fn collect_gopclntab(
     file: &object::File<'_>,
     builder: &mut IndexBuilder,
@@ -732,7 +865,17 @@ fn collect_gopclntab(
     decompressed_used: &mut u64,
     budget: &ParseBudget,
 ) -> Result<bool, SymbolError> {
-    let data = read_section_budgeted(file, ".gopclntab", decompressed_used, budget)?;
+    let sec_name = if file.section_by_name(".gopclntab").is_some() {
+        ".gopclntab"
+    } else if file.section_by_name(".data.rel.ro.gopclntab").is_some() {
+        ".data.rel.ro.gopclntab"
+    } else {
+        return Ok(false);
+    };
+    let table_addr = file
+        .section_by_name(sec_name)
+        .map_or(0, |sec| sec.address());
+    let data = read_section_budgeted(file, sec_name, decompressed_used, budget)?;
     if data.len() < GO_HEADER_SIZE {
         return Ok(false);
     }
@@ -744,15 +887,15 @@ fn collect_gopclntab(
     if ptr_size != 8 && ptr_size != 4 {
         return Ok(false);
     }
-    let nfunc = read_word_le(&data, 8, ptr_size).unwrap_or(0);
-    let text_start = read_word_le(&data, 8 + 2 * ptr_size, ptr_size).unwrap_or(0);
-    let funcname_off = read_word_le(&data, 8 + 3 * ptr_size, ptr_size).unwrap_or(0);
-    let pcln_off = read_word_le(&data, 8 + 7 * ptr_size, ptr_size).unwrap_or(0);
+    let nfunc_u64 = read_word_le(&data, 8, ptr_size).unwrap_or(0);
+    let header_text_start = read_word_le(&data, 8 + 2 * ptr_size, ptr_size).unwrap_or(0);
+    let funcname_off_u64 = read_word_le(&data, 8 + 3 * ptr_size, ptr_size).unwrap_or(0);
+    let pcln_off_u64 = read_word_le(&data, 8 + 7 * ptr_size, ptr_size).unwrap_or(0);
 
     let (Ok(nfunc), Ok(funcname_off), Ok(pcln_off)) = (
-        usize::try_from(nfunc),
-        usize::try_from(funcname_off),
-        usize::try_from(pcln_off),
+        usize::try_from(nfunc_u64),
+        usize::try_from(funcname_off_u64),
+        usize::try_from(pcln_off_u64),
     ) else {
         return Ok(false);
     };
@@ -765,6 +908,66 @@ fn collect_gopclntab(
         return Ok(false);
     };
     let Some(ftab) = data.get(pcln_off..pcln_off.saturating_add(ft_bytes)) else {
+        return Ok(false);
+    };
+
+    let exec_ranges: Vec<(u64, u64)> = file
+        .sections()
+        .filter(is_executable_section)
+        .filter_map(|sec| {
+            let start = sec.address();
+            let end = start.checked_add(sec.size())?;
+            (end > start).then_some((start, end))
+        })
+        .collect();
+    if exec_ranges.is_empty() {
+        return Ok(false);
+    }
+
+    let first_entry = u64::from(read_u32_le(ftab, 0).unwrap_or(0));
+    let last_end = u64::from(read_u32_le(ftab, nfunc * 8).unwrap_or(0));
+    let fits_exec = |base: u64| -> bool {
+        let Some(min_pc) = base.checked_add(first_entry) else {
+            return false;
+        };
+        let Some(max_pc) = base.checked_add(last_end) else {
+            return false;
+        };
+        max_pc > min_pc && exec_ranges.iter().any(|&(s, e)| s <= min_pc && max_pc <= e)
+    };
+
+    let embedded_text = file
+        .section_by_name(super::extract::GO_TEXT_SECTION_NAME)
+        .and_then(|sec| sec.data().ok())
+        .filter(|d| d.len() == 8)
+        .and_then(|d| d.try_into().ok().map(u64::from_le_bytes));
+    let runtime_text = file
+        .symbols()
+        .find(|sym| sym.name_bytes().ok() == Some(b"runtime.text"))
+        .map(|sym| sym.address());
+    let moduledata_text = find_go_moduledata_text(
+        file,
+        table_addr,
+        nfunc_u64,
+        funcname_off_u64,
+        pcln_off_u64,
+        first_entry,
+        ptr_size,
+    );
+    let text_section_addr = file
+        .section_by_name(".text")
+        .filter(is_executable_section)
+        .map(|sec| sec.address());
+
+    let Some(text_start) = embedded_text
+        .filter(|&b| fits_exec(b))
+        .or_else(|| moduledata_text.filter(|&b| fits_exec(b)))
+        .or_else(|| runtime_text.filter(|&b| fits_exec(b)))
+        .or_else(|| {
+            (header_text_start != 0 && fits_exec(header_text_start)).then_some(header_text_start)
+        })
+        .or_else(|| text_section_addr.filter(|&b| fits_exec(b)))
+    else {
         return Ok(false);
     };
 
@@ -798,7 +1001,7 @@ fn collect_gopclntab(
         }
         let start = text_start.saturating_add(entry_off);
         let end = text_start.saturating_add(next_off);
-        if end > start {
+        if end > start && exec_ranges.iter().any(|&(s, e)| s <= start && end <= e) {
             let func_id = builder.intern_function(name, NO_INDEX, 0)?;
             out.push((start, end, func_id));
             added = true;

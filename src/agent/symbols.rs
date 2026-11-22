@@ -1,6 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -16,22 +16,54 @@ use crate::debug_info::DebugFileSearch;
 pub const SYMBOL_PIECE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_UPLOAD_COMPRESSED_BYTES: usize = 128 * 1024 * 1024;
 const MAX_TRACKED_BINARIES: usize = 2048;
-const RETRY_COOLDOWN: Duration = Duration::from_secs(300);
+const MAX_RETRIES: u32 = 6;
+const RETRY_BASE_DELAY: Duration = Duration::from_secs(15);
+const RETRY_MAX_DELAY: Duration = Duration::from_secs(300);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecordedBinary {
     pub path: PathBuf,
+    pub pid: Option<u32>,
     pub project: Option<String>,
     pub service: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct UploadTaskKey {
+    pub project_id: Option<i64>,
+    pub build_id: String,
+}
+
+#[derive(Clone, Debug)]
+struct PendingUpload {
+    project_key: Option<String>,
+    project_name: Option<String>,
+    binary: RecordedBinary,
+    next_attempt: Instant,
+    attempts: u32,
+}
+
 #[derive(Default)]
 pub struct SymbolUploadQueue {
-    known_binaries: BTreeMap<String, RecordedBinary>,
-    pending: VecDeque<String>,
-    queued_set: BTreeSet<String>,
-    completed: BTreeSet<String>,
-    failed_until: BTreeMap<String, Instant>,
+    known_by_project: BTreeMap<(Option<String>, String), RecordedBinary>,
+    known_any: BTreeMap<String, RecordedBinary>,
+    pending: BTreeMap<UploadTaskKey, PendingUpload>,
+    in_flight: BTreeMap<UploadTaskKey, PendingUpload>,
+    completed: BTreeSet<UploadTaskKey>,
+}
+
+fn normalize_project_key(project: Option<&str>) -> Option<String> {
+    project
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_ascii_lowercase)
+}
+
+fn retry_backoff(attempts: u32) -> Duration {
+    let shift = attempts.saturating_sub(1).min(5);
+    RETRY_BASE_DELAY
+        .saturating_mul(1_u32 << shift)
+        .min(RETRY_MAX_DELAY)
 }
 
 impl SymbolUploadQueue {
@@ -39,111 +71,230 @@ impl SymbolUploadQueue {
         &mut self,
         build_id: &str,
         path: PathBuf,
+        pid: Option<u32>,
         project: Option<String>,
         service: Option<String>,
     ) {
         let Ok(bid) = BuildId::parse(build_id) else {
             return;
         };
-        let key = bid.as_str().to_owned();
-        if self.known_binaries.len() >= MAX_TRACKED_BINARIES
-            && !self.known_binaries.contains_key(&key)
-            && let Some(first) = self.known_binaries.keys().next().cloned()
+        let bid_str = bid.as_str().to_owned();
+        let proj_key = normalize_project_key(project.as_deref());
+        let scoped_key = (proj_key, bid_str.clone());
+        if self.known_by_project.len() >= MAX_TRACKED_BINARIES
+            && !self.known_by_project.contains_key(&scoped_key)
+            && let Some(first) = self.known_by_project.keys().next().cloned()
         {
-            self.known_binaries.remove(&first);
+            self.known_by_project.remove(&first);
         }
-        self.known_binaries.insert(
-            key,
-            RecordedBinary {
-                path,
-                project,
-                service,
-            },
-        );
+        let binary = RecordedBinary {
+            path,
+            pid,
+            project,
+            service,
+        };
+        self.known_by_project.insert(scoped_key, binary.clone());
+        if self.known_any.len() >= MAX_TRACKED_BINARIES
+            && !self.known_any.contains_key(&bid_str)
+            && let Some(first) = self.known_any.keys().next().cloned()
+        {
+            self.known_any.remove(&first);
+        }
+        self.known_any.insert(bid_str, binary);
     }
 
-    pub fn enqueue_missing(&mut self, build_ids: &[String]) -> bool {
+    pub fn enqueue_missing(
+        &mut self,
+        project_id: Option<i64>,
+        project_name: Option<&str>,
+        build_ids: &[String],
+    ) -> bool {
         let now = Instant::now();
+        let proj_key = normalize_project_key(project_name);
         let mut added = false;
         for raw in build_ids {
             let Ok(bid) = BuildId::parse(raw) else {
                 continue;
             };
-            let key = bid.as_str().to_owned();
-            if self.completed.contains(&key) || self.queued_set.contains(&key) {
+            let bid_str = bid.as_str().to_owned();
+            let binary = self
+                .known_by_project
+                .get(&(proj_key.clone(), bid_str.clone()))
+                .or_else(|| {
+                    proj_key
+                        .as_ref()
+                        .and_then(|_| self.known_by_project.get(&(None, bid_str.clone())))
+                })
+                .or_else(|| self.known_any.get(&bid_str))
+                .cloned();
+            let Some(mut binary) = binary else {
                 continue;
+            };
+            if proj_key.is_none() || normalize_project_key(binary.project.as_deref()) != proj_key {
+                binary.project = project_name.map(str::to_owned);
+                binary.service = None;
             }
-            if self
-                .failed_until
-                .get(&key)
-                .is_some_and(|&until| now < until)
+            let task = UploadTaskKey {
+                project_id,
+                build_id: bid_str,
+            };
+            if self.completed.contains(&task)
+                || self.pending.contains_key(&task)
+                || self.in_flight.contains_key(&task)
             {
                 continue;
             }
-            if !self.known_binaries.contains_key(&key) {
-                continue;
-            }
-            self.queued_set.insert(key.clone());
-            self.pending.push_back(key);
+            self.pending.insert(
+                task,
+                PendingUpload {
+                    project_key: proj_key.clone(),
+                    project_name: project_name.map(str::to_owned),
+                    binary,
+                    next_attempt: now,
+                    attempts: 0,
+                },
+            );
             added = true;
         }
         added
     }
 
-    pub fn pop_next(&mut self) -> Option<(String, RecordedBinary)> {
-        while let Some(key) = self.pending.pop_front() {
-            self.queued_set.remove(&key);
-            if self.completed.contains(&key) {
-                continue;
-            }
-            if let Some(bin) = self.known_binaries.get(&key).cloned() {
-                return Some((key, bin));
-            }
+    pub fn pop_next(&mut self) -> Option<(UploadTaskKey, RecordedBinary)> {
+        self.pop_next_at(Instant::now())
+    }
+
+    pub fn pop_next_at(&mut self, now: Instant) -> Option<(UploadTaskKey, RecordedBinary)> {
+        let ready_key = self
+            .pending
+            .iter()
+            .filter(|(task, item)| !self.completed.contains(*task) && item.next_attempt <= now)
+            .min_by_key(|(_, item)| item.next_attempt)
+            .map(|(task, _)| task.clone())?;
+        let mut item = self.pending.remove(&ready_key)?;
+        if item.project_key.is_some()
+            && let Some(latest) = self
+                .known_by_project
+                .get(&(item.project_key.clone(), ready_key.build_id.clone()))
+        {
+            item.binary = latest.clone();
+        } else if item.project_key.is_none()
+            && let Some(latest) = self
+                .known_by_project
+                .get(&(None, ready_key.build_id.clone()))
+                .or_else(|| self.known_any.get(&ready_key.build_id))
+            && latest.path == item.binary.path
+        {
+            item.binary.pid = latest.pid;
+            item.binary.project.clone_from(&item.project_name);
+            item.binary.service = None;
         }
-        None
+        let binary = item.binary.clone();
+        self.in_flight.insert(ready_key.clone(), item);
+        Some((ready_key, binary))
     }
 
-    pub fn mark_done(&mut self, build_id: &str) {
-        self.completed.insert(build_id.to_owned());
-        self.failed_until.remove(build_id);
+    #[must_use]
+    pub fn next_wait(&self, now: Instant) -> Option<Duration> {
+        self.pending
+            .values()
+            .map(|item| item.next_attempt.saturating_duration_since(now))
+            .min()
     }
 
-    pub fn mark_retry_later(&mut self, build_id: &str) {
-        self.failed_until
-            .insert(build_id.to_owned(), Instant::now() + RETRY_COOLDOWN);
+    pub fn mark_done(&mut self, task: &UploadTaskKey) {
+        self.completed.insert(task.clone());
+        self.pending.remove(task);
+        self.in_flight.remove(task);
+    }
+
+    pub fn mark_retry_later(&mut self, task: &UploadTaskKey) {
+        self.mark_retry_later_at(task, Instant::now());
+    }
+
+    pub fn mark_retry_later_at(&mut self, task: &UploadTaskKey, now: Instant) {
+        let Some(mut item) = self.in_flight.remove(task) else {
+            return;
+        };
+        if self.completed.contains(task) {
+            return;
+        }
+        item.attempts = item.attempts.saturating_add(1);
+        if item.attempts > MAX_RETRIES {
+            return;
+        }
+        item.next_attempt = now + retry_backoff(item.attempts);
+        self.pending.insert(task.clone(), item);
     }
 }
 
-#[must_use]
-pub fn prepare_debug_payload(path: &Path, expected_build_id: &str) -> Option<Vec<u8>> {
-    let raw = fs::read(path).ok()?;
-    let Ok(bid) = extract_build_id(&raw) else {
-        return None;
-    };
-    if bid.as_str() != expected_build_id {
-        return None;
+#[derive(Debug, PartialEq, Eq)]
+pub enum PrepareOutcome {
+    Ready(Vec<u8>),
+    PermanentSkip,
+    RetryLater,
+}
+
+fn read_verified_elf(
+    binary: &RecordedBinary,
+    expected_build_id: &str,
+) -> Result<(PathBuf, Vec<u8>), PrepareOutcome> {
+    let mut candidates: Vec<PathBuf> = vec![binary.path.clone()];
+    if let Some(pid) = binary.pid {
+        candidates.push(PathBuf::from(format!("/proc/{pid}/exe")));
+        if let Ok(rel) = binary.path.strip_prefix("/") {
+            candidates.push(PathBuf::from(format!("/proc/{pid}/root")).join(rel));
+        }
     }
+
+    for candidate in candidates {
+        if let Ok(raw) = fs::read(&candidate)
+            && let Ok(bid) = extract_build_id(&raw)
+            && bid.as_str() == expected_build_id
+        {
+            return Ok((candidate, raw));
+        }
+    }
+
+    Err(PrepareOutcome::RetryLater)
+}
+
+#[must_use]
+pub fn prepare_debug_payload(binary: &RecordedBinary, expected_build_id: &str) -> PrepareOutcome {
+    let (resolved_path, raw) = match read_verified_elf(binary, expected_build_id) {
+        Ok(pair) => pair,
+        Err(outcome) => return outcome,
+    };
 
     let debug_elf = if has_debug_or_symtab(&raw) {
         strip_to_debug_elf(&raw).unwrap_or(raw)
     } else {
-        let parsed = object::File::parse(raw.as_slice()).ok()?;
+        let Ok(parsed) = object::File::parse(raw.as_slice()) else {
+            return PrepareOutcome::PermanentSkip;
+        };
         let search = DebugFileSearch::new(&DebugFileOptions {
             debuginfod: false,
             ..DebugFileOptions::default()
         });
-        let found = search.find(path, &parsed).found?;
+        let Some(found) = search
+            .find(&resolved_path, &parsed)
+            .found
+            .or_else(|| search.find(&binary.path, &parsed).found)
+        else {
+            return PrepareOutcome::PermanentSkip;
+        };
         if !has_debug_or_symtab(&found.data) {
-            return None;
+            return PrepareOutcome::PermanentSkip;
         }
         strip_to_debug_elf(&found.data).unwrap_or(found.data)
     };
 
-    let compressed = zstd::bulk::compress(&debug_elf, 3).ok()?;
+    let Ok(compressed) = zstd::bulk::compress(&debug_elf, 3) else {
+        return PrepareOutcome::RetryLater;
+    };
     if compressed.is_empty() || compressed.len() > MAX_UPLOAD_COMPRESSED_BYTES {
-        return None;
+        return PrepareOutcome::PermanentSkip;
     }
-    Some(compressed)
+    PrepareOutcome::Ready(compressed)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -156,12 +307,13 @@ pub enum UploadOutcome {
 pub fn upload_compressed_symbol(
     client: &Client,
     token: &str,
-    build_id: &str,
+    task: &UploadTaskKey,
     binary: &RecordedBinary,
     compressed: &[u8],
     max_bytes_per_sec: u64,
     stop: &AtomicBool,
 ) -> UploadOutcome {
+    let build_id = task.build_id.as_str();
     if compressed.is_empty() {
         return UploadOutcome::Done;
     }
@@ -189,6 +341,7 @@ pub fn upload_compressed_symbol(
             sha256: &sha_hex,
             encoding: "zstd",
             upload_id,
+            project_id: task.project_id,
             project: binary.project.as_deref(),
             service: binary.service.as_deref(),
         };
@@ -246,23 +399,76 @@ mod tests {
     use super::*;
 
     #[test]
-    fn queue_tracks_only_recorded_binaries_and_deduplicates() {
+    fn queue_tracks_per_project_isolates_metadata_and_retries_automatically() {
         let mut q = SymbolUploadQueue::default();
-        assert!(!q.enqueue_missing(&["deadbeef".to_owned()]));
+        assert!(!q.enqueue_missing(Some(10), Some("proj-a"), &["deadbeef".to_owned()]));
 
         q.record_binary(
             "DEADBEEF",
-            PathBuf::from("/usr/bin/app"),
-            Some("proj".to_owned()),
-            Some("svc".to_owned()),
+            PathBuf::from("/opt/a/app"),
+            Some(42),
+            Some("proj-a".to_owned()),
+            Some("svc-a".to_owned()),
         );
-        assert!(q.enqueue_missing(&["deadbeef".to_owned(), "deadbeef".to_owned()]));
-        let (bid, bin) = q.pop_next().unwrap();
-        assert_eq!(bid, "deadbeef");
-        assert_eq!(bin.project.as_deref(), Some("proj"));
-        assert!(q.pop_next().is_none());
+        q.record_binary(
+            "DEADBEEF",
+            PathBuf::from("/opt/b/app"),
+            Some(99),
+            Some("proj-b".to_owned()),
+            Some("svc-b".to_owned()),
+        );
+        assert!(q.enqueue_missing(
+            Some(10),
+            Some("proj-a"),
+            &["deadbeef".to_owned(), "deadbeef".to_owned()]
+        ));
+        assert!(q.enqueue_missing(Some(20), Some("proj-b"), &["deadbeef".to_owned()]));
 
-        q.mark_done("deadbeef");
-        assert!(!q.enqueue_missing(&["deadbeef".to_owned()]));
+        let (task_a, bin_a) = q.pop_next().unwrap();
+        assert_eq!(task_a.project_id, Some(10));
+        assert_eq!(bin_a.path, PathBuf::from("/opt/a/app"));
+        assert_eq!(bin_a.pid, Some(42));
+        assert_eq!(bin_a.service.as_deref(), Some("svc-a"));
+        q.mark_done(&task_a);
+
+        let (task_b, bin_b) = q.pop_next().unwrap();
+        assert_eq!(task_b.project_id, Some(20));
+        assert_eq!(bin_b.path, PathBuf::from("/opt/b/app"));
+        assert_eq!(bin_b.pid, Some(99));
+        assert_eq!(bin_b.service.as_deref(), Some("svc-b"));
+
+        let now = Instant::now();
+        q.mark_retry_later_at(&task_b, now);
+        q.record_binary(
+            "DEADBEEF",
+            PathBuf::from("/opt/b/app"),
+            Some(1234),
+            Some("proj-b".to_owned()),
+            Some("svc-b".to_owned()),
+        );
+        assert!(q.pop_next_at(now).is_none());
+        let (retry_task, retry_bin) = q
+            .pop_next_at(now + Duration::from_secs(20))
+            .expect("retryable task must become due again without another ingest ACK");
+        assert_eq!(retry_task, task_b);
+        assert_eq!(
+            retry_bin.pid,
+            Some(1234),
+            "retry must refresh PID from the latest observation in the same project"
+        );
+        q.mark_done(&retry_task);
+
+        assert!(q.enqueue_missing(Some(30), None, &["deadbeef".to_owned()]));
+        let (task_unhinted, bin_unhinted) = q.pop_next().unwrap();
+        assert_eq!(task_unhinted.project_id, Some(30));
+        assert_eq!(
+            bin_unhinted.service, None,
+            "unhinted fallback must strip foreign project's service hint"
+        );
+        assert_eq!(bin_unhinted.project, None);
+        q.mark_done(&task_unhinted);
+
+        assert!(!q.enqueue_missing(Some(10), Some("proj-a"), &["deadbeef".to_owned()]));
+        assert!(!q.enqueue_missing(Some(20), Some("proj-b"), &["deadbeef".to_owned()]));
     }
 }

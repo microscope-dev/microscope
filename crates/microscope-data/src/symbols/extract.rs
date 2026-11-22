@@ -4,6 +4,7 @@ use object::{Endian as _, Endianness};
 use super::SymbolError;
 
 const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
+pub const GO_TEXT_SECTION_NAME: &str = ".microscope.go_text";
 
 #[expect(
     clippy::too_many_lines,
@@ -81,9 +82,10 @@ pub fn strip_to_debug_elf(bytes: &[u8]) -> Result<Vec<u8>, SymbolError> {
         .get(shstr_offset..shstr_end)
         .ok_or_else(|| SymbolError::NotElf("truncated shstrtab".to_owned()))?;
 
-    let mut headers: Vec<Vec<u8>> = Vec::with_capacity(sec_count);
+    let mut headers: Vec<Vec<u8>> = Vec::with_capacity(sec_count + 1);
     let mut keep_section: Vec<bool> = vec![false; sec_count];
     let mut kept_linked: Vec<usize> = Vec::new();
+    let mut has_go_pclntab = false;
 
     for (i, keep_slot) in keep_section.iter_mut().enumerate() {
         let base = sh_off + i * sec_entry_size;
@@ -96,6 +98,10 @@ pub fn strip_to_debug_elf(bytes: &[u8]) -> Result<Vec<u8>, SymbolError> {
         let sh_link = read_u32(&hdr, 40, endian)? as usize;
         let name = read_cstr(shstr, sh_name);
 
+        if matches!(name, ".gopclntab" | ".data.rel.ro.gopclntab") {
+            has_go_pclntab = true;
+        }
+
         let keep = i == shstr_index || should_keep_section(name, sh_type);
         if keep {
             *keep_slot = true;
@@ -105,6 +111,13 @@ pub fn strip_to_debug_elf(bytes: &[u8]) -> Result<Vec<u8>, SymbolError> {
         }
         headers.push(hdr);
     }
+    let go_text_start = if has_go_pclntab && sec_count < 0xfeff {
+        object::File::parse(bytes)
+            .ok()
+            .and_then(|file| super::parse::resolve_gopclntab_text_start(&file))
+    } else {
+        None
+    };
     for link in kept_linked {
         if let Some(slot) = keep_section.get_mut(link) {
             *slot = true;
@@ -133,6 +146,7 @@ pub fn strip_to_debug_elf(bytes: &[u8]) -> Result<Vec<u8>, SymbolError> {
         0
     };
 
+    let mut go_text_name_off: Option<u32> = None;
     for (i, hdr) in headers.iter_mut().enumerate() {
         let sh_type = read_u32(hdr, 4, endian)?;
         if sh_type == elf::SHT_NULL || sh_type == elf::SHT_NOBITS {
@@ -153,13 +167,30 @@ pub fn strip_to_debug_elf(bytes: &[u8]) -> Result<Vec<u8>, SymbolError> {
             let slice = bytes
                 .get(sec_off..sec_end)
                 .ok_or_else(|| SymbolError::NotElf("truncated section".to_owned()))?;
+            let extra_len = if i == shstr_index && go_text_start.is_some() {
+                GO_TEXT_SECTION_NAME.len() + 1
+            } else {
+                0
+            };
             let aligned = align_up(out.len(), sec_align);
-            if aligned.saturating_add(slice.len()) >= bytes.len() {
+            if aligned
+                .saturating_add(slice.len())
+                .saturating_add(extra_len)
+                >= bytes.len()
+            {
                 return Ok(bytes.to_vec());
             }
             out.resize(aligned, 0);
             let new_off = out.len() as u64;
             out.extend_from_slice(slice);
+            if extra_len > 0
+                && let Ok(name_off) = u32::try_from(slice.len())
+            {
+                go_text_name_off = Some(name_off);
+                out.extend_from_slice(GO_TEXT_SECTION_NAME.as_bytes());
+                out.push(0);
+                write_u64(hdr, 32, (slice.len() + extra_len) as u64, endian);
+            }
             write_u64(hdr, 24, new_off, endian);
         } else {
             write_u32(hdr, 4, elf::SHT_NOBITS, endian);
@@ -167,8 +198,29 @@ pub fn strip_to_debug_elf(bytes: &[u8]) -> Result<Vec<u8>, SymbolError> {
         }
     }
 
+    if let (Some(text_start), Some(name_off)) = (go_text_start, go_text_name_off) {
+        let aligned = align_up(out.len(), 8);
+        if aligned.saturating_add(8) >= bytes.len() {
+            return Ok(bytes.to_vec());
+        }
+        out.resize(aligned, 0);
+        let note_off = out.len() as u64;
+        out.extend_from_slice(&text_start.to_le_bytes());
+
+        let mut synth = vec![0_u8; sec_entry_size];
+        write_u32(&mut synth, 0, name_off, endian);
+        write_u32(&mut synth, 4, elf::SHT_PROGBITS, endian);
+        write_u64(&mut synth, 24, note_off, endian);
+        write_u64(&mut synth, 32, 8, endian);
+        write_u64(&mut synth, 48, 8, endian);
+        headers.push(synth);
+    }
+
+    let final_sh_len = sec_entry_size
+        .checked_mul(headers.len())
+        .ok_or_else(|| SymbolError::NotElf("sh size".to_owned()))?;
     let written_sh_offset = align_up(out.len(), 8);
-    if written_sh_offset.saturating_add(sh_len) >= bytes.len() {
+    if written_sh_offset.saturating_add(final_sh_len) >= bytes.len() {
         return Ok(bytes.to_vec());
     }
     out.resize(written_sh_offset, 0);
@@ -178,6 +230,9 @@ pub fn strip_to_debug_elf(bytes: &[u8]) -> Result<Vec<u8>, SymbolError> {
 
     write_u64(&mut out, 32, written_ph_offset, endian);
     write_u64(&mut out, 40, written_sh_offset as u64, endian);
+    if let Ok(shnum) = u16::try_from(headers.len()) {
+        write_u16(&mut out, 60, shnum, endian);
+    }
 
     if out.len() >= bytes.len() {
         return Ok(bytes.to_vec());
@@ -203,7 +258,8 @@ fn should_keep_section(name: &str, sh_type: u32) -> bool {
                 | ".dynstr"
                 | ".shstrtab"
                 | ".gopclntab"
-                | ".gnu_debugdata"
+                | ".data.rel.ro.gopclntab"
+                | ".go.buildinfo"
                 | ".gnu_debuglink"
                 | ".gnu_debugaltlink"
         )
@@ -248,6 +304,13 @@ fn read_u64(bytes: &[u8], offset: usize, endian: Endianness) -> Result<u64, Symb
         .get(offset..offset + 8)
         .ok_or_else(|| SymbolError::NotElf("truncated u64".to_owned()))?;
     Ok(endian.read_u64([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+}
+
+fn write_u16(bytes: &mut [u8], offset: usize, value: u16, endian: Endianness) {
+    let raw = endian.write_u16(value);
+    if let Some(dst) = bytes.get_mut(offset..offset + 2) {
+        dst.copy_from_slice(&raw);
+    }
 }
 
 fn write_u32(bytes: &mut [u8], offset: usize, value: u32, endian: Endianness) {

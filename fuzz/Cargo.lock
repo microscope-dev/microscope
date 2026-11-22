@@ -834,7 +834,6 @@ dependencies = [
  "flate2",
  "foldhash 0.2.0",
  "gimli",
- "lzma-rs",
  "memchr",
  "microscope-probes",
  "nix",

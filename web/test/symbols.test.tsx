@@ -41,7 +41,7 @@ describe("SymbolsView", () => {
           lastSeenAt: 1_700_000_000_000,
           uploadedAt: null,
           uploadCommand:
-            "MICROSCOPE_SYMBOL_TOKEN=<token> microscope symbols upload --server http://127.0.0.1:3000 --service payments-api api",
+            "MICROSCOPE_SYMBOL_TOKEN='YOUR_SYMBOL_TOKEN' microscope symbols upload --server 'http://127.0.0.1:3000' --service 'payments-api' -- 'api'",
         },
         {
           buildId: "1111111111111111111111111111111111111111",
@@ -60,7 +60,7 @@ describe("SymbolsView", () => {
           lastSeenAt: 1_700_000_000_000,
           uploadedAt: 1_700_000_000_500,
           uploadCommand:
-            "MICROSCOPE_SYMBOL_TOKEN=<token> microscope symbols upload --server http://127.0.0.1:3000 --service worker worker",
+            "MICROSCOPE_SYMBOL_TOKEN='YOUR_SYMBOL_TOKEN' microscope symbols upload --server 'http://127.0.0.1:3000' --service 'worker' -- 'worker'",
         },
       ],
       tokens: [],
@@ -119,8 +119,260 @@ describe("SymbolsView", () => {
       .poll(() => container.querySelector('[data-testid="symbols-token-secret"]')?.textContent)
       .toBe("msp_secret_token_value");
     expect(container.querySelector('[data-testid="symbols-upload-cmd"]')?.textContent).toContain(
-      "msp_secret_token_value",
+      "'msp_secret_token_value'",
     );
+  });
+
+  it("clears stale data and resets project selection when switching organizations", async () => {
+    const { createSignal } = await import("solid-js");
+    let resolveSecond!: (resp: Response) => void;
+    const secondPromise = new Promise<Response>((resolve) => {
+      resolveSecond = resolve;
+    });
+    const createdBodies: string[] = [];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>((input, init) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.startsWith("/api/data/symbols/tokens") && init?.method === "POST") {
+          createdBodies.push(String(init.body ?? ""));
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                id: 50,
+                projectId: 22,
+                projectName: "org2-proj",
+                name: "ci-2",
+                token: "msp_org2_tok",
+                tokenPrefix: "msp_org2",
+                createdAt: 1_700_000_002_000,
+              }),
+              { status: 201, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        if (url.includes("org=1")) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                orgId: 1,
+                isOwner: true,
+                hours: 24,
+                serverUrl: "http://127.0.0.1:3000",
+                projects: [{ id: 11, name: "org1-proj", canWrite: true }],
+                missingSummary: { missingBuildCount: 0, missingTimePercent: 0 },
+                builds: [],
+                tokens: [],
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        return secondPromise;
+      }),
+    );
+
+    const [org, setOrg] = createSignal(1);
+    const { container } = render(() => <SymbolsView org={org()} />);
+
+    await expect
+      .poll(() => container.querySelector('select[aria-label="Upload token project"]')?.textContent)
+      .toContain("org1-proj");
+
+    setOrg(2);
+    await expect.poll(() => container.textContent).toContain("Loading symbols");
+    expect(container.querySelector('select[aria-label="Upload token project"]')).toBeNull();
+
+    resolveSecond(
+      new Response(
+        JSON.stringify({
+          orgId: 2,
+          isOwner: true,
+          hours: 24,
+          serverUrl: "http://127.0.0.1:3000",
+          projects: [{ id: 22, name: "org2-proj", canWrite: true }],
+          missingSummary: { missingBuildCount: 0, missingTimePercent: 0 },
+          builds: [],
+          tokens: [],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await expect
+      .poll(() => container.querySelector('select[aria-label="Upload token project"]')?.textContent)
+      .toContain("org2-proj");
+
+    await page.getByLabelText("Upload token name").fill("ci-2");
+    await page.getByRole("button", { name: "Create upload token" }).click();
+
+    await expect.poll(() => createdBodies.length).toBe(1);
+    expect(JSON.parse(createdBodies[0] ?? "{}")).toEqual({
+      orgId: 2,
+      projectId: 22,
+      name: "ci-2",
+    });
+  });
+
+  it("supports personal workspace (org=null), clears when leaving personal, and ignores stale in-flight token creation", async () => {
+    const { createSignal } = await import("solid-js");
+    let resolveInFlightCreate!: (resp: Response) => void;
+    const inFlightCreate = new Promise<Response>((resolve) => {
+      resolveInFlightCreate = resolve;
+    });
+    let resolveOrg2!: (resp: Response) => void;
+    const org2Promise = new Promise<Response>((resolve) => {
+      resolveOrg2 = resolve;
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>((input, init) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.startsWith("/api/data/symbols/tokens") && init?.method === "POST") {
+          return inFlightCreate;
+        }
+        if (url.includes("org=2")) {
+          return org2Promise;
+        }
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              orgId: 42,
+              isOwner: true,
+              hours: 24,
+              serverUrl: "http://127.0.0.1:3000",
+              projects: [{ id: 100, name: "personal-proj", canWrite: true }],
+              missingSummary: { missingBuildCount: 0, missingTimePercent: 0 },
+              builds: [],
+              tokens: [],
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }),
+    );
+
+    const [org, setOrg] = createSignal<number | null>(null);
+    const { container } = render(() => <SymbolsView org={org()} />);
+
+    await expect
+      .poll(() => container.querySelector('select[aria-label="Upload token project"]')?.textContent)
+      .toContain("personal-proj");
+
+    await page.getByLabelText("Upload token name").fill("personal-ci");
+    const createBtn = page.getByRole("button", { name: "Create upload token" });
+    await expect.element(createBtn).toBeEnabled();
+    await createBtn.click();
+
+    setOrg(2);
+    await expect.poll(() => container.textContent).toContain("Loading symbols");
+    expect(container.querySelector('select[aria-label="Upload token project"]')).toBeNull();
+
+    resolveInFlightCreate(
+      new Response(
+        JSON.stringify({
+          id: 77,
+          projectId: 100,
+          projectName: "personal-proj",
+          name: "personal-ci",
+          token: "msp_stale_personal_secret",
+          tokenPrefix: "msp_stale",
+          createdAt: 1_700_000_003_000,
+        }),
+        { status: 201, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    await Promise.resolve();
+
+    resolveOrg2(
+      new Response(
+        JSON.stringify({
+          orgId: 2,
+          isOwner: true,
+          hours: 24,
+          serverUrl: "http://127.0.0.1:3000",
+          projects: [{ id: 200, name: "team-proj", canWrite: true }],
+          missingSummary: { missingBuildCount: 0, missingTimePercent: 0 },
+          builds: [],
+          tokens: [],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await expect
+      .poll(() => container.querySelector('select[aria-label="Upload token project"]')?.textContent)
+      .toContain("team-proj");
+    expect(container.querySelector('[data-testid="symbols-token-secret"]')).toBeNull();
+    expect(container.textContent).not.toContain("msp_stale_personal_secret");
+  });
+
+  it("keeps in-flight token creation working when switching time range within the same org", async () => {
+    let resolveCreate!: (resp: Response) => void;
+    const createPromise = new Promise<Response>((resolve) => {
+      resolveCreate = resolve;
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>((input, init) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.startsWith("/api/data/symbols/tokens") && init?.method === "POST") {
+          return createPromise;
+        }
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              orgId: 7,
+              isOwner: true,
+              hours: url.includes("hours=168") ? 168 : 24,
+              serverUrl: "http://127.0.0.1:3000",
+              projects: [{ id: 11, name: "payments", canWrite: true }],
+              missingSummary: { missingBuildCount: 0, missingTimePercent: 0 },
+              builds: [],
+              tokens: [],
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }),
+    );
+
+    const { container } = render(() => <SymbolsView org={7} />);
+    await expect
+      .poll(() => container.querySelector('select[aria-label="Upload token project"]')?.textContent)
+      .toContain("payments");
+
+    await page.getByLabelText("Upload token name").fill("ci-7d");
+    await page.getByRole("button", { name: "Create upload token" }).click();
+
+    const sevenDayBtn = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent === "7d",
+    );
+    sevenDayBtn?.click();
+
+    resolveCreate(
+      new Response(
+        JSON.stringify({
+          id: 88,
+          projectId: 11,
+          projectName: "payments",
+          name: "ci-7d",
+          token: "msp_same_org_secret",
+          tokenPrefix: "msp_same_",
+          createdAt: 1_700_000_004_000,
+        }),
+        { status: 201, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await expect
+      .poll(() => container.querySelector('[data-testid="symbols-token-secret"]')?.textContent)
+      .toBe("msp_same_org_secret");
+    await page.getByLabelText("Upload token name").fill("next-token");
+    await expect.element(page.getByRole("button", { name: "Create upload token" })).toBeEnabled();
   });
 });
 

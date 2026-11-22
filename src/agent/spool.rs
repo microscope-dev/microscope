@@ -34,6 +34,7 @@ pub struct Batch {
     pub first_chunk: u64,
     pub last_chunk: u64,
     pub chunk_count: usize,
+    pub project: Option<String>,
     pub post: EncodedPost,
 }
 
@@ -347,6 +348,7 @@ impl Spool {
                         first_chunk,
                         last_chunk,
                         chunk_count: chunks.len(),
+                        project: batch_project,
                         post,
                     }));
                 }
@@ -364,6 +366,7 @@ impl Spool {
                     first_chunk,
                     last_chunk,
                     chunk_count: chunks.len(),
+                    project: batch_project,
                     post,
                 }));
             }

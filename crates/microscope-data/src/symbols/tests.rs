@@ -75,6 +75,10 @@ fn parses_current_test_binary_and_roundtrips_index() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "end-to-end fixture compiling C with inlining, verifying DWARF file/line/inline metadata, and testing strip_to_debug_elf"
+)]
 fn compiled_c_fixture_with_inline_and_strip_to_debug() {
     let cc = ["cc", "gcc", "clang"].into_iter().find(|bin| {
         Command::new(bin)
@@ -149,6 +153,25 @@ int main(void) {
                     .ends_with("fixture.c")
             );
             assert!(frames[0].line > 0);
+            assert!(
+                frames[0]
+                    .declared_file
+                    .as_deref()
+                    .unwrap_or("")
+                    .ends_with("fixture.c"),
+                "inlined callee must carry declared_file: {:?}",
+                frames[0]
+            );
+            assert!(
+                frames[1]
+                    .file
+                    .as_deref()
+                    .unwrap_or("")
+                    .ends_with("fixture.c"),
+                "inline caller must carry call-site file: {:?}",
+                frames[1]
+            );
+            assert!(frames[1].line > 0);
             saw_inline_chain = true;
             break;
         }
@@ -166,6 +189,160 @@ int main(void) {
     assert!(stripped_index.contains_function("outer_work"));
     assert!(stripped_index.contains_function("inner_work"));
 
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn symtab_only_c_fixture_survives_strip_to_debug_elf() {
+    use std::process::Command;
+
+    let Ok(cc) = std::env::var("CC").or_else(|_| Ok::<_, ()>("cc".to_owned())) else {
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("microscope-symtab-test-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let src = dir.join("symtab.c");
+    let bin = dir.join("symtab");
+    std::fs::write(
+        &src,
+        r"
+#include <stdint.h>
+static volatile uint64_t sink = 0;
+__attribute__((noinline)) uint64_t symtab_target_fn(uint64_t n) {
+    uint64_t acc = 0;
+    for (uint64_t i = 0; i < n; i++) {
+        acc += i * 3ULL + 1ULL;
+    }
+    sink = acc;
+    return acc;
+}
+int main(void) { return (int)(symtab_target_fn(10) & 0xff); }
+",
+    )
+    .unwrap();
+    let status = Command::new(cc)
+        .args(["-O2", "-g0", "-Wl,--build-id=sha1", "-o"])
+        .arg(&bin)
+        .arg(&src)
+        .status()
+        .unwrap();
+    assert!(status.success(), "failed compiling -g0 C fixture");
+
+    let raw = std::fs::read(&bin).unwrap();
+    let repacked = strip_to_debug_elf(&raw).unwrap();
+    assert!(repacked.len() < raw.len());
+
+    let (index, meta) = parse_elf(&repacked, &ParseBudget::SERVER).unwrap();
+    assert!(meta.has_symtab);
+    assert!(meta.range_count > 0);
+    let addr = index
+        .find_function_address("symtab_target_fn")
+        .expect("symtab_target_fn must survive strip_to_debug_elf");
+    let resolved = index.lookup(addr + 2);
+    assert!(
+        resolved.iter().any(|f| f.name == "symtab_target_fn"),
+        "expected symtab_target_fn at {addr:#x}, got {resolved:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn stripped_go_binary_resolves_main_inside_executable_text() {
+    use object::{Object as _, ObjectSection as _};
+    use std::process::Command;
+
+    if Command::new("go").arg("version").output().is_err() {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("microscope-go-sym-test-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let src = dir.join("main.go");
+    let secret = b"MICROSCOPE_SECRET_NOPTRDATA_CANARY_9876543210";
+    std::fs::write(
+        &src,
+        r#"package main
+import "fmt"
+var canary = [45]byte{'M','I','C','R','O','S','C','O','P','E','_','S','E','C','R','E','T','_','N','O','P','T','R','D','A','T','A','_','C','A','N','A','R','Y','_','9','8','7','6','5','4','3','2','1','0'}
+func main() { fmt.Println("hello", canary[0]) }
+"#,
+    )
+    .unwrap();
+
+    let cases: &[(&str, &[&str], &str)] = &[
+        (
+            "goapp",
+            &[
+                "build",
+                "-ldflags=-s -w -B 0x0123456789abcdef0123456789abcdef01234567",
+            ],
+            "0",
+        ),
+        (
+            "goapp-pie-ext",
+            &[
+                "build",
+                "-buildmode=pie",
+                "-ldflags=-linkmode=external -s -w -B 0x0123456789abcdef0123456789abcdef01234567",
+            ],
+            "1",
+        ),
+    ];
+
+    for (name, args, cgo) in cases {
+        let bin = dir.join(name);
+        let status = Command::new("go")
+            .args(*args)
+            .arg("-o")
+            .arg(&bin)
+            .arg(&src)
+            .env("CGO_ENABLED", cgo)
+            .env("GOCACHE", dir.join("gocache"))
+            .status()
+            .unwrap();
+        if !status.success() && *cgo == "1" {
+            continue;
+        }
+        assert!(
+            status.success(),
+            "failed compiling stripped Go fixture {name}"
+        );
+        let raw = std::fs::read(&bin).unwrap();
+        let parsed_obj = object::File::parse(raw.as_slice()).unwrap();
+        let text = parsed_obj.section_by_name(".text").unwrap();
+        let text_start = text.address();
+        let text_end = text_start + text.size();
+        assert_eq!(
+            extract_build_id(&raw).unwrap().as_str(),
+            "0123456789abcdef0123456789abcdef01234567"
+        );
+
+        let (raw_index, raw_meta) = parse_elf(&raw, &ParseBudget::SERVER).unwrap();
+        assert!(raw_meta.has_gopclntab);
+        let raw_addr = raw_index
+            .find_function_address("main.main")
+            .expect("main.main must be indexed from raw .gopclntab");
+        assert!(raw_addr >= text_start && raw_addr < text_end);
+
+        let repacked = strip_to_debug_elf(&raw).unwrap();
+        assert!(
+            !repacked.windows(secret.len()).any(|w| w == secret),
+            "repacked ELF for {name} must not retain initialized application data from .noptrdata"
+        );
+        let (repacked_index, repacked_meta) = parse_elf(&repacked, &ParseBudget::SERVER).unwrap();
+        assert!(repacked_meta.has_gopclntab);
+        let repacked_addr = repacked_index
+            .find_function_address("main.main")
+            .expect("main.main must be indexed from repacked .gopclntab");
+        assert_eq!(
+            repacked_addr, raw_addr,
+            "repacked main.main address for {name} must match original ELF exactly"
+        );
+        let frames = repacked_index.lookup(repacked_addr);
+        assert!(
+            frames.iter().any(|f| f.name == "main.main"),
+            "lookup({repacked_addr:#x}) must resolve main.main, got {frames:?}"
+        );
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 

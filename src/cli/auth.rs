@@ -143,6 +143,7 @@ fn login(args: &LoginArgs) -> Result<()> {
     let server_raw = args
         .server
         .as_deref()
+        .filter(|v| !v.trim().is_empty())
         .or(env_server.as_deref())
         .unwrap_or(DEFAULT_SERVER);
     let (server, _) = Server::parse(server_raw).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -151,10 +152,19 @@ fn login(args: &LoginArgs) -> Result<()> {
     let env_token = std::env::var(credentials::TOKEN_ENV)
         .ok()
         .filter(|v| !v.trim().is_empty());
+    let env_token_for_origin = match env_server.as_deref() {
+        Some(env_srv)
+            if credentials::normalize_origin(env_srv)
+                != credentials::normalize_origin(server_raw) =>
+        {
+            None
+        }
+        _ => env_token.as_deref(),
+    };
     if let Some(token) = args
         .token
         .as_deref()
-        .or(env_token.as_deref())
+        .or(env_token_for_origin)
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
@@ -166,7 +176,7 @@ fn login(args: &LoginArgs) -> Result<()> {
 
 fn login_with_token(agent: &ureq::Agent, server: &Server, token: &str) -> Result<()> {
     let mut resp = agent
-        .get(server.url("/api/users/me"))
+        .get(server.url("/api/cli/whoami"))
         .header("authorization", &format!("Bearer {token}"))
         .call()
         .context("could not reach server to verify token")?;
@@ -181,7 +191,7 @@ fn login_with_token(agent: &ureq::Agent, server: &Server, token: &str) -> Result
         bail!("server rejected token ({status}): {text}");
     }
     let me: MeResponse =
-        serde_json::from_str(&text).context("unexpected /api/users/me response")?;
+        serde_json::from_str(&text).context("unexpected /api/cli/whoami response")?;
     let path = credentials::save(&Credentials {
         server: server.origin().to_owned(),
         token: token.to_owned(),

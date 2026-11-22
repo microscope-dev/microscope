@@ -286,11 +286,27 @@ impl DebugFileSearch {
         }
 
         let hex = hex(build_id);
-        let cached = self
+        let auth_cached = self.credentials.as_ref().and_then(|creds| {
+            self.cache.as_ref().map(|cache| {
+                cache
+                    .join("auth")
+                    .join(auth_cache_scope(&creds.0, &creds.1))
+                    .join(&hex)
+                    .join("debuginfo")
+            })
+        });
+        if let Some(file) = auth_cached
+            .as_deref()
+            .and_then(|cached| read_if(cached, describes))
+        {
+            return Some(file);
+        }
+
+        let public_cached = self
             .cache
             .as_ref()
             .map(|cache| cache.join(&hex).join("debuginfo"));
-        if let Some(file) = cached
+        if let Some(file) = public_cached
             .as_deref()
             .and_then(|cached| read_if(cached, describes))
         {
@@ -304,12 +320,18 @@ impl DebugFileSearch {
 
         for server in &self.servers {
             let url = format!("{}/buildid/{hex}/debuginfo", server.trim_end_matches('/'));
-            let mut request = agent.get(&url);
-            if let Some(creds) = &self.credentials
+            let (request, authenticated) = if let Some(creds) = &self.credentials
                 && crate::credentials::normalize_origin(server) == creds.0
             {
-                request = request.header("authorization", &format!("Bearer {}", creds.1));
-            }
+                (
+                    agent
+                        .get(&url)
+                        .header("authorization", &format!("Bearer {}", creds.1)),
+                    true,
+                )
+            } else {
+                (agent.get(&url), false)
+            };
             let Ok(mut response) = request.call() else {
                 continue;
             };
@@ -327,9 +349,19 @@ impl DebugFileSearch {
                 continue;
             }
 
-            let path = cached
-                .as_deref()
-                .filter(|cached| keep(cached, &data))
+            let target = if authenticated {
+                auth_cached.as_deref()
+            } else {
+                public_cached.as_deref()
+            };
+            let path = target
+                .filter(|cached| {
+                    if authenticated {
+                        keep_private(cached, &data)
+                    } else {
+                        keep(cached, &data)
+                    }
+                })
                 .map_or_else(|| PathBuf::from(&url), Path::to_path_buf);
 
             return Some(DebugFile { path, data });
@@ -350,6 +382,80 @@ fn default_cache() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))?;
 
     Some(base.join("debuginfod_client"))
+}
+
+fn auth_cache_scope(origin: &str, token: &str) -> String {
+    use ring::digest::{Context, SHA256};
+    let mut ctx = Context::new(&SHA256);
+    ctx.update(origin.as_bytes());
+    ctx.update(b"\0");
+    ctx.update(token.as_bytes());
+    let digest = ctx.finish();
+    let bytes = digest.as_ref();
+    hex(bytes.get(..12).unwrap_or(bytes))
+}
+
+fn create_owner_only_dir(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
+    if path.exists() {
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o700));
+        return Ok(());
+    }
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true).mode(0o700);
+    builder.create(path)
+}
+
+fn keep_private(path: &Path, data: &[u8]) -> bool {
+    use ring::rand::{SecureRandom as _, SystemRandom};
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    let Some(directory) = path.parent() else {
+        return false;
+    };
+    if let Some(scope_dir) = directory.parent() {
+        if let Some(auth_dir) = scope_dir.parent()
+            && create_owner_only_dir(auth_dir).is_err()
+        {
+            return false;
+        }
+        if create_owner_only_dir(scope_dir).is_err() {
+            return false;
+        }
+    }
+    if create_owner_only_dir(directory).is_err() {
+        return false;
+    }
+
+    let rng = SystemRandom::new();
+    for _ in 0..8 {
+        let mut raw = [0_u8; 8];
+        let _ = rng.fill(&mut raw);
+        let partial = directory.join(format!(".debuginfo.{}.partial", hex(&raw)));
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&partial);
+        let mut file = match file {
+            Ok(f) => f,
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return false,
+        };
+        let kept = file
+            .write_all(data)
+            .and_then(|()| file.sync_all())
+            .and_then(|()| {
+                drop(file);
+                fs::rename(&partial, path)
+            });
+        if kept.is_err() {
+            let _ = fs::remove_file(&partial);
+        }
+        return kept.is_ok();
+    }
+    false
 }
 
 fn keep(path: &Path, data: &[u8]) -> bool {
@@ -593,10 +699,30 @@ mod tests {
             cache: Some(tmp.join("cache")),
             timeout: Some(Duration::from_secs(5)),
         };
-        let found = search.download(&[0xaa, 0xbb, 0xcc, 0xdd], |data| data == b"PAYLOAD");
+        let found = search
+            .download(&[0xaa, 0xbb, 0xcc, 0xdd], |data| data == b"PAYLOAD")
+            .unwrap();
+        let cached_mode = std::os::unix::fs::PermissionsExt::mode(
+            &fs::metadata(&found.path).unwrap().permissions(),
+        ) & 0o777;
+        let cached_in_auth = found.path.starts_with(tmp.join("cache").join("auth"));
+        let shared_exists = tmp
+            .join("cache")
+            .join("aabbccdd")
+            .join("debuginfo")
+            .exists();
         let _ = fs::remove_dir_all(&tmp);
 
-        assert!(found.is_some());
+        assert!(
+            cached_in_auth,
+            "private download must be scoped under auth/: {:?}",
+            found.path
+        );
+        assert!(
+            !shared_exists,
+            "private download must not be written to shared cache"
+        );
+        assert_eq!(cached_mode, 0o600);
         let tp = third_party_reqs.lock().unwrap().clone();
         assert_eq!(tp.len(), 1);
         assert!(

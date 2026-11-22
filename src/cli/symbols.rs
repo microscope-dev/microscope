@@ -9,7 +9,7 @@ use clap::{Args, Subcommand};
 use microscope::agent::wire::Server;
 use microscope::credentials;
 use microscope_data::symbols::{
-    BuildId, extract_build_id, has_debug_or_symtab, strip_to_debug_elf,
+    BuildId, extract_build_id, has_debug_or_symtab, has_dwarf_sections, strip_to_debug_elf,
 };
 use ring::digest::{SHA256, digest};
 use serde::{Deserialize, Serialize};
@@ -18,6 +18,8 @@ use super::auth::http_agent;
 
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
 const UPLOAD_TIMEOUT: Duration = Duration::from_secs(300);
+const MAX_CHECK_BATCH: usize = 128;
+const MAX_BATCH_PAYLOAD_BYTES: usize = 128 * 1024 * 1024;
 
 #[derive(Args)]
 pub struct SymbolsArgs {
@@ -65,12 +67,22 @@ pub struct UploadSymbolsArgs {
     #[arg(long)]
     pub no_strip: bool,
 
+    /// Re-upload and replace symbols even if the server already has this build ID.
+    #[arg(long)]
+    pub force: bool,
+
     /// Extra PEM root certificates for the server.
     #[arg(long, value_name = "FILE")]
     pub ca_file: Option<PathBuf>,
 }
 
-struct DiscoveredSymbol {
+struct DiscoveredPath {
+    path: PathBuf,
+    build_id: BuildId,
+    has_dwarf: bool,
+}
+
+struct PreparedSymbol {
     path: PathBuf,
     build_id: BuildId,
     has_dwarf: bool,
@@ -81,6 +93,9 @@ struct DiscoveredSymbol {
 struct CheckCandidate {
     build_id: String,
     byte_len: u64,
+    has_dwarf: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    replace: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     service_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -138,43 +153,72 @@ pub fn run(args: &SymbolsArgs) -> ExitCode {
     }
 }
 
-fn resolve_upload_target(args: &UploadSymbolsArgs) -> Result<(Server, String)> {
-    let saved_creds = credentials::load();
-    let server_raw = args
-        .server
-        .clone()
-        .or_else(|| {
-            std::env::var(credentials::SERVER_ENV)
-                .ok()
-                .filter(|v| !v.trim().is_empty())
-        })
-        .or_else(|| saved_creds.as_ref().map(|c| c.server.clone()))
+fn resolve_upload_target_with(
+    server_arg: Option<&str>,
+    token_arg: Option<&str>,
+    env_server: Option<&str>,
+    env_symbol_token: Option<&str>,
+    env_token: Option<&str>,
+    saved_creds: Option<&credentials::Credentials>,
+) -> Result<(Server, String)> {
+    let server_raw = server_arg
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| env_server.filter(|v| !v.trim().is_empty()))
+        .or_else(|| saved_creds.map(|c| c.server.as_str()))
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "no server URL: pass --server, set MICROSCOPE_SERVER, or run `microscope login`"
             )
         })?;
-    let token = args
-        .token
-        .clone()
-        .or_else(|| {
-            std::env::var("MICROSCOPE_SYMBOL_TOKEN")
-                .ok()
-                .filter(|v| !v.trim().is_empty())
-        })
-        .or_else(|| {
-            std::env::var(credentials::TOKEN_ENV)
-                .ok()
-                .filter(|v| !v.trim().is_empty())
-        })
-        .or_else(|| saved_creds.map(|c| c.token))
+    let (server, _) = Server::parse(server_raw).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let target_origin = credentials::normalize_origin(server_raw);
+    let saved_for_origin = saved_creds
+        .filter(|c| credentials::normalize_origin(&c.server) == target_origin)
+        .map(|c| c.token.as_str());
+    let env_server_clean = env_server.filter(|v| !v.trim().is_empty());
+    let env_token_for_origin = match env_server_clean {
+        Some(env_srv) if credentials::normalize_origin(env_srv) != target_origin => None,
+        _ => env_token.filter(|v| !v.trim().is_empty()),
+    };
+
+    let token = token_arg
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| env_symbol_token.filter(|v| !v.trim().is_empty()))
+        .or(env_token_for_origin)
+        .or(saved_for_origin)
         .ok_or_else(|| {
-            anyhow::anyhow!(
-                "no upload token: pass --token, set MICROSCOPE_SYMBOL_TOKEN, or run `microscope login`"
-            )
+            if env_token.is_some_and(|v| !v.trim().is_empty())
+                && env_token_for_origin.is_none()
+            {
+                anyhow::anyhow!(
+                    "MICROSCOPE_TOKEN is paired with a different MICROSCOPE_SERVER; pass --token or set MICROSCOPE_SYMBOL_TOKEN for {server_raw}"
+                )
+            } else if saved_creds.is_some() && saved_for_origin.is_none() {
+                anyhow::anyhow!(
+                    "saved login credentials belong to a different server; pass --token or set MICROSCOPE_SYMBOL_TOKEN for {server_raw}"
+                )
+            } else {
+                anyhow::anyhow!(
+                    "no upload token: pass --token, set MICROSCOPE_SYMBOL_TOKEN, or run `microscope login`"
+                )
+            }
         })?;
-    let (server, _) = Server::parse(&server_raw).map_err(|e| anyhow::anyhow!("{e}"))?;
-    Ok((server, token))
+    Ok((server, token.to_owned()))
+}
+
+fn resolve_upload_target(args: &UploadSymbolsArgs) -> Result<(Server, String)> {
+    let saved_creds = credentials::load();
+    let env_server = std::env::var(credentials::SERVER_ENV).ok();
+    let env_symbol_token = std::env::var("MICROSCOPE_SYMBOL_TOKEN").ok();
+    let env_token = std::env::var(credentials::TOKEN_ENV).ok();
+    resolve_upload_target_with(
+        args.server.as_deref(),
+        args.token.as_deref(),
+        env_server.as_deref(),
+        env_symbol_token.as_deref(),
+        env_token.as_deref(),
+        saved_creds.as_ref(),
+    )
 }
 
 struct UploadContext<'a> {
@@ -182,14 +226,16 @@ struct UploadContext<'a> {
     upload_agent: &'a ureq::Agent,
     server: &'a Server,
     auth_header: &'a str,
+    project: Option<&'a str>,
     service: Option<&'a str>,
     git_commit: Option<&'a str>,
+    force: bool,
 }
 
 fn upload_one_missing(
     ctx: &UploadContext<'_>,
     item: &MissingUpload,
-    sym: &DiscoveredSymbol,
+    sym: &PreparedSymbol,
 ) -> Result<CommitResponse> {
     let put_url = if item.upload_url.starts_with('/') {
         ctx.server.url(&item.upload_url)
@@ -248,41 +294,35 @@ fn upload_one_missing(
     serde_json::from_str(&commit_text).context("unexpected commit response")
 }
 
-fn upload(args: &UploadSymbolsArgs) -> Result<()> {
-    let (server, token) = resolve_upload_target(args)?;
-
-    let git_commit = if args.no_git_commit {
-        None
-    } else {
-        args.git_commit.clone().or_else(detect_git_commit)
-    };
-
-    let candidates = discover_symbols(&args.paths, !args.no_strip)?;
-    if candidates.is_empty() {
-        bail!("no ELF files with GNU build IDs and debug/symbol tables found");
+fn flush_upload_batch(
+    ctx: &UploadContext<'_>,
+    batch: &mut BTreeMap<String, PreparedSymbol>,
+    uploaded: &mut usize,
+    skipped: &mut usize,
+) -> Result<()> {
+    if batch.is_empty() {
+        return Ok(());
     }
-
-    let control_agent = http_agent(CONTROL_TIMEOUT, args.ca_file.as_deref())?;
-    let upload_agent = http_agent(UPLOAD_TIMEOUT, args.ca_file.as_deref())?;
-    let auth_header = format!("Bearer {}", token.trim());
-
     let check_req = CheckRequest {
-        project: args.project.clone(),
-        candidates: candidates
+        project: ctx.project.map(str::to_owned),
+        candidates: batch
             .values()
             .map(|item| CheckCandidate {
                 build_id: item.build_id.as_str().to_owned(),
                 byte_len: item.payload.len() as u64,
-                service_name: args.service.clone(),
-                git_commit: git_commit.clone(),
+                has_dwarf: item.has_dwarf,
+                replace: ctx.force,
+                service_name: ctx.service.map(str::to_owned),
+                git_commit: ctx.git_commit.map(str::to_owned),
             })
             .collect(),
     };
     let check_body = serde_json::to_vec(&check_req)?;
-    let mut check_resp = control_agent
-        .post(server.url("/api/symbols/v1/check"))
+    let mut check_resp = ctx
+        .control_agent
+        .post(ctx.server.url("/api/symbols/v1/check"))
         .header("content-type", "application/json")
-        .header("authorization", &auth_header)
+        .header("authorization", ctx.auth_header)
         .send(&check_body)
         .context("could not reach /api/symbols/v1/check")?;
     let status = check_resp.status().as_u16();
@@ -298,20 +338,12 @@ fn upload(args: &UploadSymbolsArgs) -> Result<()> {
     let checked: CheckResponse =
         serde_json::from_str(&text).context("unexpected /api/symbols/v1/check response")?;
 
-    let ctx = UploadContext {
-        control_agent: &control_agent,
-        upload_agent: &upload_agent,
-        server: &server,
-        auth_header: &auth_header,
-        service: args.service.as_deref(),
-        git_commit: git_commit.as_deref(),
-    };
-    let mut uploaded = 0_usize;
+    *skipped += checked.present.len();
     for item in checked.missing {
-        let Some(sym) = candidates.get(&item.build_id) else {
+        let Some(sym) = batch.get(&item.build_id) else {
             continue;
         };
-        let committed = upload_one_missing(&ctx, &item, sym)?;
+        let committed = upload_one_missing(ctx, &item, sym)?;
         println!(
             "uploaded {} ({}, {} bytes, {} symbols)",
             committed.build_id,
@@ -319,29 +351,113 @@ fn upload(args: &UploadSymbolsArgs) -> Result<()> {
             committed.byte_len,
             committed.symbol_count
         );
-        uploaded += 1;
+        *uploaded += 1;
     }
-
-    if !checked.present.is_empty() {
-        println!(
-            "skipped {} already present on server",
-            checked.present.len()
-        );
-    }
-    println!(
-        "done: uploaded {uploaded}, skipped {}",
-        checked.present.len()
-    );
+    batch.clear();
     Ok(())
 }
 
-fn discover_symbols(paths: &[PathBuf], strip: bool) -> Result<BTreeMap<String, DiscoveredSymbol>> {
+fn upload(args: &UploadSymbolsArgs) -> Result<()> {
+    let (server, token) = resolve_upload_target(args)?;
+
+    let git_commit = if args.no_git_commit {
+        None
+    } else {
+        args.git_commit.clone().or_else(detect_git_commit)
+    };
+
+    let discovered = discover_symbol_paths(&args.paths)?;
+    if discovered.is_empty() {
+        bail!("no ELF files with GNU build IDs and debug/symbol tables found");
+    }
+
+    let control_agent = http_agent(CONTROL_TIMEOUT, args.ca_file.as_deref())?;
+    let upload_agent = http_agent(UPLOAD_TIMEOUT, args.ca_file.as_deref())?;
+    let auth_header = format!("Bearer {}", token.trim());
+
+    let ctx = UploadContext {
+        control_agent: &control_agent,
+        upload_agent: &upload_agent,
+        server: &server,
+        auth_header: &auth_header,
+        project: args.project.as_deref(),
+        service: args.service.as_deref(),
+        git_commit: git_commit.as_deref(),
+        force: args.force,
+    };
+
+    let mut uploaded = 0_usize;
+    let mut skipped = 0_usize;
+    let mut batch: BTreeMap<String, PreparedSymbol> = BTreeMap::new();
+    let mut batch_bytes = 0_usize;
+    let strip = !args.no_strip;
+
+    for item in discovered.into_values() {
+        let prepared = prepare_discovered_symbol(&item, strip)?;
+        let next_bytes = prepared.payload.len();
+        if !batch.is_empty()
+            && (batch.len() >= MAX_CHECK_BATCH
+                || batch_bytes.saturating_add(next_bytes) > MAX_BATCH_PAYLOAD_BYTES)
+        {
+            flush_upload_batch(&ctx, &mut batch, &mut uploaded, &mut skipped)?;
+            batch_bytes = 0;
+        }
+        batch_bytes = batch_bytes.saturating_add(next_bytes);
+        batch.insert(prepared.build_id.as_str().to_owned(), prepared);
+    }
+    flush_upload_batch(&ctx, &mut batch, &mut uploaded, &mut skipped)?;
+
+    if skipped > 0 {
+        println!("skipped {skipped} already present on server");
+    }
+    println!("done: uploaded {uploaded}, skipped {skipped}");
+    Ok(())
+}
+
+fn prepare_discovered_symbol(item: &DiscoveredPath, strip: bool) -> Result<PreparedSymbol> {
+    let raw = fs::read(&item.path)
+        .with_context(|| format!("failed to read {} during upload", item.path.display()))?;
+    let build_id = extract_build_id(&raw).with_context(|| {
+        format!(
+            "{} no longer contains a valid GNU build ID",
+            item.path.display()
+        )
+    })?;
+    if build_id != item.build_id {
+        bail!(
+            "{} changed on disk (build ID {} != discovered {})",
+            item.path.display(),
+            build_id,
+            item.build_id
+        );
+    }
+    if !has_debug_or_symtab(&raw) {
+        bail!(
+            "{} no longer contains debug or symbol sections",
+            item.path.display()
+        );
+    }
+    let has_dwarf = has_dwarf_sections(&raw);
+    let payload = if strip {
+        strip_to_debug_elf(&raw).unwrap_or(raw)
+    } else {
+        raw
+    };
+    Ok(PreparedSymbol {
+        path: item.path.clone(),
+        build_id,
+        has_dwarf,
+        payload,
+    })
+}
+
+fn discover_symbol_paths(paths: &[PathBuf]) -> Result<BTreeMap<String, DiscoveredPath>> {
     let mut files = Vec::new();
     for path in paths {
         collect_files(path, &mut files)?;
     }
 
-    let mut by_build_id: BTreeMap<String, DiscoveredSymbol> = BTreeMap::new();
+    let mut by_build_id: BTreeMap<String, DiscoveredPath> = BTreeMap::new();
     for path in files {
         let Ok(raw) = fs::read(&path) else {
             continue;
@@ -352,11 +468,7 @@ fn discover_symbols(paths: &[PathBuf], strip: bool) -> Result<BTreeMap<String, D
         if !has_debug_or_symtab(&raw) {
             continue;
         }
-        let has_dwarf = object::File::parse(raw.as_slice()).is_ok_and(|obj| {
-            use object::Object as _;
-            obj.section_by_name(".debug_info").is_some()
-                || obj.section_by_name(".zdebug_info").is_some()
-        });
+        let has_dwarf = has_dwarf_sections(&raw);
         let key = build_id.as_str().to_owned();
         let replace = by_build_id
             .get(&key)
@@ -364,18 +476,12 @@ fn discover_symbols(paths: &[PathBuf], strip: bool) -> Result<BTreeMap<String, D
         if !replace {
             continue;
         }
-        let payload = if strip {
-            strip_to_debug_elf(&raw).unwrap_or(raw)
-        } else {
-            raw
-        };
         by_build_id.insert(
             key,
-            DiscoveredSymbol {
+            DiscoveredPath {
                 path,
                 build_id,
                 has_dwarf,
-                payload,
             },
         );
     }
@@ -429,4 +535,112 @@ fn sha256_hex(bytes: &[u8]) -> String {
         let _ = write!(out, "{b:02x}");
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn implicit_saved_token_is_not_sent_to_different_server() {
+        let saved = credentials::Credentials {
+            server: "https://app.microscope.dev".to_owned(),
+            token: "msu_saved_personal_token".to_owned(),
+            username: Some("alice".to_owned()),
+            email: None,
+        };
+
+        let (_, token) = resolve_upload_target_with(
+            Some("https://APP.MICROSCOPE.DEV/"),
+            None,
+            None,
+            None,
+            None,
+            Some(&saved),
+        )
+        .unwrap();
+        assert_eq!(token, "msu_saved_personal_token");
+
+        let err = resolve_upload_target_with(
+            Some("https://other.example.com"),
+            None,
+            None,
+            None,
+            None,
+            Some(&saved),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("different server"), "{err:#}");
+
+        let (_, explicit) = resolve_upload_target_with(
+            Some("https://other.example.com"),
+            Some("msp_explicit"),
+            None,
+            None,
+            None,
+            Some(&saved),
+        )
+        .unwrap();
+        assert_eq!(explicit, "msp_explicit");
+
+        let env_err = resolve_upload_target_with(
+            Some("https://other.example.com"),
+            None,
+            Some("https://app.microscope.dev"),
+            None,
+            Some("msu_env_paired_token"),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            env_err.to_string().contains("MICROSCOPE_TOKEN"),
+            "{env_err:#}"
+        );
+
+        let (_, env_same) = resolve_upload_target_with(
+            Some("https://app.microscope.dev/"),
+            None,
+            Some("https://app.microscope.dev"),
+            None,
+            Some("msu_env_paired_token"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(env_same, "msu_env_paired_token");
+    }
+
+    #[test]
+    fn prepare_discovered_symbol_fails_when_file_removed_or_changed() {
+        let dir =
+            std::env::temp_dir().join(format!("microscope-cli-sym-prep-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let missing = dir.join("gone.elf");
+        let bid = BuildId::parse("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef").unwrap();
+        let err = prepare_discovered_symbol(
+            &DiscoveredPath {
+                path: missing,
+                build_id: bid.clone(),
+                has_dwarf: true,
+            },
+            true,
+        )
+        .err()
+        .expect("removed file must return an error");
+        assert!(err.to_string().contains("failed to read"), "{err:#}");
+
+        let changed = dir.join("changed.elf");
+        std::fs::write(&changed, b"not an elf").unwrap();
+        let err2 = prepare_discovered_symbol(
+            &DiscoveredPath {
+                path: changed,
+                build_id: bid,
+                has_dwarf: true,
+            },
+            true,
+        )
+        .err()
+        .expect("modified non-ELF file must return an error");
+        assert!(err2.to_string().contains("GNU build ID"), "{err2:#}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -77,22 +77,59 @@ pub fn save_to(path: &Path, creds: &Credentials) -> anyhow::Result<()> {
     let Some(dir) = path.parent() else {
         anyhow::bail!("credentials path has no parent directory");
     };
+    let dir_existed = dir.exists();
     fs::create_dir_all(dir)?;
-    let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
+    if !dir_existed {
+        let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
+    }
     let payload = serde_json::to_vec_pretty(creds)?;
-    let tmp = dir.join(format!(".credentials.{}.tmp", std::process::id()));
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&tmp)?;
-    file.write_all(&payload)?;
-    file.write_all(b"\n")?;
-    file.sync_all()?;
+    let (tmp, mut file) = create_exclusive_temp(dir, ".credentials")?;
+    let write_result = (|| -> std::io::Result<()> {
+        file.write_all(&payload)?;
+        file.write_all(b"\n")?;
+        file.sync_all()?;
+        Ok(())
+    })();
     drop(file);
-    fs::rename(&tmp, path)?;
+    if let Err(err) = write_result {
+        let _ = fs::remove_file(&tmp);
+        return Err(err.into());
+    }
+    if let Err(err) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(err.into());
+    }
     Ok(())
+}
+
+fn create_exclusive_temp(dir: &Path, prefix: &str) -> std::io::Result<(PathBuf, fs::File)> {
+    use ring::rand::{SecureRandom as _, SystemRandom};
+    use std::fmt::Write as _;
+
+    let rng = SystemRandom::new();
+    let mut last_err = None;
+    for _ in 0..8 {
+        let mut raw = [0_u8; 12];
+        let _ = rng.fill(&mut raw);
+        let mut hex = String::with_capacity(24);
+        for b in raw {
+            let _ = write!(hex, "{b:02x}");
+        }
+        let candidate = dir.join(format!("{prefix}.{hex}.tmp"));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&candidate)
+        {
+            Ok(file) => return Ok((candidate, file)),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                last_err = Some(err);
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| std::io::Error::other("could not create unique temp file")))
 }
 
 pub fn clear() -> anyhow::Result<bool> {
@@ -139,5 +176,30 @@ mod tests {
             normalize_origin(&loaded.server)
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_to_preserves_existing_parent_directory_permissions() {
+        let dir =
+            std::env::temp_dir().join(format!("microscope-creds-perm-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let path = dir.join("credentials.json");
+        let creds = Credentials {
+            server: "https://app.microscope.dev".to_owned(),
+            token: "msu_permtest".to_owned(),
+            username: None,
+            email: None,
+        };
+        save_to(&path, &creds).unwrap();
+
+        let dir_mode = fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        let file_mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        let _ = fs::remove_dir_all(&dir);
+
+        assert_eq!(dir_mode, 0o755);
+        assert_eq!(file_mode, 0o600);
     }
 }

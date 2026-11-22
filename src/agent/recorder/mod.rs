@@ -38,7 +38,10 @@ use super::{
     poster::{PosterAction, PosterMachine, PosterOutcome},
     select::{BuildIdCache, ScanOptions, SelectedProcess, scan_selected_processes},
     spool::{MAX_POST_BYTES, Spool},
-    symbols::{SymbolUploadQueue, UploadOutcome, prepare_debug_payload, upload_compressed_symbol},
+    symbols::{
+        PrepareOutcome, SymbolUploadQueue, UploadOutcome, prepare_debug_payload,
+        upload_compressed_symbol,
+    },
     wire::{BurstDirective, PolicyDirective, WatchDirective},
 };
 use crate::profiler::{Preset, Profile, Save, SharedBpfEngine, Watch, record_attached_many_exact};
@@ -994,6 +997,7 @@ fn poster_loop(
                 let outcome = match reply {
                     IngestReply::Accepted {
                         last_chunk,
+                        project_id,
                         missing_symbols,
                     } => {
                         max_batch_chunks = usize::MAX;
@@ -1001,7 +1005,11 @@ fn poster_loop(
                         let _ = guard.spool.ack(batch.owner_gen, last_chunk);
                         if symbols_upload_enabled
                             && !missing_symbols.is_empty()
-                            && guard.symbol_queue.enqueue_missing(&missing_symbols)
+                            && guard.symbol_queue.enqueue_missing(
+                                project_id,
+                                batch.project.as_deref(),
+                                &missing_symbols,
+                            )
                         {
                             cvar.notify_all();
                         }
@@ -1107,32 +1115,52 @@ fn symbol_uploader_loop(
     while !stop.load(Ordering::Relaxed) {
         let next = {
             let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-            if let (Some(token), Some((bid, bin))) =
-                (guard.token.clone(), guard.symbol_queue.pop_next())
+            if let Some(token) = guard.token.clone()
+                && let Some((bid, bin)) = guard.symbol_queue.pop_next()
             {
                 Some((token, bid, bin))
             } else {
-                let _ = cvar.wait_timeout(guard, Duration::from_millis(500));
+                let wait = if guard.token.is_none() {
+                    Duration::from_millis(500)
+                } else {
+                    guard
+                        .symbol_queue
+                        .next_wait(std::time::Instant::now())
+                        .map_or(Duration::from_millis(500), |w| {
+                            w.min(Duration::from_millis(500))
+                        })
+                };
+                let _ = cvar.wait_timeout(guard, wait);
                 None
             }
         };
 
-        let Some((token, build_id, binary)) = next else {
+        let Some((token, task, binary)) = next else {
             continue;
         };
 
-        let Some(compressed) = prepare_debug_payload(&binary.path, &build_id) else {
-            lock.lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .symbol_queue
-                .mark_done(&build_id);
-            continue;
+        let compressed = match prepare_debug_payload(&binary, &task.build_id) {
+            PrepareOutcome::Ready(bytes) => bytes,
+            PrepareOutcome::PermanentSkip => {
+                lock.lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .symbol_queue
+                    .mark_done(&task);
+                continue;
+            }
+            PrepareOutcome::RetryLater => {
+                lock.lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .symbol_queue
+                    .mark_retry_later(&task);
+                continue;
+            }
         };
 
         let outcome = upload_compressed_symbol(
             client,
             &token,
-            &build_id,
+            &task,
             &binary,
             &compressed,
             max_bytes_per_sec,
@@ -1140,15 +1168,15 @@ fn symbol_uploader_loop(
         );
         let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
         match outcome {
-            UploadOutcome::Done => guard.symbol_queue.mark_done(&build_id),
+            UploadOutcome::Done => guard.symbol_queue.mark_done(&task),
             UploadOutcome::Unauthorized => {
                 if guard.token.as_deref() == Some(token.as_str()) {
                     guard.token = None;
                     guard.need_token = true;
                 }
-                guard.symbol_queue.mark_retry_later(&build_id);
+                guard.symbol_queue.mark_retry_later(&task);
             }
-            UploadOutcome::RetryLater => guard.symbol_queue.mark_retry_later(&build_id),
+            UploadOutcome::RetryLater => guard.symbol_queue.mark_retry_later(&task),
         }
     }
 }

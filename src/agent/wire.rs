@@ -26,6 +26,7 @@ pub const SYMBOL_SHA256_HEADER: &str = "x-microscope-symbol-sha256";
 pub const SYMBOL_ENCODING_HEADER: &str = "x-microscope-symbol-encoding";
 pub const SYMBOL_UPLOAD_ID_HEADER: &str = "x-microscope-symbol-upload-id";
 pub const SYMBOL_PROJECT_HEADER: &str = "x-microscope-symbol-project";
+pub const SYMBOL_PROJECT_ID_HEADER: &str = "x-microscope-symbol-project-id";
 pub const SYMBOL_SERVICE_HEADER: &str = "x-microscope-symbol-service";
 
 const CONTEXT: &[u8] = b"microscope agent request v1";
@@ -312,6 +313,8 @@ pub struct TokenResponse {
 #[derive(Debug, Deserialize)]
 pub struct IngestResponse {
     pub last_chunk: u64,
+    #[serde(default)]
+    pub project_id: Option<i64>,
     #[serde(default)]
     pub missing_symbols: Vec<String>,
 }

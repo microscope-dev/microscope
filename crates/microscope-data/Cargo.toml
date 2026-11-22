@@ -20,7 +20,6 @@ cpp_demangle = { git = "https://github.com/microscope-dev/cpp_demangle", rev = "
 flate2 = "1.1"
 foldhash = "0.2"
 gimli = "0.34"
-lzma-rs = "0.3"
 memchr = "2.8"
 microscope-probes = { path = "../../sdk/rust-probes" }
 nix = { version = "0.31", features = ["fs", "resource", "time"] }

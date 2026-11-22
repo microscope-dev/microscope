@@ -55,11 +55,14 @@ async function copyText(text: string, label: string): Promise<void> {
   }
 }
 
+const UNSET_ORG = Symbol("unset");
+
 export function SymbolsView(props: {
   org: number | null;
   searchRef?: (el: HTMLInputElement) => void;
 }) {
   const [data, setData] = createSignal<SymbolsResponse | null>(null);
+  const [loadedOrg, setLoadedOrg] = createSignal<number | null | typeof UNSET_ORG>(UNSET_ORG);
   const [loading, setLoading] = createSignal(true);
   const [err, setErr] = createSignal<string | null>(null);
   const [query, setQuery] = createSignal("");
@@ -74,10 +77,23 @@ export function SymbolsView(props: {
   const [busy, setBusy] = createSignal(false);
 
   let seq = 0;
+  let orgGen = 0;
+  let lastOrg: number | null | typeof UNSET_ORG = UNSET_ORG;
   createEffect(
     () => [props.org, hours(), rev()] as const,
     ([org, windowHours]) => {
       const id = ++seq;
+      const orgChanged = lastOrg !== UNSET_ORG && lastOrg !== org;
+      lastOrg = org;
+      if (orgChanged) {
+        orgGen += 1;
+        setData(null);
+        setLoadedOrg(UNSET_ORG);
+        setCreatedToken(null);
+        setTokenProjectId("");
+        setExpandedCmd(null);
+        setBusy(false);
+      }
       setLoading(true);
       setErr(null);
       void (async () => {
@@ -85,9 +101,11 @@ export function SymbolsView(props: {
           const res = await dataPolicyApi.symbols(org, windowHours);
           if (id === seq) {
             setData(res);
-            const firstWritable = res.projects.find((p) => p.canWrite);
-            if (!tokenProjectId() && firstWritable) {
-              setTokenProjectId(String(firstWritable.id));
+            setLoadedOrg(org);
+            const writable = res.projects.filter((p) => p.canWrite);
+            const currentValid = writable.some((p) => String(p.id) === tokenProjectId());
+            if (!currentValid) {
+              setTokenProjectId(writable[0] ? String(writable[0].id) : "");
             }
           }
         } catch (error: unknown) {
@@ -105,13 +123,15 @@ export function SymbolsView(props: {
 
   const writableProjects = createMemo(() => (data()?.projects ?? []).filter((p) => p.canWrite));
   const selectedProjectId = createMemo(() => {
+    const writable = writableProjects();
     const cur = tokenProjectId();
-    if (cur) {
+    if (cur && writable.some((p) => String(p.id) === cur)) {
       return cur;
     }
-    const first = writableProjects()[0];
+    const first = writable[0];
     return first ? String(first.id) : "";
   });
+  const orgReady = createMemo(() => !loading() && data() !== null && loadedOrg() === props.org);
 
   const filteredBuilds = createMemo(() => {
     const q = query().trim().toLowerCase();
@@ -141,9 +161,10 @@ export function SymbolsView(props: {
     event.preventDefault();
     const res = data();
     const pid = selectedProjectId();
-    if (!res || !pid || !tokenName().trim()) {
+    if (!orgReady() || !res || !pid || !tokenName().trim()) {
       return;
     }
+    const reqOrgGen = orgGen;
     setBusy(true);
     setErr(null);
     try {
@@ -152,38 +173,57 @@ export function SymbolsView(props: {
         projectId: Number(pid),
         name: tokenName().trim(),
       });
+      if (orgGen !== reqOrgGen) {
+        return;
+      }
       setCreatedToken(created);
       setTokenName("");
       flash(`Created upload token ${created.name}.`);
       setRev((r) => r + 1);
     } catch (error: unknown) {
-      setErr(error instanceof Error ? error.message : String(error));
+      if (orgGen === reqOrgGen) {
+        setErr(error instanceof Error ? error.message : String(error));
+      }
     } finally {
-      setBusy(false);
+      if (orgGen === reqOrgGen) {
+        setBusy(false);
+      }
     }
   };
 
   const onRevokeToken = async (id: number, name: string) => {
+    if (!orgReady()) {
+      return;
+    }
+    const reqOrgGen = orgGen;
     setBusy(true);
     setErr(null);
     try {
       await dataPolicyApi.revokeSymbolToken(id);
+      if (orgGen !== reqOrgGen) {
+        return;
+      }
       if (createdToken()?.id === id) {
         setCreatedToken(null);
       }
       flash(`Revoked upload token ${name}.`);
       setRev((r) => r + 1);
     } catch (error: unknown) {
-      setErr(error instanceof Error ? error.message : String(error));
+      if (orgGen === reqOrgGen) {
+        setErr(error instanceof Error ? error.message : String(error));
+      }
     } finally {
-      setBusy(false);
+      if (orgGen === reqOrgGen) {
+        setBusy(false);
+      }
     }
   };
 
   const buildCommandFor = (item: SymbolBuildItem): string => {
     const tok = createdToken();
     if (tok && tok.projectId === item.projectId) {
-      return item.uploadCommand.replace("<token>", tok.token);
+      const quoted = `'${tok.token.replaceAll("'", "'\\''")}'`;
+      return item.uploadCommand.replace("'YOUR_SYMBOL_TOKEN'", quoted);
     }
     return item.uploadCommand;
   };
@@ -433,7 +473,7 @@ export function SymbolsView(props: {
                                 <button
                                   type="button"
                                   class="tb ghost"
-                                  disabled={busy()}
+                                  disabled={busy() || !orgReady()}
                                   onClick={() => void onRevokeToken(tok.id, tok.name)}
                                 >
                                   Revoke
@@ -481,7 +521,7 @@ export function SymbolsView(props: {
                       required
                     />
                   </label>
-                  <button type="submit" class="button compact" disabled={busy()}>
+                  <button type="submit" class="button compact" disabled={busy() || !orgReady()}>
                     Create upload token
                   </button>
                 </form>

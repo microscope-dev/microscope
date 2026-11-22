@@ -181,6 +181,19 @@ pub fn extract_build_id(bytes: &[u8]) -> Result<BuildId, SymbolError> {
 }
 
 #[must_use]
+pub fn has_dwarf_sections(bytes: &[u8]) -> bool {
+    let Ok(file) = object::File::parse(bytes) else {
+        return false;
+    };
+    if !matches!(file, object::File::Elf32(_) | object::File::Elf64(_)) {
+        return false;
+    }
+    file.section_by_name(".debug_info")
+        .or_else(|| file.section_by_name(".zdebug_info"))
+        .is_some_and(|s| s.size() > 0)
+}
+
+#[must_use]
 pub fn has_debug_or_symtab(bytes: &[u8]) -> bool {
     let Ok(file) = object::File::parse(bytes) else {
         return false;
@@ -201,13 +214,8 @@ pub fn has_debug_or_symtab(bytes: &[u8]) -> bool {
     {
         return true;
     }
-    if file
-        .section_by_name(".gopclntab")
-        .is_some_and(|s| s.size() > 0)
-    {
-        return true;
-    }
-    file.section_by_name(".gnu_debugdata")
+    file.section_by_name(".gopclntab")
+        .or_else(|| file.section_by_name(".data.rel.ro.gopclntab"))
         .is_some_and(|s| s.size() > 0)
 }
 
