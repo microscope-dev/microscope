@@ -23,6 +23,7 @@ const MAX_TAGS: usize = 32;
 pub const DEFAULT_CHUNK_MS: u64 = 5_000;
 pub const DEFAULT_POST_MS: u64 = 60_000;
 pub const DEFAULT_SPOOL_MIB: u32 = 256;
+pub const DEFAULT_SYMBOL_UPLOAD_BPS: u64 = 1024 * 1024;
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -40,6 +41,30 @@ struct File {
     record: Option<RecordFile>,
     #[serde(default)]
     sanitize: SanitizeFile,
+    #[serde(default)]
+    symbols: SymbolsFile,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SymbolsFile {
+    upload: Option<bool>,
+    max_bytes_per_sec: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SymbolsConfig {
+    pub upload: bool,
+    pub max_bytes_per_sec: u64,
+}
+
+impl Default for SymbolsConfig {
+    fn default() -> Self {
+        Self {
+            upload: true,
+            max_bytes_per_sec: DEFAULT_SYMBOL_UPLOAD_BPS,
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -192,6 +217,7 @@ pub struct Config {
     pub limits: Limits,
     pub record: Option<RecordConfig>,
     pub sanitize: SanitizeConfig,
+    pub symbols: SymbolsConfig,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -383,6 +409,16 @@ pub fn load(path: Option<&Path>, env: &dyn Environment) -> Result<Config, Config
 
     let record = load_record(file.record, env)?;
     let sanitize = load_sanitize(file.sanitize)?;
+    let symbols = SymbolsConfig {
+        upload: boolean(env, "MICROSCOPE_SYMBOLS_UPLOAD", file.symbols.upload)?,
+        max_bytes_per_sec: parse_u64_range(
+            env.get("MICROSCOPE_SYMBOLS_MAX_BYTES_PER_SEC"),
+            file.symbols.max_bytes_per_sec,
+            DEFAULT_SYMBOL_UPLOAD_BPS,
+            16_384..=100 * 1024 * 1024,
+            "symbols.max_bytes_per_sec",
+        )?,
+    };
 
     Ok(Config {
         path,
@@ -406,6 +442,7 @@ pub fn load(path: Option<&Path>, env: &dyn Environment) -> Result<Config, Config
         limits,
         record,
         sanitize,
+        symbols,
     })
 }
 

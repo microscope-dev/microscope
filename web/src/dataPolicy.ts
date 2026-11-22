@@ -160,6 +160,74 @@ export interface StorageSettingsResponse {
   pinnedSessions: PinnedSessionItem[];
 }
 
+export interface SymbolProjectItem {
+  id: number;
+  name: string;
+  canWrite: boolean;
+}
+
+export type SymbolStatus =
+  | "missing"
+  | "uploaded_ci"
+  | "uploaded_agent"
+  | "public_cache"
+  | "symbolized_on_host";
+
+export interface SymbolBuildItem {
+  buildId: string;
+  projectId: number;
+  projectName: string;
+  serviceName: string;
+  modulePath: string;
+  gitCommit: string | null;
+  status: SymbolStatus;
+  sharePercent: number;
+  unsymbolizedSharePercent: number;
+  byteLen: number | null;
+  hasDwarf: boolean;
+  hasSymtab: boolean;
+  symbolCount: number;
+  lastSeenAt: number | null;
+  uploadedAt: number | null;
+  uploadCommand: string;
+}
+
+export interface MissingSummary {
+  missingBuildCount: number;
+  missingTimePercent: number;
+}
+
+export interface ProjectTokenItem {
+  id: number;
+  projectId: number;
+  projectName: string;
+  name: string;
+  tokenPrefix: string;
+  createdAt: number;
+  lastUsedAt: number | null;
+}
+
+export interface SymbolsResponse {
+  orgId: number;
+  isOwner: boolean;
+  hours: number;
+  serverUrl: string;
+  projects: SymbolProjectItem[];
+  missingSummary: MissingSummary;
+  builds: SymbolBuildItem[];
+  tokens: ProjectTokenItem[];
+}
+
+export interface CreatedProjectTokenResponse {
+  id: number;
+  projectId: number;
+  projectName: string;
+  name: string;
+  token: string;
+  tokenPrefix: string;
+  createdAt: number;
+}
+
 export interface DataWindowState {
   open: boolean;
   tab: DataTab;
@@ -307,7 +375,25 @@ export const dataPolicyApi = {
     sessionDays?: number;
     pinCapBytes?: number;
   }) => request<StorageSettingsResponse>("PATCH", "/api/data/storage", body),
+  symbols: (org: number | null, hours = 24) =>
+    request<SymbolsResponse>("GET", `/api/data/symbols${orgQuery(org, { hours })}`),
+  createSymbolToken: (body: { orgId?: number | null; projectId: number; name: string }) =>
+    request<CreatedProjectTokenResponse>("POST", "/api/data/symbols/tokens", body),
+  revokeSymbolToken: (id: number) => request<void>("DELETE", `/api/data/symbols/tokens/${id}`),
 };
+
+export function formatByteSize(bytes: number | null): string {
+  if (bytes === null || bytes <= 0) {
+    return "—";
+  }
+  if (bytes >= 1_048_576) {
+    return `${(bytes / 1_048_576).toFixed(1)} MiB`;
+  }
+  if (bytes >= 1024) {
+    return `${(bytes / 1024).toFixed(1)} KiB`;
+  }
+  return `${bytes} B`;
+}
 
 export function formatBytesPerDay(bytes: number): string {
   if (bytes <= 0) {

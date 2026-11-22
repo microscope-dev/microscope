@@ -1027,15 +1027,21 @@ dependencies = [
 name = "microscope-data"
 version = "0.1.0"
 dependencies = [
+ "cpp_demangle",
+ "flate2",
  "foldhash 0.2.0",
+ "gimli",
+ "lzma-rs",
  "memchr",
  "microscope-probes",
  "microscope-test-strategies",
  "nix 0.31.3",
+ "object",
  "proptest",
  "rayon",
  "regex",
  "ring",
+ "rustc-demangle",
  "serde",
  "serde_json",
  "thiserror",

@@ -17,6 +17,7 @@ pub mod select;
 pub mod split;
 pub mod spool;
 pub mod store;
+pub mod symbols;
 pub mod wire;
 
 /// Registers this host with a Microscope server and keeps it registered.

@@ -48,6 +48,7 @@ export default defineConfig({
     allowedHosts: true,
     proxy: {
       "/api": { target: services, changeOrigin: true, configure: devCookie },
+      "/buildid": { target: services, changeOrigin: true, configure: devCookie },
     },
   },
   test: {

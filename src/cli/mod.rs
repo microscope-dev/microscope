@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod commands;
 mod complete;
 pub mod config;
@@ -10,6 +11,7 @@ mod repl;
 mod saved;
 pub mod session;
 mod stops;
+pub mod symbols;
 pub mod terminal;
 pub mod value;
 

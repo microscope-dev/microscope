@@ -110,6 +110,10 @@ fn start_flight_recording() {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "dispatches CLI subcommands and runs the interactive debugger session"
+)]
 async fn async_main() -> ExitCode {
     let args = parse_args();
     if let Err(error) =
@@ -154,6 +158,10 @@ async fn async_main() -> ExitCode {
         Some(Tool::Record(record)) => return cli::profile::run_record(record),
         Some(Tool::Report(report)) => return cli::profile::run_report(report),
         Some(Tool::Symbolize(symbolize)) => return cli::profile::run_symbolize(symbolize),
+        Some(Tool::Symbols(symbols)) => return cli::symbols::run(symbols),
+        Some(Tool::Login(login)) => return cli::auth::run_login(login),
+        Some(Tool::Logout(logout)) => return cli::auth::run_logout(logout),
+        Some(Tool::Whoami) => return cli::auth::run_whoami(),
         Some(Tool::Agent(_)) => {
             eprintln!("error: internal: the agent runs before the async runtime starts");
             return ExitCode::FAILURE;

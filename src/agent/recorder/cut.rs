@@ -374,7 +374,8 @@ pub fn bucket_targets(targets: &[PlannedTarget]) -> CutBucket<'_> {
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "splits a multi-process segment by project and unhinted program, exports exact selected PIDs, sanitizes, and spools in strict chunk order"
+    clippy::too_many_lines,
+    reason = "splits a multi-process segment by project and unhinted program, exports exact selected PIDs, records binary paths for symbols, sanitizes, and spools in strict chunk order"
 )]
 pub fn enqueue_multi_project_cut(
     profile: &Profile,
@@ -411,6 +412,34 @@ pub fn enqueue_multi_project_cut(
         let publish_guard = publish_lock.lock().unwrap_or_else(PoisonError::into_inner);
         let (alloc, sanitizer) = {
             let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+            let svc_hint = members
+                .first()
+                .filter(|m| m.service_explicit)
+                .map(|m| m.service.clone());
+            for m in &filtered.modules {
+                if m.build_id.get() != NONE && m.path.get() != NONE {
+                    let bid = filtered.string(m.build_id.get());
+                    let path = filtered.string(m.path.get());
+                    if !bid.is_empty() && path.starts_with('/') {
+                        guard.symbol_queue.record_binary(
+                            bid,
+                            std::path::PathBuf::from(path),
+                            proj_opt.clone(),
+                            svc_hint.clone(),
+                        );
+                    }
+                }
+            }
+            for member in &members {
+                if let (Some(bid), Some(exe)) = (&member.meta.build_id, &member.meta.exe_path) {
+                    guard.symbol_queue.record_binary(
+                        bid,
+                        std::path::PathBuf::from(exe),
+                        proj_opt.clone(),
+                        member.service_explicit.then(|| member.service.clone()),
+                    );
+                }
+            }
             let san = proj_opt
                 .as_deref()
                 .and_then(|p| guard.project_sanitizers.get(&p.to_ascii_lowercase()))

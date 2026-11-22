@@ -36,7 +36,7 @@ export function standalonePage(api: Handler, host?: string): Promise<Served> {
   const dir = path.join(root, "build", "web");
   return listen(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://page");
-    if (url.pathname.startsWith("/api/")) {
+    if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/buildid/")) {
       api(request, response);
       return;
     }

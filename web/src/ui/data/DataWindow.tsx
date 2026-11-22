@@ -162,7 +162,11 @@ function OpenDataWindow() {
       closeData();
       return;
     }
-    if (event.key === "/" && !isTextBox(document.activeElement) && tab() === "services") {
+    if (
+      event.key === "/" &&
+      !isTextBox(document.activeElement) &&
+      (tab() === "services" || tab() === "symbols")
+    ) {
       event.preventDefault();
       searchEl?.focus();
     }
@@ -228,7 +232,12 @@ function OpenDataWindow() {
               <PrivacyView org={org()} />
             </Match>
             <Match when={tab() === "symbols"}>
-              <SymbolsView />
+              <SymbolsView
+                org={org()}
+                searchRef={(el) => {
+                  searchEl = el;
+                }}
+              />
             </Match>
             <Match when={tab() === "storage"}>
               <StorageView org={org()} />

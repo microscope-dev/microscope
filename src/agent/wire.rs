@@ -16,7 +16,17 @@ pub const ENROLL_PATH: &str = "/api/agent/v1/enroll";
 pub const REFRESH_PATH: &str = "/api/agent/v1/refresh";
 pub const GOODBYE_PATH: &str = "/api/agent/v1/goodbye";
 pub const INGEST_PATH: &str = "/api/agent/v1/ingest";
+pub const INGEST_SYMBOLS_PATH: &str = "/api/agent/v1/ingest/symbols";
 pub const POLL_PATH: &str = "/api/agent/v1/poll";
+pub const SYMBOL_BUILD_ID_HEADER: &str = "x-microscope-symbol-build-id";
+pub const SYMBOL_PART_HEADER: &str = "x-microscope-symbol-part";
+pub const SYMBOL_TOTAL_PARTS_HEADER: &str = "x-microscope-symbol-total-parts";
+pub const SYMBOL_TOTAL_BYTES_HEADER: &str = "x-microscope-symbol-total-bytes";
+pub const SYMBOL_SHA256_HEADER: &str = "x-microscope-symbol-sha256";
+pub const SYMBOL_ENCODING_HEADER: &str = "x-microscope-symbol-encoding";
+pub const SYMBOL_UPLOAD_ID_HEADER: &str = "x-microscope-symbol-upload-id";
+pub const SYMBOL_PROJECT_HEADER: &str = "x-microscope-symbol-project";
+pub const SYMBOL_SERVICE_HEADER: &str = "x-microscope-symbol-service";
 
 const CONTEXT: &[u8] = b"microscope agent request v1";
 const ED25519: &str = "ed25519";
@@ -302,6 +312,17 @@ pub struct TokenResponse {
 #[derive(Debug, Deserialize)]
 pub struct IngestResponse {
     pub last_chunk: u64,
+    #[serde(default)]
+    pub missing_symbols: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SymbolUploadResponse {
+    #[serde(default)]
+    pub upload_id: Option<i64>,
+    pub status: String,
+    #[serde(default)]
+    pub next_part: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

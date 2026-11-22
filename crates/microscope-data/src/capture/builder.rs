@@ -1329,8 +1329,14 @@ impl Remap {
         if id == NONE { NONE } else { table[id as usize] }
     }
 
-    fn module(&self, id: u32) -> u32 {
+    #[must_use]
+    pub fn module(&self, id: u32) -> u32 {
         Self::get(&self.modules, id)
+    }
+
+    #[must_use]
+    pub fn frame(&self, id: u32) -> u32 {
+        Self::get(&self.frames, id)
     }
 
     #[must_use]

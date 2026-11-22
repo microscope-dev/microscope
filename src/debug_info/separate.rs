@@ -18,6 +18,7 @@ const DOWNLOAD_LIMIT: u64 = 4 << 30;
 pub struct DebugFileSearch {
     directories: Vec<PathBuf>,
     servers: Vec<String>,
+    credentials: Option<Box<(String, String)>>,
     cache: Option<PathBuf>,
     timeout: Option<Duration>,
 }
@@ -57,14 +58,29 @@ impl DebugFileSearch {
         directories.retain(|directory| {
             !directory.as_os_str().is_empty() && seen.insert(directory.clone())
         });
+        let mut credentials = None;
         let servers = if options.debuginfod {
-            options.debuginfod_urls.clone().unwrap_or_else(|| {
+            let mut list = options.debuginfod_urls.clone().unwrap_or_else(|| {
                 std::env::var("DEBUGINFOD_URLS")
                     .ok()
                     .filter(|_| machine)
                     .map(|urls| urls.split_whitespace().map(str::to_owned).collect())
                     .unwrap_or_default()
-            })
+            });
+            let allow_creds = machine
+                || std::env::var_os(crate::credentials::CREDENTIALS_ENV)
+                    .is_some_and(|v| !v.is_empty());
+            if allow_creds && let Some(creds) = crate::credentials::load() {
+                let origin = crate::credentials::normalize_origin(&creds.server);
+                if !list
+                    .iter()
+                    .any(|u| crate::credentials::normalize_origin(u) == origin)
+                {
+                    list.insert(0, creds.server);
+                }
+                credentials = Some(Box::new((origin, creds.token)));
+            }
+            list
         } else {
             Vec::new()
         };
@@ -77,6 +93,7 @@ impl DebugFileSearch {
         Self {
             directories,
             servers,
+            credentials,
             cache: options
                 .debuginfod_cache
                 .clone()
@@ -287,7 +304,13 @@ impl DebugFileSearch {
 
         for server in &self.servers {
             let url = format!("{}/buildid/{hex}/debuginfo", server.trim_end_matches('/'));
-            let Ok(mut response) = agent.get(&url).call() else {
+            let mut request = agent.get(&url);
+            if let Some(creds) = &self.credentials
+                && crate::credentials::normalize_origin(server) == creds.0
+            {
+                request = request.header("authorization", &format!("Bearer {}", creds.1));
+            }
+            let Ok(mut response) = request.call() else {
                 continue;
             };
 
@@ -513,4 +536,82 @@ fn hex(bytes: &[u8]) -> String {
 
 fn crc32(data: &[u8]) -> u32 {
     crc32fast::hash(data)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        io::{Read as _, Write as _},
+        net::TcpListener,
+        sync::{Arc, Mutex},
+        thread,
+    };
+
+    use super::*;
+
+    fn spawn_header_capture_server(
+        status: u16,
+        body: Vec<u8>,
+    ) -> (String, Arc<Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_clone = Arc::clone(&seen);
+        thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0_u8; 4096];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).into_owned();
+                seen_clone.lock().unwrap().push(req);
+                let header = format!(
+                    "HTTP/1.1 {status} OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(&body);
+            }
+        });
+        (format!("http://{addr}"), seen)
+    }
+
+    #[test]
+    fn debuginfod_sends_bearer_only_to_matching_credentials_origin() {
+        let (third_party_url, third_party_reqs) = spawn_header_capture_server(404, Vec::new());
+        let (authed_url, authed_reqs) = spawn_header_capture_server(200, b"PAYLOAD".to_vec());
+
+        let tmp =
+            std::env::temp_dir().join(format!("ms-debuginfod-auth-test-{}", std::process::id()));
+        let _ = fs::create_dir_all(&tmp);
+
+        let search = DebugFileSearch {
+            directories: Vec::new(),
+            servers: vec![third_party_url, authed_url.clone()],
+            credentials: Some(Box::new((
+                crate::credentials::normalize_origin(&authed_url),
+                "msu_secret_debuginfod_token".to_owned(),
+            ))),
+            cache: Some(tmp.join("cache")),
+            timeout: Some(Duration::from_secs(5)),
+        };
+        let found = search.download(&[0xaa, 0xbb, 0xcc, 0xdd], |data| data == b"PAYLOAD");
+        let _ = fs::remove_dir_all(&tmp);
+
+        assert!(found.is_some());
+        let tp = third_party_reqs.lock().unwrap().clone();
+        assert_eq!(tp.len(), 1);
+        assert!(
+            !tp[0].to_ascii_lowercase().contains("authorization:"),
+            "bearer token must NEVER be leaked to third-party debuginfod servers: {}",
+            tp[0]
+        );
+        let au = authed_reqs.lock().unwrap().clone();
+        assert_eq!(au.len(), 1);
+        assert!(
+            au[0]
+                .to_ascii_lowercase()
+                .contains("authorization: bearer msu_secret_debuginfod_token"),
+            "bearer token must be sent to matching credentials origin: {}",
+            au[0]
+        );
+    }
 }

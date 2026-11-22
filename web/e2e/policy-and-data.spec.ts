@@ -270,7 +270,7 @@ test("records two of three programs into two projects, never mentions the third,
     await expect(dialog).toContainText("customer id");
 
     await dialog.getByRole("tab", { name: "Symbols" }).click();
-    await expect(dialog).toContainText("Phase 8");
+    await expect(dialog).toContainText("Project upload tokens");
 
     await dialog.getByRole("tab", { name: "Storage" }).click();
     await expect(dialog).toContainText("Your own bucket");

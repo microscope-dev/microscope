@@ -25,6 +25,7 @@ pub mod agent;
 use microscope_data::analysis;
 mod backend;
 pub(crate) use microscope_data::capture;
+pub mod credentials;
 
 mod condition;
 mod debug_info;

@@ -16,13 +16,19 @@ testing = []
 self-probes = ["microscope-probes/enabled"]
 
 [dependencies]
+cpp_demangle = { git = "https://github.com/microscope-dev/cpp_demangle", rev = "3f6f357479cd8b7ffea785d8dace50e2bf974b5b" }
+flate2 = "1.1"
 foldhash = "0.2"
+gimli = "0.34"
+lzma-rs = "0.3"
 memchr = "2.8"
 microscope-probes = { path = "../../sdk/rust-probes" }
 nix = { version = "0.31", features = ["fs", "resource", "time"] }
+object = { version = "0.39", default-features = false, features = ["read", "std"] }
 rayon = "1.11"
 regex = "1.13"
 ring = "0.17"
+rustc-demangle = "0.1"
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 thiserror = "2.0"

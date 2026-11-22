@@ -10,8 +10,11 @@ use super::{
     machine::Outcome,
     wire::{
         ENROLL_PATH, EnrollKey, ErrorBody, ErrorCode, FLUSH_HEADER, GOODBYE_PATH, INGEST_PATH,
-        IngestResponse, KeyPair, POLL_PATH, PollRequest, PollResponse, PreviousRun, REFRESH_PATH,
-        SIGNATURE_HEADER, Server, TokenResponse, inventory_hash,
+        INGEST_SYMBOLS_PATH, IngestResponse, KeyPair, POLL_PATH, PollRequest, PollResponse,
+        PreviousRun, REFRESH_PATH, SIGNATURE_HEADER, SYMBOL_BUILD_ID_HEADER,
+        SYMBOL_ENCODING_HEADER, SYMBOL_PART_HEADER, SYMBOL_PROJECT_HEADER, SYMBOL_SERVICE_HEADER,
+        SYMBOL_SHA256_HEADER, SYMBOL_TOTAL_BYTES_HEADER, SYMBOL_TOTAL_PARTS_HEADER,
+        SYMBOL_UPLOAD_ID_HEADER, Server, SymbolUploadResponse, TokenResponse, inventory_hash,
     },
 };
 
@@ -42,6 +45,7 @@ struct IngestErrorBody {
 pub enum IngestReply {
     Accepted {
         last_chunk: u64,
+        missing_symbols: Vec<String>,
     },
     Overlap {
         last_chunk: u64,
@@ -54,6 +58,28 @@ pub enum IngestReply {
         message: String,
     },
     Unreachable(String),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum SymbolPartReply {
+    Continue { upload_id: i64, next_part: u32 },
+    Complete,
+    AlreadyPresent,
+    Unauthorized,
+    Refused { status: u16, message: String },
+    Unreachable(String),
+}
+
+pub struct SymbolPartHeader<'a> {
+    pub build_id: &'a str,
+    pub part: u32,
+    pub total_parts: u32,
+    pub total_bytes: u64,
+    pub sha256: &'a str,
+    pub encoding: &'a str,
+    pub upload_id: Option<i64>,
+    pub project: Option<&'a str>,
+    pub service: Option<&'a str>,
 }
 
 #[derive(Debug)]
@@ -273,6 +299,7 @@ impl Client {
                 |error| IngestReply::Unreachable(format!("bad ingest answer: {error}")),
                 |body| IngestReply::Accepted {
                     last_chunk: body.last_chunk,
+                    missing_symbols: body.missing_symbols,
                 },
             ),
             409 => serde_json::from_str::<IngestResponse>(&text).map_or_else(
@@ -291,6 +318,71 @@ impl Client {
                 status,
                 error,
                 retry_after,
+                message: text,
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn upload_symbol_part(
+        &self,
+        token: &str,
+        header: &SymbolPartHeader<'_>,
+        piece: &[u8],
+    ) -> SymbolPartReply {
+        let authorization = format!("Bearer {token}");
+        let mut req = self
+            .ingest
+            .post(self.server.url(INGEST_SYMBOLS_PATH))
+            .header("content-type", "application/octet-stream")
+            .header("authorization", &authorization)
+            .header(SYMBOL_BUILD_ID_HEADER, header.build_id)
+            .header(SYMBOL_PART_HEADER, header.part.to_string())
+            .header(SYMBOL_TOTAL_PARTS_HEADER, header.total_parts.to_string())
+            .header(SYMBOL_TOTAL_BYTES_HEADER, header.total_bytes.to_string())
+            .header(SYMBOL_SHA256_HEADER, header.sha256)
+            .header(SYMBOL_ENCODING_HEADER, header.encoding);
+        if let Some(id) = header.upload_id {
+            req = req.header(SYMBOL_UPLOAD_ID_HEADER, id.to_string());
+        }
+        if let Some(project) = header.project.filter(|p| !p.is_empty()) {
+            req = req.header(SYMBOL_PROJECT_HEADER, project);
+        }
+        if let Some(service) = header.service.filter(|s| !s.is_empty()) {
+            req = req.header(SYMBOL_SERVICE_HEADER, service);
+        }
+
+        let mut response = match req.send(piece) {
+            Ok(resp) => resp,
+            Err(error) => return SymbolPartReply::Unreachable(error.to_string()),
+        };
+        let status = response.status().as_u16();
+        let text = response
+            .body_mut()
+            .with_config()
+            .limit(BODY_LIMIT)
+            .read_to_string()
+            .unwrap_or_default();
+
+        match status {
+            200 | 201 => serde_json::from_str::<SymbolUploadResponse>(&text).map_or_else(
+                |e| SymbolPartReply::Unreachable(format!("bad symbol answer: {e}")),
+                |body| match body.status.as_str() {
+                    "complete" => SymbolPartReply::Complete,
+                    "already_present" => SymbolPartReply::AlreadyPresent,
+                    "continue" => SymbolPartReply::Continue {
+                        upload_id: body.upload_id.unwrap_or(0),
+                        next_part: body.next_part.unwrap_or(header.part + 1),
+                    },
+                    _ => SymbolPartReply::Refused {
+                        status,
+                        message: text,
+                    },
+                },
+            ),
+            401 | 403 => SymbolPartReply::Unauthorized,
+            _ => SymbolPartReply::Refused {
+                status,
                 message: text,
             },
         }

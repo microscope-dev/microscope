@@ -852,6 +852,7 @@ fn spool_eviction_of_fresh_chunk_fails_pending_flush() {
         active_services: Vec::new(),
         sanitizer: Arc::new(policy),
         project_sanitizers: BTreeMap::new(),
+        symbol_queue: crate::agent::symbols::SymbolUploadQueue::default(),
     };
     finish_cut_locked(&mut state, 0, CutOutcome::Pushed(c2));
     assert_eq!(state.flush_failed_id, 42);

@@ -272,6 +272,18 @@ pub enum Tool {
     /// Give a profile recorded with `--symbols later` its source lines.
     Symbolize(cli::profile::SymbolizeArgs),
 
+    /// Upload debug symbols to a Microscope server.
+    Symbols(cli::symbols::SymbolsArgs),
+
+    /// Sign in to a Microscope server for debuginfod and uploads.
+    Login(cli::auth::LoginArgs),
+
+    /// Sign out and remove stored Microscope credentials.
+    Logout(cli::auth::LogoutArgs),
+
+    /// Show the currently signed-in Microscope account.
+    Whoami,
+
     /// Register this host with a Microscope server.
     Agent(microscope::agent::AgentArgs),
 }

@@ -38,6 +38,7 @@ use super::{
     poster::{PosterAction, PosterMachine, PosterOutcome},
     select::{BuildIdCache, ScanOptions, SelectedProcess, scan_selected_processes},
     spool::{MAX_POST_BYTES, Spool},
+    symbols::{SymbolUploadQueue, UploadOutcome, prepare_debug_payload, upload_compressed_symbol},
     wire::{BurstDirective, PolicyDirective, WatchDirective},
 };
 use crate::profiler::{Preset, Profile, Save, SharedBpfEngine, Watch, record_attached_many_exact};
@@ -82,6 +83,7 @@ pub(super) struct SharedState {
     pub active_services: Vec<String>,
     pub sanitizer: Arc<Sanitizer>,
     pub project_sanitizers: BTreeMap<String, Arc<Sanitizer>>,
+    pub symbol_queue: SymbolUploadQueue,
 }
 
 #[derive(Clone)]
@@ -224,6 +226,7 @@ pub struct Pipeline {
     shared: Arc<(Mutex<SharedState>, Condvar)>,
     recorder: Option<JoinHandle<()>>,
     poster: Option<JoinHandle<()>>,
+    symbol_uploader: Option<JoinHandle<()>>,
 }
 
 impl Pipeline {
@@ -274,6 +277,7 @@ impl Pipeline {
                 active_services: Vec::new(),
                 sanitizer: initial_sanitizer,
                 project_sanitizers: initial_proj_sanitizers,
+                symbol_queue: SymbolUploadQueue::default(),
             }),
             Condvar::new(),
         ));
@@ -301,17 +305,41 @@ impl Pipeline {
         let post_stop = Arc::clone(&stop);
         let post_shared = Arc::clone(&shared);
         let post_interval = Duration::from_millis(record.post_ms);
+        let symbols_upload_enabled = config.symbols.upload;
         let poster = thread::Builder::new()
             .name("microscope-agent-poster".into())
             .spawn(move || {
-                poster_loop(&post_stop, &post_shared, &client, post_interval);
+                poster_loop(
+                    &post_stop,
+                    &post_shared,
+                    &client,
+                    post_interval,
+                    symbols_upload_enabled,
+                );
             })?;
+
+        let symbol_uploader = if config.symbols.upload {
+            let sym_client = Client::new(config.server.clone(), config.ca_file.as_deref())?;
+            let sym_stop = Arc::clone(&stop);
+            let sym_shared = Arc::clone(&shared);
+            let max_bps = config.symbols.max_bytes_per_sec;
+            Some(
+                thread::Builder::new()
+                    .name("microscope-agent-symbols".into())
+                    .spawn(move || {
+                        symbol_uploader_loop(&sym_stop, &sym_shared, &sym_client, max_bps);
+                    })?,
+            )
+        } else {
+            None
+        };
 
         Ok(Self {
             stop,
             shared,
             recorder: Some(recorder),
             poster: Some(poster),
+            symbol_uploader,
         })
     }
 
@@ -373,6 +401,9 @@ impl Pipeline {
             let _ = handle.join();
         }
         if let Some(handle) = self.poster.take() {
+            let _ = handle.join();
+        }
+        if let Some(handle) = self.symbol_uploader.take() {
             let _ = handle.join();
         }
     }
@@ -797,6 +828,7 @@ fn poster_loop(
     shared: &(Mutex<SharedState>, Condvar),
     client: &Client,
     post_interval: Duration,
+    symbols_upload_enabled: bool,
 ) {
     let started = std::time::Instant::now();
     let now = || Instant(started.elapsed());
@@ -960,10 +992,19 @@ fn poster_loop(
 
                 let reply = client.ingest_with_flush(&token, &batch.post, post_flush_id);
                 let outcome = match reply {
-                    IngestReply::Accepted { last_chunk } => {
+                    IngestReply::Accepted {
+                        last_chunk,
+                        missing_symbols,
+                    } => {
                         max_batch_chunks = usize::MAX;
                         let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
                         let _ = guard.spool.ack(batch.owner_gen, last_chunk);
+                        if symbols_upload_enabled
+                            && !missing_symbols.is_empty()
+                            && guard.symbol_queue.enqueue_missing(&missing_symbols)
+                        {
+                            cvar.notify_all();
+                        }
                         if let Some(fid) = post_flush_id
                             && guard.flush_requested.as_ref().is_some_and(|pf| {
                                 pf.id == fid
@@ -1052,6 +1093,62 @@ fn poster_loop(
                 };
                 machine.on(outcome, now(), still_has, jitter());
             }
+        }
+    }
+}
+
+fn symbol_uploader_loop(
+    stop: &AtomicBool,
+    shared: &(Mutex<SharedState>, Condvar),
+    client: &Client,
+    max_bytes_per_sec: u64,
+) {
+    let (lock, cvar) = shared;
+    while !stop.load(Ordering::Relaxed) {
+        let next = {
+            let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+            if let (Some(token), Some((bid, bin))) =
+                (guard.token.clone(), guard.symbol_queue.pop_next())
+            {
+                Some((token, bid, bin))
+            } else {
+                let _ = cvar.wait_timeout(guard, Duration::from_millis(500));
+                None
+            }
+        };
+
+        let Some((token, build_id, binary)) = next else {
+            continue;
+        };
+
+        let Some(compressed) = prepare_debug_payload(&binary.path, &build_id) else {
+            lock.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .symbol_queue
+                .mark_done(&build_id);
+            continue;
+        };
+
+        let outcome = upload_compressed_symbol(
+            client,
+            &token,
+            &build_id,
+            &binary,
+            &compressed,
+            max_bytes_per_sec,
+            stop,
+        );
+        let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        match outcome {
+            UploadOutcome::Done => guard.symbol_queue.mark_done(&build_id),
+            UploadOutcome::Unauthorized => {
+                if guard.token.as_deref() == Some(token.as_str()) {
+                    guard.token = None;
+                    guard.need_token = true;
+                }
+                guard.symbol_queue.mark_retry_later(&build_id);
+            }
+            UploadOutcome::RetryLater => guard.symbol_queue.mark_retry_later(&build_id),
         }
     }
 }

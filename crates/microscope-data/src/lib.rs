@@ -5,6 +5,7 @@ pub mod model;
 pub mod object;
 pub mod sanitize;
 pub mod spans;
+pub mod symbols;
 pub mod syscalls;
 
 pub use model::{Architecture, ByteOrder, CodeRole, PointerWidth, TargetDescription};
