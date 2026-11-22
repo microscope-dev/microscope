@@ -9,6 +9,7 @@ import {
 import type { PaneProps } from "../../workbench/kinds";
 import { useLoaded } from "../Orgs";
 import {
+  CopyQueryMenu,
   LinkToggle,
   PaneAuthGate,
   PaneEmptyState,
@@ -68,6 +69,11 @@ export function ByMachinePane(props: PaneProps) {
           <div class="profile-details">
             <span class="fleet-pane-label">By machine (outliers first)</span>
             <LinkToggle linked={ps.linked()} onToggle={ps.toggleLinked} />
+            <CopyQueryMenu
+              spec={{ kind: "by-machine" }}
+              scope={ps.scope()}
+              sessionId={ps.sessionId()}
+            />
             <Show when={data()}>
               {(res) => (
                 <span class="muted">

@@ -6326,3 +6326,58 @@ button.machines-row:hover,
 .data-bucket-card.disabled {
   opacity: 0.6;
 }
+
+.capture-pin-bar {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  background: var(--surface-2);
+  border: 1px solid var(--line-strong);
+}
+
+.scope-badge-warn {
+  background: var(--error-bg);
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.copy-query-menu {
+  min-width: 210px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.copy-query-menu button {
+  width: 100%;
+  text-align: left;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.copy-query-menu button:hover {
+  background: var(--surface-2);
+}
+
+.share-popover {
+  width: min(360px, calc(100vw - 24px));
+}
+
+.share-login-flow,
+.share-uploaded {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}

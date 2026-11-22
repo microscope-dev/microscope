@@ -316,11 +316,13 @@ pub struct Profile {
 }
 
 impl Profile {
-    pub(crate) const fn capture(&self) -> &Capture {
+    #[must_use]
+    pub const fn capture(&self) -> &Capture {
         &self.capture
     }
 
-    pub(crate) fn into_capture(self) -> Capture {
+    #[must_use]
+    pub fn into_capture(self) -> Capture {
         self.capture
     }
 }

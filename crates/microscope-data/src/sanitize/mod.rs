@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 
 pub use builtin::Builtin;
 pub use chunk::{
-    EncodedPost, SanitizedChunk, decode_post_metadata, encode_post, re_sanitize_sections_verbatim,
-    sanitize_chunk,
+    EncodedPost, SanitizedCapture, SanitizedChunk, decode_post_metadata, encode_post,
+    re_sanitize_sections_verbatim, sanitize_capture, sanitize_chunk,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

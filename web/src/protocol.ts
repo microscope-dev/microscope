@@ -83,6 +83,10 @@ export interface Results {
   syscallNetwork: P.SyscallNetwork;
   syscallProcesses: P.SyscallProcesses;
   syscallInFlight: P.SyscallInFlight;
+  cloudStatus: P.CloudStatus;
+  cloudLoginStart: P.CloudLoginStarted;
+  cloudLoginPoll: P.CloudLoginStatus;
+  shareProfile: P.SharedProfile;
 }
 
 type Exactly<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;

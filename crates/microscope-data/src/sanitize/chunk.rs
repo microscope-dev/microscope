@@ -14,6 +14,34 @@ use crate::syscalls::{Abi, CaptureState, ReadAt, SyscallId, specs};
 use super::{FieldClass, Outcome, Sanitizer, Tally};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SanitizedCapture {
+    pub capture: Capture,
+    pub counts: Vec<SanitizerCountRow>,
+}
+
+impl SanitizedCapture {
+    #[must_use]
+    pub fn total_fired(&self) -> u64 {
+        self.counts.iter().map(|row| row.fired).sum()
+    }
+}
+
+#[must_use]
+pub fn sanitize_capture(capture: Capture, sanitizer: &Sanitizer) -> SanitizedCapture {
+    let raw = ChunkData {
+        capture,
+        chunks: Vec::new(),
+        dimensions: Vec::new(),
+        sanitizer_counts: Vec::new(),
+    };
+    let data = sanitize_chunk(raw, TimeUnit::Ns, sanitizer).into_data();
+    SanitizedCapture {
+        capture: data.capture,
+        counts: data.sanitizer_counts,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SanitizedChunk {
     data: ChunkData,
     time_unit: TimeUnit,

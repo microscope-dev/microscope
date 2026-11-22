@@ -215,6 +215,10 @@ pub struct Read {
 }
 
 pub fn read(bytes: &[u8]) -> Result<Read, FileError> {
+    read_budgeted(bytes, CAPTURE_DECODE_BUDGET_BYTES)
+}
+
+pub fn read_budgeted(bytes: &[u8], max_decompressed_bytes: usize) -> Result<Read, FileError> {
     let _span = crate::span!("capture read");
     if bytes.len() < OBJECT_HEADER_LEN || bytes.first_chunk::<8>() != Some(&FILE_MAGIC) {
         return Err(FileError::NotACapture);
@@ -247,10 +251,17 @@ pub fn read(bytes: &[u8]) -> Result<Read, FileError> {
         return Err(FileError::Empty);
     }
 
+    let mut remaining = max_decompressed_bytes;
     let mut captures = Vec::with_capacity(part_count);
     for idx in 0..part_count {
         let sections = reader.part_sections(idx, None)?;
-        let chunk = decode_tables_budgeted(&sections, CAPTURE_DECODE_BUDGET_BYTES)?;
+        let chunk = decode_tables_budgeted(&sections, remaining)?;
+        let used: usize = chunk
+            .capture
+            .table_sizes()
+            .map(|(_, size)| usize::try_from(size).unwrap_or(usize::MAX))
+            .fold(0_usize, usize::saturating_add);
+        remaining = remaining.saturating_sub(used);
         captures.push(chunk.capture);
     }
 

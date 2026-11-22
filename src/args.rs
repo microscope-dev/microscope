@@ -275,6 +275,12 @@ pub enum Tool {
     /// Upload debug symbols to a Microscope server.
     Symbols(cli::symbols::SymbolsArgs),
 
+    /// Upload a recorded capture (.usprof) and get a shareable session link.
+    Upload(cli::upload::UploadArgs),
+
+    /// Query recorded fleet profiling data from a Microscope server.
+    Query(cli::query::QueryArgs),
+
     /// Sign in to a Microscope server for debuginfod and uploads.
     Login(cli::auth::LoginArgs),
 

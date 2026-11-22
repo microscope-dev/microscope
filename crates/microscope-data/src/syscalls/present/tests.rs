@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use microscope::syscalls::blobs;
-use microscope::syscalls::fds::{Description, FdTable, Kind as FdKind};
-use microscope::syscalls::{
+use crate::syscalls::blobs;
+use crate::syscalls::fds::{Description, FdTable, Kind as FdKind};
+use crate::syscalls::{
     Abi, Capture, CaptureState, EventFlags, Outcome, Pid, ReadAt, SyscallEvent, SyscallId, Tid,
 };
 
@@ -314,7 +314,7 @@ mod properties {
     }
 
     fn sets_used() -> Vec<&'static str> {
-        let mut sets: Vec<_> = microscope::syscalls::specs::sets().collect();
+        let mut sets: Vec<_> = crate::syscalls::specs::sets().collect();
         sets.sort_unstable();
         sets.dedup();
         sets

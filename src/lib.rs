@@ -63,7 +63,7 @@ mod source_map;
 mod step_skip;
 pub mod suggest;
 mod sync;
-pub use microscope_data::{object, sanitize, syscalls};
+pub use microscope_data::{object, sanitize, syscalls, view as capture_view};
 
 pub use backend::syscall_engines;
 #[cfg(test)]

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-use microscope::syscalls::{Abi, SyscallId, SyscallStats};
+use crate::syscalls::{Abi, SyscallId, SyscallStats};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Column {
@@ -166,7 +166,7 @@ pub fn labelled(
 
 #[cfg(test)]
 mod tests {
-    use microscope::syscalls::Outcome;
+    use crate::syscalls::Outcome;
 
     use super::*;
 

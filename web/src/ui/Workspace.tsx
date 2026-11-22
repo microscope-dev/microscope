@@ -204,7 +204,7 @@ function useConnectWhenRefused(wants: () => Wants) {
   createEffect(
     () => [link(), wants()] as const,
     ([current, wanted]) => {
-      if (wanted === "fleet") {
+      if (wanted === "fleet" || wanted === "capture") {
         return;
       }
       const refused = current === "unauthorized" || current === "unreachable";

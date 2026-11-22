@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod cloud;
 pub mod commands;
 mod complete;
 pub mod config;
@@ -7,12 +8,14 @@ mod group;
 pub mod help;
 mod highlight;
 pub mod profile;
+pub mod query;
 mod repl;
 mod saved;
 pub mod session;
 mod stops;
 pub mod symbols;
 pub mod terminal;
+pub mod upload;
 pub mod value;
 
 use std::ffi::OsString;

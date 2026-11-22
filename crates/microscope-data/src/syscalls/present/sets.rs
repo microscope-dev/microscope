@@ -723,7 +723,7 @@ pub fn set(name: &str) -> Option<Set> {
 mod tests {
     #[test]
     fn every_set_a_spec_names_is_known() {
-        for name in microscope::syscalls::specs::sets() {
+        for name in crate::syscalls::specs::sets() {
             assert!(
                 super::set(name).is_some(),
                 "the specs name the unknown set {name:?}"

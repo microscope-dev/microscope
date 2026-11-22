@@ -1,6 +1,7 @@
 import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, createUniqueId, For, Match, Show, Switch } from "solid-js";
 
+import { captureDownloadUrl, parseCaptureProfileId } from "../../captures";
 import { copyText } from "../../clipboard";
 import {
   commandLine,
@@ -40,6 +41,7 @@ const METADATA_ONLY: Tab[] = ["metadata"];
 export function FileDetails() {
   const focus = useProfile();
   const info = useModel((model) => model.profiles.find((each) => each.id === focus().profile));
+  const captureId = createMemo(() => parseCaptureProfileId(focus().profile));
   const answer = useAnswer("profileInspect", () => ({
     profile: focus().profile,
     revision: info()?.revision ?? 0,
@@ -92,7 +94,25 @@ export function FileDetails() {
             </For>
           </div>
         </Show>
-        <Show when={info()}>{(current) => <Download info={current()} />}</Show>
+        <Show
+          when={info()}
+          fallback={
+            <Show when={captureId()}>
+              {(id) => (
+                <a
+                  class="tb ghost"
+                  href={captureDownloadUrl(id())}
+                  download
+                  title="Download this capture as .usprof"
+                >
+                  Download
+                </a>
+              )}
+            </Show>
+          }
+        >
+          {(current) => <Download info={current()} />}
+        </Show>
       </div>
       <div
         class="details-body"

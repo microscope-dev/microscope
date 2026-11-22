@@ -19,7 +19,10 @@ interface Props {
 export function PaneHost(props: Props) {
   const { kinds, useMissing } = useDock();
   const kind = createMemo(() => kinds.get(props.pane.kind));
-  const missing = useMissing(() => kind().needs);
+  const missing = useMissing(
+    () => kind().needs,
+    () => props.pane,
+  );
   return (
     <VisibleContext value={() => props.visible}>
       <Show

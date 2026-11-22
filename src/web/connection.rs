@@ -116,6 +116,9 @@ fn dispatch(
         let id = envelope.id;
         let answered = match envelope.request {
             protocol::Request::Draw(draw) => session.draw(&draw).await,
+            request if super::share::is_share_request(&request) => {
+                super::share::handle(&profiles, role, request).await
+            }
             request if profiles::is_profile_request(&request) => {
                 profiles.handle(role, request).await
             }

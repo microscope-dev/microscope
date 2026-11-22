@@ -29,6 +29,8 @@ export interface TabState {
   palette: "all" | "files" | "line" | "calls" | "layouts" | "save" | null;
 
   share: boolean;
+
+  shareProfile: string | null;
 }
 
 export const initialTab: TabState = {
@@ -46,6 +48,7 @@ export const initialTab: TabState = {
   asked: 0,
   palette: null,
   share: false,
+  shareProfile: null,
 };
 
 export const tab = createState<TabState>(() => initialTab);
@@ -113,4 +116,12 @@ export const isKeptFiles = (value: unknown): value is KeptFiles => {
 
 export function flash(text: string): void {
   tab.setState({ flash: { text, at: Date.now() } });
+}
+
+export function openShare(profile: string | null = null): void {
+  tab.setState({ share: true, shareProfile: profile });
+}
+
+export function closeShare(): void {
+  tab.setState({ share: false, shareProfile: null });
 }

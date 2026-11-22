@@ -169,6 +169,14 @@ pub enum Request {
     SyscallProcesses(SyscallQuery),
 
     SyscallInFlight(SyscallInFlightQuery),
+
+    CloudStatus,
+
+    CloudLoginStart(CloudLoginStart),
+
+    CloudLoginPoll(CloudLoginPoll),
+
+    ShareProfile(ShareProfile),
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -742,14 +750,13 @@ pub struct ProfileInfo {
     pub ended: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProfileRef {
     pub profile: String,
 
     #[serde(default)]
     #[cfg_attr(test, ts(optional = nullable))]
-    #[expect(dead_code, reason = "only the tab's cache reads it")]
     pub revision: u32,
 }
 
@@ -829,7 +836,7 @@ pub struct RecordStarted {
     pub profile: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileQuery {
@@ -837,7 +844,6 @@ pub struct ProfileQuery {
 
     #[serde(default)]
     #[cfg_attr(test, ts(optional = nullable))]
-    #[expect(dead_code, reason = "only the tab's cache reads it")]
     pub revision: u32,
 
     #[serde(default)]
@@ -893,7 +899,7 @@ pub struct ProfileQuery {
     pub syscall_leaves: bool,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProfileDuring {
     pub filter: String,
@@ -907,7 +913,7 @@ pub struct ProfileDuring {
     pub row: Option<SyscallRowKey>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProfileZoneScope {
     pub name: String,
@@ -920,7 +926,7 @@ pub struct ProfileZoneScope {
     pub outside: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProfileBase {
     pub profile: String,
@@ -934,6 +940,7 @@ pub struct ProfileBase {
     pub zones: Option<ProfileZoneScope>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProfileBaseWeight {
@@ -941,7 +948,7 @@ pub struct ProfileBaseWeight {
     pub samples: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub enum ProfileSource {
@@ -951,7 +958,7 @@ pub enum ProfileSource {
     Waits,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProfileTransform {
     pub op: TransformOp,
@@ -960,7 +967,7 @@ pub struct ProfileTransform {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub enum TransformOp {
@@ -973,7 +980,7 @@ pub enum TransformOp {
     CollapseCycles,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub enum ProfileLook {
@@ -985,7 +992,7 @@ pub enum ProfileLook {
     Python,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub enum ProfileGranularity {
@@ -999,7 +1006,7 @@ pub enum ProfileGranularity {
     Address,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileFunctionQuery {
@@ -1008,6 +1015,7 @@ pub struct ProfileFunctionQuery {
     pub function: String,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProfileLines {
@@ -1076,7 +1084,7 @@ pub struct ProfileToken(pub String, pub String);
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProfileCodeLine(pub u32, pub Option<u32>, pub u32);
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileTimelineQuery {
@@ -1089,6 +1097,7 @@ pub struct ProfileTimelineQuery {
     pub task_lanes: bool,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
@@ -1149,6 +1158,7 @@ pub struct ProfileSummary {
     pub probe_problems: Vec<ProfileMarker>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
@@ -1166,6 +1176,7 @@ pub struct ProfileProbes {
     pub plotted: u64,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProfileZoneSite {
@@ -1180,14 +1191,13 @@ pub struct ProfileZoneSite {
     pub flagged: u64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProfileZonesQuery {
     pub profile: String,
 
     #[serde(default)]
     #[cfg_attr(test, ts(optional = nullable))]
-    #[expect(dead_code, reason = "only the tab's cache reads it")]
     pub revision: u32,
 
     #[serde(default)]
@@ -1209,6 +1219,7 @@ pub struct ProfileZonesQuery {
     pub band: Option<[u64; 2]>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
@@ -1224,6 +1235,7 @@ pub struct ProfileZones {
     pub plots: Vec<ProfilePlot>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProfilePlot {
@@ -1239,6 +1251,7 @@ pub struct ProfilePlot {
     pub continues: bool,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProfileMark {
@@ -1251,6 +1264,11 @@ pub struct ProfileMark {
     pub text: Option<String>,
 }
 
+#[cfg(test)]
+#[expect(
+    dead_code,
+    reason = "serialized by microscope_data::view and exported via ts-rs"
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
@@ -1260,7 +1278,7 @@ pub enum ProfileMarkKind {
     Trigger,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileZoneStatsQuery {
@@ -1268,7 +1286,6 @@ pub struct ProfileZoneStatsQuery {
 
     #[serde(default)]
     #[cfg_attr(test, ts(optional = nullable))]
-    #[expect(dead_code, reason = "only the tab's cache reads it")]
     pub revision: u32,
 
     pub name: String,
@@ -1290,6 +1307,7 @@ pub struct ProfileZoneStatsQuery {
     pub rank_of: Option<u64>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProfileZoneStats {
@@ -1313,6 +1331,7 @@ pub struct ProfileZoneStats {
     pub values: Vec<ProfileLabelValue>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProfileZoneAt {
@@ -1323,6 +1342,7 @@ pub struct ProfileZoneAt {
     pub value: Option<String>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProfileLabelValue {
@@ -1331,6 +1351,7 @@ pub struct ProfileLabelValue {
     pub count: u64,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProfileTask {
@@ -1342,6 +1363,7 @@ pub struct ProfileTask {
     pub waited: u64,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProfileMarker {
@@ -1349,6 +1371,7 @@ pub struct ProfileMarker {
     pub text: String,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
@@ -1377,6 +1400,7 @@ pub struct ProfileInspection {
     pub file: Option<ProfileFile>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProfileCommand {
@@ -1384,6 +1408,7 @@ pub struct ProfileCommand {
     pub text: String,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProfileProcess {
@@ -1392,6 +1417,7 @@ pub struct ProfileProcess {
     pub command: Option<ProfileCommand>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
@@ -1403,6 +1429,7 @@ pub struct ProfileModule {
     pub frames: u64,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProfileTable {
@@ -1410,6 +1437,7 @@ pub struct ProfileTable {
     pub bytes: u64,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProfileFile {
@@ -1419,6 +1447,7 @@ pub struct ProfileFile {
     pub truncated: bool,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProfileThread {
@@ -1435,6 +1464,7 @@ pub struct ProfileThread {
     pub preempted: u64,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProfileCount {
@@ -1442,6 +1472,7 @@ pub struct ProfileCount {
     pub count: u64,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProfileSetting {
@@ -1449,6 +1480,7 @@ pub struct ProfileSetting {
     pub value: String,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProfileTree {
@@ -1461,6 +1493,7 @@ pub struct ProfileTree {
     pub base: Option<ProfileBaseWeight>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProfileKey {
@@ -1473,6 +1506,11 @@ pub struct ProfileKey {
     pub line: Option<u32>,
 }
 
+#[cfg(test)]
+#[expect(
+    dead_code,
+    reason = "serialized by microscope_data::view and exported via ts-rs"
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
@@ -1493,6 +1531,7 @@ pub enum ProfileKeyKind {
     Syscall,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProfileFunctions {
@@ -1504,6 +1543,7 @@ pub struct ProfileFunctions {
     pub base: Option<ProfileBaseWeight>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
@@ -1516,6 +1556,7 @@ pub struct ProfileCost {
     pub base_total: u64,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProfileTimeline {
@@ -1523,6 +1564,7 @@ pub struct ProfileTimeline {
     pub lanes: Vec<ProfileLane>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProfileLane {
@@ -1537,6 +1579,7 @@ pub struct ProfileLane {
     pub waits: Vec<ProfileWait>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct ProfileWait {
@@ -2451,6 +2494,90 @@ pub struct ShareLink {
     pub url: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub struct CloudLoginStart {
+    #[serde(default)]
+    #[cfg_attr(test, ts(optional = nullable))]
+    pub server: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub struct CloudLoginStarted {
+    pub server: String,
+    pub verify_url: String,
+    pub user_code: String,
+    pub poll_token: String,
+    pub expires_in_secs: u64,
+    pub poll_interval_ms: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub struct CloudLoginPoll {
+    pub server: String,
+    pub poll_token: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub struct CloudLoginStatus {
+    pub status: String,
+    pub username: Option<String>,
+    pub email: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub struct CloudProject {
+    pub id: i64,
+    pub name: String,
+    pub org_id: i64,
+    pub org_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub struct CloudStatus {
+    pub logged_in: bool,
+    pub server: Option<String>,
+    pub default_server: String,
+    pub username: Option<String>,
+    pub email: Option<String>,
+    pub projects: Vec<CloudProject>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub struct ShareProfile {
+    pub profile: String,
+    pub project_id: i64,
+    #[serde(default)]
+    #[cfg_attr(test, ts(optional = nullable))]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub struct SharedProfile {
+    pub url: String,
+    pub session_id: i64,
+    pub capture_id: i64,
+    pub project_name: String,
+    pub byte_len: i64,
+    pub redacted_count: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use ts_rs::{Config, TS};
@@ -2669,6 +2796,14 @@ mod tests {
         RecordProfile::decl,
         RecordPreset::decl,
         RecordStarted::decl,
+        CloudLoginStart::decl,
+        CloudLoginStarted::decl,
+        CloudLoginPoll::decl,
+        CloudLoginStatus::decl,
+        CloudProject::decl,
+        CloudStatus::decl,
+        ShareProfile::decl,
+        SharedProfile::decl,
     ];
 
     fn typescript() -> String {

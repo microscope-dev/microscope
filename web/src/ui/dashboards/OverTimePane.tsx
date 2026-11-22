@@ -10,6 +10,7 @@ import {
 import type { PaneProps } from "../../workbench/kinds";
 import { useLoaded } from "../Orgs";
 import {
+  CopyQueryMenu,
   LinkToggle,
   PaneAuthGate,
   PaneEmptyState,
@@ -286,6 +287,11 @@ export function OverTimePane(props: PaneProps) {
               </For>
             </select>
             <LinkToggle linked={ps.linked()} onToggle={ps.toggleLinked} />
+            <CopyQueryMenu
+              spec={{ kind: "over-time", groupBy: groupBy() }}
+              scope={ps.scope()}
+              sessionId={ps.sessionId()}
+            />
             <Show when={data()}>
               {(res) => (
                 <span class="muted">

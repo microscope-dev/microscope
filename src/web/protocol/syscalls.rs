@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::ProfileQuery;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SyscallQuery {
@@ -17,7 +17,7 @@ pub struct SyscallQuery {
     pub latency: Option<u32>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub enum SyscallGroup {
@@ -32,14 +32,14 @@ pub enum SyscallGroup {
     Site,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct SyscallRowKey {
     pub group: SyscallGroup,
     pub key: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SyscallSummaryQuery {
@@ -50,6 +50,7 @@ pub struct SyscallSummaryQuery {
     pub group: SyscallGroup,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
@@ -67,6 +68,7 @@ pub struct SyscallSummary {
     pub rows: Vec<SyscallRow>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct SyscallLosses {
@@ -76,17 +78,7 @@ pub struct SyscallLosses {
     pub overflowed: u64,
 }
 
-impl From<microscope::syscalls::Losses> for SyscallLosses {
-    fn from(lost: microscope::syscalls::Losses) -> Self {
-        Self {
-            dropped: lost.dropped,
-            unseen: lost.unseen,
-            capped: lost.capped,
-            overflowed: lost.overflowed,
-        }
-    }
-}
-
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
@@ -107,6 +99,7 @@ pub struct SyscallRow {
     pub errnos: Vec<SyscallCount>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct SyscallCount {
@@ -114,7 +107,7 @@ pub struct SyscallCount {
     pub count: u64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SyscallHeatmapQuery {
@@ -123,6 +116,7 @@ pub struct SyscallHeatmapQuery {
     pub buckets: u32,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
@@ -138,7 +132,7 @@ pub struct SyscallHeatmap {
     pub failed: Vec<u32>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SyscallDetailQuery {
@@ -148,6 +142,7 @@ pub struct SyscallDetailQuery {
     pub call: String,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
@@ -163,6 +158,7 @@ pub struct SyscallDetail {
     pub unplaced: u64,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct SyscallCaller {
@@ -171,7 +167,7 @@ pub struct SyscallCaller {
     pub failed: u64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SyscallLogQuery {
@@ -181,6 +177,7 @@ pub struct SyscallLogQuery {
     pub limit: u32,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
@@ -189,6 +186,7 @@ pub struct SyscallLog {
     pub lines: Vec<SyscallLine>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
@@ -205,6 +203,7 @@ pub struct SyscallLine {
     pub call: bool,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct SyscallToken {
@@ -212,7 +211,7 @@ pub struct SyscallToken {
     pub text: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SyscallCallQuery {
@@ -220,11 +219,11 @@ pub struct SyscallCallQuery {
 
     #[serde(default)]
     #[cfg_attr(test, ts(optional = nullable))]
-    #[expect(dead_code, reason = "only the tab's cache reads it")]
     pub revision: u32,
     pub event: u64,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
@@ -245,6 +244,7 @@ pub struct SyscallCall {
     pub site: Option<SyscallSite>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
@@ -258,6 +258,7 @@ pub struct SyscallSite {
     pub unread: Option<String>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct SyscallArgument {
@@ -265,12 +266,14 @@ pub struct SyscallArgument {
     pub tokens: Vec<SyscallToken>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct SyscallFiles {
     pub files: Vec<SyscallFile>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Default, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
@@ -286,12 +289,14 @@ pub struct SyscallFile {
     pub total_ns: u64,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct SyscallNetwork {
     pub endpoints: Vec<SyscallEndpoint>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Default, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
@@ -305,12 +310,14 @@ pub struct SyscallEndpoint {
     pub received: u64,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct SyscallProcesses {
     pub processes: Vec<SyscallProcess>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
@@ -329,7 +336,7 @@ pub struct SyscallProcess {
     pub end: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SyscallInFlightQuery {
@@ -337,10 +344,10 @@ pub struct SyscallInFlightQuery {
 
     #[serde(default)]
     #[cfg_attr(test, ts(optional = nullable))]
-    #[expect(dead_code, reason = "only the tab's cache reads it")]
     pub revision: u32,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 pub struct SyscallInFlight {
@@ -348,6 +355,7 @@ pub struct SyscallInFlight {
     pub calls: Vec<SyscallBlocked>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]

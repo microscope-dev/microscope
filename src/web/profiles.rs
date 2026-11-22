@@ -6,69 +6,45 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use microscope::profiler::{
-    CodeLine, Cuts, DiffCost, GapReason, Granularity, KeyKind, Keys, Lanes, LineCost, Look,
-    MarkerKind, NO_KEY, NO_TASK, Preset, Profile, Query, RecordOptions, SampleSource, Side, Source,
-    SyscallEngine, SyscallLevel, Transform, Watch, ZoneScope, diff_costs, diff_trees,
-    record_watched,
+use microscope::capture_view::{
+    AnswerOptions, CaptureView, ViewError, end_text, protocol as view_protocol,
 };
+use microscope::profiler::{
+    CodeLine, Cuts, LineCost, Preset, Profile, RecordOptions, SampleSource, SyscallEngine,
+    SyscallLevel, Watch, record_watched,
+};
+use microscope::syscalls::ProcessEnd;
 use serde_json::{Value, json};
 use tokio::sync::{oneshot, watch};
 
 use super::protocol::{
-    self, ErrorKind, ProfileBaseWeight, ProfileCost, ProfileFunctions, ProfileGranularity,
-    ProfileInfo, ProfileKey, ProfileKeyKind, ProfileLane, ProfileList, ProfileLook, ProfileQuery,
-    ProfileSetting, ProfileSource, ProfileSummary, ProfileTimeline, ProfileTree, RecordPreset,
-    RecordProfile, RecordStarted, Request, Role, SyscallsEngine, SyscallsLevel, TransformOp,
+    self, ErrorKind, ProfileInfo, ProfileList, RecordPreset, RecordProfile, RecordStarted, Request,
+    Role, SyscallsEngine, SyscallsLevel,
 };
 
 use super::session::Failure;
 
-mod inspect;
-
-const MOST_BUCKETS: u32 = 4096;
-
 pub(super) const LIVE_EVERY: Duration = Duration::from_secs(2);
+
+const MOST_SOURCE_BYTES: u64 = 4 << 20;
+const SOURCE_MARGIN: u64 = 5;
 
 pub struct Profiles {
     cwd: PathBuf,
     entries: RwLock<BTreeMap<String, Arc<Entry>>>,
     list: watch::Sender<Arc<ProfileList>>,
     recordings: Mutex<BTreeMap<String, Recorder>>,
-
     recorded: AtomicU64,
-}
-
-impl Entry {
-    fn trace(&self) -> &Arc<super::syscalls::Trace> {
-        self.syscalls
-            .get_or_init(|| Arc::new(super::syscalls::Trace::of(&self.profile)))
-    }
-
-    fn resolve(&self, keys: &Keys<'_>, query: &ProfileQuery) -> Result<Query, Failure> {
-        let mut resolved = resolve(&self.profile, keys, query)?;
-        if let Some(during) = &query.during {
-            resolved.during = Some(super::syscalls::rows(&self.profile, self.trace(), during)?);
-        }
-
-        Ok(resolved)
-    }
 }
 
 struct Entry {
     info: ProfileInfo,
     profile: Arc<Profile>,
-
-    syscalls: std::sync::OnceLock<Arc<super::syscalls::Trace>>,
-
-    inspection: std::sync::OnceLock<Value>,
-
-    file: Option<protocol::ProfileFile>,
+    view: Arc<CaptureView>,
 }
 
 struct Recorder {
     stop: Arc<AtomicBool>,
-
     thread: Option<JoinHandle<()>>,
 }
 
@@ -146,7 +122,7 @@ impl Profiles {
                 ended: None,
             },
             read.profile,
-            Some(protocol::ProfileFile {
+            Some(view_protocol::ProfileFile {
                 bytes,
                 chunks: read.chunks as u64,
                 truncated: read.truncated,
@@ -163,8 +139,14 @@ impl Profiles {
         &self,
         info: ProfileInfo,
         profile: Profile,
-        file: Option<protocol::ProfileFile>,
+        file: Option<view_protocol::ProfileFile>,
     ) {
+        let view = Arc::new(CaptureView::new(
+            Arc::new(profile.capture().clone()),
+            info.id.clone(),
+            info.name.clone(),
+            file,
+        ));
         let mut entries = self.entries.write().unwrap_or_else(PoisonError::into_inner);
         let id = info.id.clone();
         entries.insert(
@@ -172,9 +154,7 @@ impl Profiles {
             Arc::new(Entry {
                 info,
                 profile: Arc::new(profile),
-                syscalls: std::sync::OnceLock::new(),
-                inspection: std::sync::OnceLock::new(),
-                file,
+                view,
             }),
         );
         let profiles = entries.values().map(|entry| entry.info.clone()).collect();
@@ -187,7 +167,7 @@ impl Profiles {
 
     pub fn file(&self, id: &str) -> Option<(String, std::io::Result<Vec<u8>>)> {
         let entry = self.entry(id).ok()?;
-        let name = if std::path::Path::new(&entry.info.name)
+        let name = if Path::new(&entry.info.name)
             .extension()
             .is_some_and(|extension| extension == "usprof")
         {
@@ -197,6 +177,11 @@ impl Profiles {
         };
 
         Some((name, entry.profile.to_bytes()))
+    }
+
+    pub fn snapshot(&self, id: &str) -> Result<(String, Arc<Profile>), Failure> {
+        let entry = self.entry(id)?;
+        Ok((entry.info.name.clone(), Arc::clone(&entry.profile)))
     }
 
     pub fn shutdown(&self) {
@@ -352,7 +337,7 @@ impl Profiles {
         match recorded {
             Ok(recording) => {
                 self.publish(
-                    info(revision, Some(super::syscalls::exit_text(recording.status))),
+                    info(revision, Some(exit_text(recording.status))),
                     recording.profile,
                     None,
                 );
@@ -423,244 +408,76 @@ impl Profiles {
             .ok_or_else(|| Failure::new(ErrorKind::Invalid, format!("no profile {id}")))
     }
 
-    fn base(&self, query: &ProfileQuery) -> Result<Option<(Arc<Entry>, ProfileQuery)>, Failure> {
-        let Some(base) = &query.base else {
-            return Ok(None);
-        };
-
-        if base.profile != query.profile && (query.threads.is_some() || query.tasks.is_some()) {
-            return Err(Failure::new(
-                ErrorKind::Invalid,
-                "a diff with another profile cannot keep a thread or task filter, \
-                 whose rows are this profile's",
-            ));
-        }
-
-        let mut of_base = query.clone();
-        of_base.profile.clone_from(&base.profile);
-        of_base.range = base.range;
-        of_base.base = None;
-        if base.zones.is_some() {
-            of_base.zones.clone_from(&base.zones);
-        }
-
-        if base.profile != query.profile {
-            of_base.threads = None;
-            of_base.tasks = None;
-        }
-
-        Ok(Some((self.entry(&base.profile)?, of_base)))
-    }
-
-    fn tree(&self, query: &ProfileQuery) -> Result<(Value, Vec<u8>), Failure> {
-        let entry = self.entry(&query.profile)?;
-        let granularity = granularity(query.granularity);
-        let keys = entry.profile.keys(granularity);
-        let tree = keys.aggregate(&entry.resolve(&keys, query)?);
-        let base = self.base(query)?;
-        let base_keys = base
-            .as_ref()
-            .map(|(base, _)| base.profile.keys(granularity));
-        let mut bytes = Vec::new();
-        let (nodes, base_weight, keys) = if let (Some((base, of_base)), Some(base_keys)) =
-            (&base, &base_keys)
-        {
-            let base_tree = base_keys.aggregate(&resolve_base(&base.profile, base_keys, of_base)?);
-            let diff = {
-                let _span = microscope::span!("web diff tree");
-                diff_trees((&keys, &tree), (base_keys, &base_tree))
-            };
-            let mut named = Named::with_base(&keys, base_keys);
-            let columns = [&diff.own, &diff.total, &diff.base_own, &diff.base_total];
-
-            for weights in &columns[..2] {
-                put_weights(&mut bytes, weights);
-            }
-
-            for (key, side) in diff.key.iter().zip(&diff.side) {
-                bytes.extend_from_slice(&named.index_on(*side, *key).to_le_bytes());
-            }
-
-            for depth in &diff.depth {
-                bytes.extend_from_slice(&depth.to_le_bytes());
-            }
-
-            for weights in &columns[2..] {
-                put_weights(&mut bytes, weights);
-            }
-
-            let weight = ProfileBaseWeight {
-                weight: base_tree.weight,
-                samples: base_tree.samples,
-            };
-
-            (diff.len(), Some(weight), named.keys)
-        } else {
-            let mut named = Named::new(&keys);
-            put_weights(&mut bytes, &tree.own);
-            put_weights(&mut bytes, &tree.total);
-            for key in &tree.key {
-                bytes.extend_from_slice(&named.index(*key).to_le_bytes());
-            }
-
-            for depth in &tree.depth {
-                bytes.extend_from_slice(&depth.to_le_bytes());
-            }
-
-            (tree.len(), None, named.keys)
-        };
-
-        let answer = ProfileTree {
-            nodes: u32::try_from(nodes).unwrap_or(u32::MAX),
-            weight: tree.weight,
-            samples: tree.samples,
-            keys,
-            base: base_weight,
-        };
-
-        Ok((to_value(&answer), bytes))
-    }
-
-    fn functions(&self, query: &ProfileQuery) -> Result<ProfileFunctions, Failure> {
-        let entry = self.entry(&query.profile)?;
-        let granularity = granularity(query.granularity);
-        let keys = entry.profile.keys(granularity);
-        let costs = keys.functions(&entry.resolve(&keys, query)?);
-        let Some((base, of_base)) = self.base(query)? else {
-            let mut named = Named::new(&keys);
-            let rows = costs
-                .rows
-                .iter()
-                .map(|cost| ProfileCost {
-                    key: named.index(cost.key),
-                    own: cost.own,
-                    total: cost.total,
-                    base_own: 0,
-                    base_total: 0,
-                })
-                .collect();
-            return Ok(ProfileFunctions {
-                weight: costs.weight,
-                rows,
-                keys: named.keys,
-                base: None,
-            });
-        };
-
-        let base_keys = base.profile.keys(granularity);
-        let base_costs = base_keys.functions(&resolve_base(&base.profile, &base_keys, &of_base)?);
-        let diff_span = microscope::span!("web diff functions");
-        let mut diff = diff_costs((&keys, &costs), (&base_keys, &base_costs));
-
-        let share = |weight: u64, of: u64| {
-            if of == 0 {
-                0.0
-            } else {
-                exact(weight) / exact(of)
-            }
-        };
-
-        let change = |cost: &DiffCost| {
-            (share(cost.own, costs.weight) - share(cost.base_own, base_costs.weight)).abs()
-        };
-
-        diff.sort_by(|a, b| change(b).total_cmp(&change(a)));
-        drop(diff_span);
-        let mut named = Named::with_base(&keys, &base_keys);
-        let rows = diff
-            .iter()
-            .map(|cost| ProfileCost {
-                key: named.index_on(cost.side, cost.key),
-                own: cost.own,
-                total: cost.total,
-                base_own: cost.base_own,
-                base_total: cost.base_total,
-            })
-            .collect();
-
-        Ok(ProfileFunctions {
-            weight: costs.weight,
-            rows,
-            keys: named.keys,
-            base: Some(ProfileBaseWeight {
-                weight: base_costs.weight,
-                samples: 0,
-            }),
-        })
-    }
-
     fn answer(&self, request: Request) -> Result<(Value, Vec<u8>), Failure> {
-        match request {
-            Request::Profile(protocol::ProfileRef { profile, .. }) => {
-                Ok(json(&summary(&*self.entry(&profile)?)))
-            }
-            Request::ProfileInspect(protocol::ProfileRef { profile, .. }) => {
-                let entry = self.entry(&profile)?;
-                Ok((
-                    entry
-                        .inspection
-                        .get_or_init(|| {
-                            let _span = microscope::span!("web profile inspect");
-                            to_value(&inspect::inspection(&entry.profile, entry.file.clone()))
-                        })
-                        .clone(),
-                    Vec::new(),
-                ))
-            }
-            Request::ProfileTree(query) => {
-                let _span = microscope::span!("web profile tree");
-                self.tree(&query)
-            }
-            Request::ProfileFunctions(query) => {
-                let _span = microscope::span!("web profile functions");
-                self.functions(&query).map(|answer| json(&answer))
-            }
-            Request::ProfileTimeline(timeline) => {
-                let _span = microscope::span!("web profile timeline");
-                let entry = self.entry(&timeline.query.profile)?;
-                Ok(json(&timeline_of(&entry, &timeline)?))
-            }
-            Request::ProfileZones(query) => {
-                let _span = microscope::span!("web profile zones");
-                let entry = self.entry(&query.profile)?;
-                Ok(zones(&entry.profile, &query))
-            }
-            Request::ProfileLines(query) => {
-                let _span = microscope::span!("web profile lines");
-                let entry = self.entry(&query.query.profile)?;
-                Ok(json(&source(&entry, &query)?))
-            }
+        let (profile_id, method, params) = match request {
             Request::ProfileCode(query) => {
                 let _span = microscope::span!("web profile code");
                 let entry = self.entry(&query.query.profile)?;
-                Ok(json(&code(&entry, &query)?))
+                return Ok(json(&code(&entry, &query)?));
             }
-            Request::ProfileZoneStats(query) => {
-                let entry = self.entry(&query.profile)?;
-                Ok(json(&zone_stats(&entry.profile, &query)))
+            Request::Profile(q) => (q.profile.clone(), "profile", to_value(&q)),
+            Request::ProfileInspect(q) => (q.profile.clone(), "profileInspect", to_value(&q)),
+            Request::ProfileTree(q) => (q.profile.clone(), "profileTree", to_value(&q)),
+            Request::ProfileFunctions(q) => (q.profile.clone(), "profileFunctions", to_value(&q)),
+            Request::ProfileTimeline(q) => {
+                (q.query.profile.clone(), "profileTimeline", to_value(&q))
             }
-            Request::SyscallInFlight(query) => {
-                let entry = self.entry(&query.profile)?;
-                Ok(json(&super::syscalls::in_flight(
-                    &entry.profile,
-                    entry.info.recording,
-                )))
+            Request::ProfileZones(q) => (q.profile.clone(), "profileZones", to_value(&q)),
+            Request::ProfileZoneStats(q) => (q.profile.clone(), "profileZoneStats", to_value(&q)),
+            Request::ProfileLines(q) => (q.query.profile.clone(), "profileLines", to_value(&q)),
+            Request::SyscallSummary(q) => {
+                (q.query.link.profile.clone(), "syscallSummary", to_value(&q))
             }
-            request => {
-                let Some(id) = super::syscalls::profile_of(&request) else {
-                    return Err(Failure::new(
-                        ErrorKind::Failed,
-                        "internal: only profile requests come here",
-                    ));
-                };
+            Request::SyscallHeatmap(q) => {
+                (q.query.link.profile.clone(), "syscallHeatmap", to_value(&q))
+            }
+            Request::SyscallDetail(q) => {
+                (q.query.link.profile.clone(), "syscallDetail", to_value(&q))
+            }
+            Request::SyscallLog(q) => (q.query.link.profile.clone(), "syscallLog", to_value(&q)),
+            Request::SyscallCall(q) => (q.profile.clone(), "syscallCall", to_value(&q)),
+            Request::SyscallFiles(q) => (q.link.profile.clone(), "syscallFiles", to_value(&q)),
+            Request::SyscallNetwork(q) => (q.link.profile.clone(), "syscallNetwork", to_value(&q)),
+            Request::SyscallProcesses(q) => {
+                (q.link.profile.clone(), "syscallProcesses", to_value(&q))
+            }
+            Request::SyscallInFlight(q) => (q.profile.clone(), "syscallInFlight", to_value(&q)),
+            _ => {
+                return Err(Failure::new(
+                    ErrorKind::Failed,
+                    "internal: only profile requests come here",
+                ));
+            }
+        };
 
-                let _span = microscope::span!("web syscalls");
-                let id = id.to_owned();
-                let entry = self.entry(&id)?;
-                super::syscalls::answer(&entry.profile, entry.trace(), request)
-                    .map(|value| (value, Vec::new()))
-            }
-        }
+        let entry = self.entry(&profile_id)?;
+        let base_lookup = |id: &str| self.entry(id).ok().map(|entry| Arc::clone(&entry.view));
+        let opts = AnswerOptions {
+            live: entry.info.recording,
+            base: Some(&base_lookup),
+            source_lines: Some(&source_lines),
+        };
+        entry.view.answer(method, params, opts).map_err(from_view)
+    }
+}
+
+fn from_view(error: ViewError) -> Failure {
+    match error {
+        ViewError::Invalid(message) => Failure::new(ErrorKind::Invalid, message),
+        ViewError::Failed(message) => Failure::new(ErrorKind::Failed, message),
+    }
+}
+
+fn exit_text(status: std::process::ExitStatus) -> String {
+    use std::os::unix::process::ExitStatusExt as _;
+
+    match (status.code(), status.signal()) {
+        (Some(code), _) => end_text(ProcessEnd::Exited(code)),
+        (None, Some(signal)) => end_text(ProcessEnd::Killed {
+            signal,
+            core: status.core_dumped(),
+        }),
+        (None, None) => status.to_string(),
     }
 }
 
@@ -699,7 +516,7 @@ fn sampling(spec: &RecordProfile) -> Result<RecordOptions, Failure> {
 
     if let Some(seconds) = spec.window {
         options.cuts = Cuts::Window(
-            std::time::Duration::try_from_secs_f64(seconds)
+            Duration::try_from_secs_f64(seconds)
                 .ok()
                 .filter(|window| !window.is_zero())
                 .ok_or_else(|| {
@@ -748,399 +565,6 @@ fn controls(role: Role) -> Result<(), Failure> {
     }
 }
 
-fn paused(profile: &Profile, reason: GapReason, start: i64) -> Vec<[i64; 2]> {
-    profile
-        .paused(reason)
-        .into_iter()
-        .map(|(from, to)| [from - start, to - start])
-        .collect()
-}
-
-fn summary(entry: &Entry) -> ProfileSummary {
-    let profile = &entry.profile;
-    let (start, end) = profile.span();
-    ProfileSummary {
-        id: entry.info.id.clone(),
-        name: entry.info.name.clone(),
-        program: profile.setting("program").map(str::to_owned),
-        command: profile.recorded_command().map(inspect::command),
-        unit: profile
-            .setting("weight")
-            .unwrap_or("nanoseconds")
-            .to_owned(),
-        source: profile.setting("source").map(str::to_owned),
-        samples: profile.samples() as u64,
-        weight: profile.total_weight(),
-        syscalls: profile.syscall_count(),
-        syscalls_lost: profile.syscalls_lost().into(),
-        duration: end - start,
-        threads: profile
-            .threads()
-            .into_iter()
-            .map(|thread| protocol::ProfileThread {
-                row: thread.row,
-                pid: thread.pid,
-                tid: thread.tid,
-                name: thread.name,
-                samples: thread.samples,
-                weight: thread.weight,
-                zones: thread.zones,
-                blocked: thread.blocked,
-                preempted: thread.preempted,
-            })
-            .collect(),
-        lost: profile.lost_samples(),
-        throttles: profile.throttles(),
-        recorder_cpu: profile.recorder_cpu().0,
-        recorder_loading: profile.recorder_cpu().1,
-        behind: paused(profile, GapReason::Behind, start),
-        budget_changes: markers(profile.budget_changes(), start),
-        tasks: tasks(profile),
-        interpreted: profile.interpreted(),
-        snapshots: profile.task_snapshots().0,
-        snapshot_pause: profile.task_snapshots().1,
-        task_samples: profile.task_samples(),
-        snapshot_problems: markers(profile.task_snapshot_problems(), start),
-        waited: profile.task_waits().iter().map(|wait| wait.weight).sum(),
-        probes: {
-            let counts = profile.probe_counts();
-            protocol::ProfileProbes {
-                events: counts.events,
-                overwritten: counts.overwritten,
-                no_ring: counts.no_ring,
-                interrupted: counts.interrupted,
-                malformed: counts.malformed,
-                plotted: counts.plotted,
-            }
-        },
-        zone_sites: profile
-            .zone_sites()
-            .into_iter()
-            .map(|site| protocol::ProfileZoneSite {
-                name: site.name,
-                label: site.label,
-                count: site.count,
-                total: site.total,
-                longest: site.longest,
-                flagged: site.flagged,
-            })
-            .collect(),
-        label_keys: {
-            let keys = profile.keys(Granularity::Function);
-            let mut names: Vec<String> = keys
-                .labels()
-                .iter()
-                .filter(|(_, value)| value.is_none())
-                .map(|(key, _)| (*key).to_owned())
-                .collect();
-            names.sort();
-            names
-        },
-        probe_problems: markers(profile.probe_problems(), start),
-        truncations: profile
-            .truncations()
-            .into_iter()
-            .map(|(what, count)| protocol::ProfileCount { what, count })
-            .collect(),
-        settings: profile
-            .settings()
-            .into_iter()
-            .map(|(name, value)| ProfileSetting {
-                name: name.to_owned(),
-                value: value.to_owned(),
-            })
-            .collect(),
-    }
-}
-
-fn markers(markers: Vec<(i64, String)>, start: i64) -> Vec<protocol::ProfileMarker> {
-    markers
-        .into_iter()
-        .map(|(time, text)| protocol::ProfileMarker {
-            time: time - start,
-            text,
-        })
-        .collect()
-}
-
-fn tasks(profile: &Profile) -> Vec<protocol::ProfileTask> {
-    let keys = profile.keys(Granularity::Function);
-    let mut tasks: Vec<protocol::ProfileTask> = profile
-        .tasks()
-        .into_iter()
-        .map(|task| protocol::ProfileTask {
-            row: task.row,
-            name: keys.name(keys.group(task.row)),
-            weight: task.weight,
-            waited: task.waited,
-        })
-        .collect();
-
-    tasks.sort_by(|a, b| (b.weight, b.waited, a.row).cmp(&(a.weight, a.waited, b.row)));
-    tasks
-}
-
-pub(super) const fn granularity(granularity: ProfileGranularity) -> Granularity {
-    match granularity {
-        ProfileGranularity::Function => Granularity::Function,
-        ProfileGranularity::Physical => Granularity::PhysicalFunction,
-        ProfileGranularity::Line => Granularity::Line,
-        ProfileGranularity::Address => Granularity::Address,
-    }
-}
-
-pub(super) fn resolve(
-    profile: &Profile,
-    keys: &Keys<'_>,
-    query: &ProfileQuery,
-) -> Result<Query, Failure> {
-    resolve_in(profile, keys, query, false)
-}
-
-fn resolve_base(
-    profile: &Profile,
-    keys: &Keys<'_>,
-    query: &ProfileQuery,
-) -> Result<Query, Failure> {
-    resolve_in(profile, keys, query, true)
-}
-
-fn resolve_in(
-    profile: &Profile,
-    keys: &Keys<'_>,
-    query: &ProfileQuery,
-    base: bool,
-) -> Result<Query, Failure> {
-    let (start, _) = profile.span();
-    if query.syscall_leaves
-        && profile
-            .setting("weight")
-            .is_some_and(|unit| unit != "nanoseconds")
-    {
-        return Err(Failure::new(
-            ErrorKind::Invalid,
-            "calls are weighed in time, and these samples are not",
-        ));
-    }
-
-    let mut transforms = Vec::new();
-    for transform in &query.transforms {
-        if transform.op == TransformOp::CollapseCycles {
-            transforms.push(Transform::CollapseCycles);
-            continue;
-        }
-
-        let named = keys.named(&transform.name);
-        if named.is_empty() && base {
-            if transform.op == TransformOp::Focus {
-                transforms.push(Transform::Focus(NO_KEY));
-            }
-
-            continue;
-        }
-
-        if named.is_empty() {
-            return Err(Failure::new(
-                ErrorKind::Invalid,
-                match keys.similar(&transform.name, 5).as_slice() {
-                    [] => format!("nothing in the profile is named {}", transform.name),
-                    similar => format!(
-                        "nothing in the profile is named {}; names that contain it: {}",
-                        transform.name,
-                        similar
-                            .iter()
-                            .map(|&key| keys.exact_name(key))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ),
-                },
-            ));
-        }
-
-        if transform.op == TransformOp::Focus && named.len() > 1 {
-            return Err(Failure::new(
-                ErrorKind::Invalid,
-                format!("{} things are named {}", named.len(), transform.name),
-            ));
-        }
-
-        transforms.extend(named.into_iter().map(|key| match transform.op {
-            TransformOp::Focus => Transform::Focus(key),
-            TransformOp::Merge => Transform::Merge(key),
-            TransformOp::Drop => Transform::Drop(key),
-            TransformOp::CollapseCycles => Transform::CollapseCycles,
-        }));
-    }
-
-    Ok(Query {
-        source: match query.source {
-            ProfileSource::Samples => Source::Samples,
-            ProfileSource::Waits => Source::Waits,
-        },
-        range: query
-            .range
-            .map(|[from, to]| (start.saturating_add(from), start.saturating_add(to))),
-        threads: query.threads.clone(),
-        tasks: query
-            .tasks
-            .as_ref()
-            .map(|tasks| tasks.iter().map(|task| task.unwrap_or(NO_TASK)).collect()),
-        labels: query
-            .labels
-            .iter()
-            .map(|label| {
-                label
-                    .split_once('=')
-                    .map(|(key, value)| (key.to_owned(), value.to_owned()))
-                    .ok_or_else(|| {
-                        Failure::new(ErrorKind::Invalid, format!("{label} is not key=value"))
-                    })
-            })
-            .collect::<Result<_, _>>()?,
-        by_label: query.by_label.clone(),
-        zones: query
-            .zones
-            .as_ref()
-            .map(|scope| zone_scope(profile, scope, base))
-            .transpose()?,
-        transforms,
-        invert: query.invert,
-        look: match query.look {
-            ProfileLook::Logical => Look::Logical,
-            ProfileLook::Native => Look::Native,
-            ProfileLook::Python => Look::Python,
-        },
-        by_task: query.by_task,
-        during: None,
-        calls: query.syscall_leaves,
-    })
-}
-
-fn zone_scope(
-    profile: &Profile,
-    scope: &protocol::ProfileZoneScope,
-    base: bool,
-) -> Result<ZoneScope, Failure> {
-    let sites = profile.sites_named(&scope.name);
-    if sites.is_empty() && !base {
-        return Err(Failure::new(
-            ErrorKind::Invalid,
-            format!("no zones are named {}", scope.name),
-        ));
-    }
-
-    if let Some([shortest, longest]) = scope.band
-        && shortest > longest
-    {
-        return Err(Failure::new(
-            ErrorKind::Invalid,
-            format!("the band {shortest}..{longest} is empty"),
-        ));
-    }
-
-    Ok(ZoneScope {
-        sites,
-        band: scope.band.map(Into::into),
-        outside: scope.outside,
-    })
-}
-
-fn timeline_of(
-    entry: &Entry,
-    timeline: &protocol::ProfileTimelineQuery,
-) -> Result<ProfileTimeline, Failure> {
-    let profile = &entry.profile;
-    let keys = profile.keys(granularity(timeline.query.granularity));
-    let mut resolved = entry.resolve(&keys, &timeline.query)?;
-    let (start, end) = profile.span();
-    let range = resolved
-        .range
-        .unwrap_or_else(|| (start, end.saturating_add(1)));
-    resolved.range = Some(range);
-    let buckets = timeline.buckets.clamp(1, MOST_BUCKETS) as usize;
-    let by_task = timeline.task_lanes || timeline.query.source == ProfileSource::Waits;
-    let of = if by_task {
-        Lanes::Tasks
-    } else {
-        Lanes::Threads
-    };
-
-    let lane = |id: u32, weights| ProfileLane {
-        thread: (!by_task).then_some(id),
-        task: (by_task && id != NO_TASK).then_some(id),
-        weights,
-        blocked: Vec::new(),
-        preempted: Vec::new(),
-        syscalls: Vec::new(),
-        failed: Vec::new(),
-        waits: Vec::new(),
-    };
-
-    let mut lanes: std::collections::BTreeMap<u32, ProfileLane> = keys
-        .density(&resolved, buckets, of)
-        .into_iter()
-        .map(|(id, weights)| (id, lane(id, weights)))
-        .collect();
-
-    if !by_task {
-        for off in profile.off_cpu_lanes(&resolved, buckets) {
-            let lane = lanes
-                .entry(off.thread)
-                .or_insert_with(|| lane(off.thread, Vec::new()));
-            lane.blocked = off.blocked;
-            lane.preempted = off.preempted;
-        }
-
-        for kernel in profile.kernel_lanes(&keys, &resolved, buckets) {
-            let lane = lanes
-                .entry(kernel.thread)
-                .or_insert_with(|| lane(kernel.thread, Vec::new()));
-            lane.syscalls = kernel.calls;
-            lane.failed = kernel.failed;
-            lane.waits = kernel
-                .long
-                .into_iter()
-                .map(|(row, from, to)| protocol::ProfileWait {
-                    call: profile.syscall_name(row),
-                    start: from - start,
-                    end: to - start,
-                })
-                .collect();
-        }
-    }
-
-    let lanes = lanes.into_values().collect();
-    Ok(ProfileTimeline {
-        range: [range.0 - start, range.1 - start],
-        lanes,
-    })
-}
-
-const MOST_SOURCE_BYTES: u64 = 4 << 20;
-const SOURCE_MARGIN: u64 = 5;
-
-fn selection(entry: &Entry, query: &protocol::ProfileFunctionQuery) -> Result<Query, Failure> {
-    let mut plain = query.query.clone();
-    plain.transforms.clear();
-    plain.base = None;
-    plain.syscall_leaves = false;
-    let keys = entry.profile.keys(granularity(plain.granularity));
-    entry.resolve(&keys, &plain)
-}
-
-fn source(
-    entry: &Entry,
-    query: &protocol::ProfileFunctionQuery,
-) -> Result<protocol::ProfileLines, Failure> {
-    let costs = entry
-        .profile
-        .line_costs(&selection(entry, query)?, &query.function);
-    Ok(protocol::ProfileLines {
-        weight: costs.weight,
-        files: source_files(costs.lines),
-    })
-}
-
 fn source_files(costs: Vec<LineCost>) -> Vec<protocol::ProfileSourceFile> {
     let mut files: BTreeMap<Option<String>, Vec<[u64; 3]>> = BTreeMap::new();
     for line in costs {
@@ -1176,7 +600,7 @@ fn source_files(costs: Vec<LineCost>) -> Vec<protocol::ProfileSourceFile> {
         .collect()
 }
 
-pub(super) fn source_lines(path: &str, first: u64, last: u64) -> Result<Vec<String>, String> {
+fn source_lines(path: &str, first: u64, last: u64) -> Result<Vec<String>, String> {
     let size = std::fs::metadata(path)
         .map_err(|error| format!("{path} cannot be read: {error}"))?
         .len();
@@ -1196,13 +620,22 @@ pub(super) fn source_lines(path: &str, first: u64, last: u64) -> Result<Vec<Stri
         .collect())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "maps disassembled instructions, source files, and line tables into the web protocol"
+)]
 fn code(
     entry: &Entry,
     query: &protocol::ProfileFunctionQuery,
 ) -> Result<protocol::ProfileCode, Failure> {
-    let profile = &entry.profile;
-    let selected = selection(entry, query)?;
-    let code = match profile.disassemble(&selected, &query.function) {
+    let mut plain = query.query.clone();
+    plain.transforms.clear();
+    plain.base = None;
+    plain.syscall_leaves = false;
+    let view_query: view_protocol::ProfileQuery = serde_json::from_value(to_value(&plain))
+        .map_err(|error| Failure::new(ErrorKind::Invalid, error.to_string()))?;
+    let selected = entry.view.resolve_query(&view_query).map_err(from_view)?;
+    let code = match entry.profile.disassemble(&selected, &query.function) {
         Ok(code) => code,
         Err(why) => {
             return Ok(protocol::ProfileCode {
@@ -1303,266 +736,6 @@ fn code(
     })
 }
 
-const MOST_MARKS: usize = 4096;
-
-fn absolute(profile: &Profile, range: Option<[i64; 2]>) -> (i64, i64) {
-    let (start, end) = profile.span();
-    range.map_or_else(
-        || (start, end.saturating_add(1)),
-        |[from, to]| (start.saturating_add(from), start.saturating_add(to)),
-    )
-}
-
-fn zones(profile: &Profile, query: &protocol::ProfileZonesQuery) -> (Value, Vec<u8>) {
-    let (start, _) = profile.span();
-
-    let range = match (query.range, profile.zone_extent()) {
-        (None, Some((first, last))) => {
-            let margin = ((last - first) / 50).max(1);
-            (first - margin, last + margin)
-        }
-        (range, _) => absolute(profile, range),
-    };
-
-    let fold = (range.1 - range.0) * 3 / i64::from(query.width.max(1));
-    let band = query.band.map(Into::into);
-    let chosen = query.site.as_deref().map(|site| (site, band));
-    let blocks = profile.zone_blocks(range, query.threads.as_deref(), fold.max(1), chosen);
-    let mut names: Vec<String> = Vec::new();
-    let mut indices: BTreeMap<(u32, u32), u32> = BTreeMap::new();
-    let mut name = |site: u32, value: u32| {
-        *indices.entry((site, value)).or_insert_with(|| {
-            names.push(profile.zone_name(site, value));
-            u32::try_from(names.len() - 1).unwrap_or(u32::MAX)
-        })
-    };
-
-    let mut bytes = Vec::with_capacity(blocks.len() * 64);
-    let times: [&dyn Fn(&microscope::profiler::ZoneBlock) -> i64; 5] = [
-        &|block| block.start - start,
-        &|block| block.end - start,
-        &|block| block.covered,
-        &|block| block.blocked,
-        &|block| block.preempted,
-    ];
-    for column in times {
-        for block in &blocks {
-            bytes.extend_from_slice(&exact_time(column(block)).to_le_bytes());
-        }
-    }
-
-    let columns: [&dyn Fn(&microscope::profiler::ZoneBlock) -> u32; 2] =
-        [&|block| block.thread, &|block| block.depth];
-    for column in columns {
-        for block in &blocks {
-            bytes.extend_from_slice(&column(block).to_le_bytes());
-        }
-    }
-
-    for block in &blocks {
-        bytes.extend_from_slice(&name(block.site, block.value).to_le_bytes());
-    }
-
-    let columns: [&dyn Fn(&microscope::profiler::ZoneBlock) -> u32; 3] =
-        [&|block| block.count, &|block| block.flags, &|block| {
-            u32::from(block.chosen)
-        }];
-    for column in columns {
-        for block in &blocks {
-            bytes.extend_from_slice(&column(block).to_le_bytes());
-        }
-    }
-
-    let marks = profile
-        .program_markers()
-        .into_iter()
-        .filter(|marker| range.0 <= marker.time && marker.time < range.1)
-        .filter_map(|marker| {
-            Some(protocol::ProfileMark {
-                thread: marker.thread?,
-                time: marker.time - start,
-                kind: match marker.kind {
-                    MarkerKind::Frame => protocol::ProfileMarkKind::Frame,
-                    MarkerKind::Trigger => protocol::ProfileMarkKind::Trigger,
-                    _ => protocol::ProfileMarkKind::Message,
-                },
-                name: marker.name,
-                text: marker.text,
-            })
-        })
-        .take(MOST_MARKS)
-        .collect();
-    let plots = profile
-        .plot_series(range, query.threads.as_deref(), query.width.max(1) as usize)
-        .into_iter()
-        .map(|series| protocol::ProfilePlot {
-            name: profile.string(series.name).to_owned(),
-            values: series.values,
-            unshown: series.unshown,
-            bins: series
-                .bins
-                .iter()
-                .map(|bin| {
-                    let time = exact_time(bin.time - start);
-                    [time, bin.first, bin.last, bin.low, bin.high]
-                })
-                .collect(),
-            held: series.held,
-            continues: series.continues,
-        })
-        .collect();
-
-    let answer = protocol::ProfileZones {
-        range: [range.0 - start, range.1 - start],
-        blocks: u32::try_from(blocks.len()).unwrap_or(u32::MAX),
-        off_cpu: profile.setting("off-CPU") == Some("on"),
-        names,
-        marks,
-        plots,
-    };
-
-    (to_value(&answer), bytes)
-}
-
-fn zone_stats(
-    profile: &Profile,
-    query: &protocol::ProfileZoneStatsQuery,
-) -> protocol::ProfileZoneStats {
-    let (start, _) = profile.span();
-    let range = absolute(profile, query.range);
-    let stats = profile.zone_stats(
-        &query.name,
-        (range, query.threads.as_deref()),
-        query.band.map(Into::into),
-        query.rank_of,
-    );
-    let value = |value: u32| profile.label_value(value).map(str::to_owned);
-
-    protocol::ProfileZoneStats {
-        count: stats.count,
-        total: stats.total,
-        flagged: stats.flagged,
-        min: stats.min,
-        median: stats.median,
-        p90: stats.p90,
-        p99: stats.p99,
-        max: stats.max,
-        histogram: stats
-            .histogram
-            .iter()
-            .map(|&bucket| bucket.into())
-            .collect(),
-        longest: stats
-            .longest
-            .iter()
-            .map(|zone| protocol::ProfileZoneAt {
-                thread: zone.thread,
-                start: zone.start - start,
-                end: zone.end - start,
-                value: value(zone.value),
-            })
-            .collect(),
-        banded: stats.banded.into(),
-        shorter: stats.shorter,
-        values: stats
-            .values
-            .iter()
-            .map(|&(text, total, count)| protocol::ProfileLabelValue {
-                value: value(text).unwrap_or_default(),
-                total,
-                count,
-            })
-            .collect(),
-    }
-}
-
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "no view can show a part in 2^53"
-)]
-const fn exact_time(time: i64) -> f64 {
-    time as f64
-}
-
-struct Named<'a, 'k> {
-    keys_of: &'a Keys<'k>,
-
-    base_of: Option<&'a Keys<'k>>,
-    indices: BTreeMap<(bool, u32), u32>,
-    keys: Vec<ProfileKey>,
-}
-
-impl<'a, 'k> Named<'a, 'k> {
-    const fn new(keys_of: &'a Keys<'k>) -> Self {
-        Self {
-            keys_of,
-            base_of: None,
-            indices: BTreeMap::new(),
-            keys: Vec::new(),
-        }
-    }
-
-    const fn with_base(keys_of: &'a Keys<'k>, base_of: &'a Keys<'k>) -> Self {
-        Self {
-            keys_of,
-            base_of: Some(base_of),
-            indices: BTreeMap::new(),
-            keys: Vec::new(),
-        }
-    }
-
-    fn index(&mut self, key: u32) -> u32 {
-        self.index_on(Side::Current, key)
-    }
-
-    fn index_on(&mut self, side: Side, key: u32) -> u32 {
-        let from_base = side == Side::Base;
-        if let Some(index) = self.indices.get(&(from_base, key)) {
-            return *index;
-        }
-
-        let keys = match (side, self.base_of) {
-            (Side::Base, Some(base)) => base,
-            _ => self.keys_of,
-        };
-
-        let index = u32::try_from(self.keys.len()).unwrap_or(u32::MAX);
-        let location = keys.location(key);
-        self.keys.push(ProfileKey {
-            name: keys.exact_name(key),
-            kind: match keys.kind(key) {
-                KeyKind::Function { .. } => ProfileKeyKind::Function,
-                KeyKind::Line { .. } => ProfileKeyKind::Line,
-                KeyKind::Address { .. } => ProfileKeyKind::Address,
-                KeyKind::Truncation { .. } => ProfileKeyKind::Truncation,
-                KeyKind::Task { .. } => ProfileKeyKind::Task,
-                KeyKind::Group { .. } => ProfileKeyKind::Group,
-                KeyKind::Label { .. } => ProfileKeyKind::Label,
-                KeyKind::Syscall { .. } => ProfileKeyKind::Syscall,
-            },
-            module: keys.module(key).map(str::to_owned),
-            file: location.map(|(file, _)| file.to_owned()),
-            line: location.map(|(_, line)| line),
-        });
-        self.indices.insert((from_base, key), index);
-        index
-    }
-}
-
-fn put_weights(bytes: &mut Vec<u8>, weights: &[u64]) {
-    for weight in weights {
-        bytes.extend_from_slice(&exact(*weight).to_le_bytes());
-    }
-}
-
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "no view can show a part in 2^53"
-)]
-const fn exact(weight: u64) -> f64 {
-    weight as f64
-}
-
 fn json(value: &impl serde::Serialize) -> (Value, Vec<u8>) {
     (to_value(value), Vec::new())
 }
@@ -1598,15 +771,12 @@ mod tests {
         if let Some(thread) = unlisted {
             thread.join().expect("the recording's thread ends");
         }
-
         assert!(
             profiles
                 .recordings
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .is_empty(),
-            "an ended recording is not listed"
+                .is_empty()
         );
-        profiles.shutdown();
     }
 }

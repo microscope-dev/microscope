@@ -2,6 +2,7 @@ import { useNavigate } from "@solidjs/router";
 import { createEffect, createMemo, createSignal, For, onSettled, Show } from "solid-js";
 
 import { checkAccount, useAccount } from "../../account";
+import { captureDownloadUrl } from "../../captures";
 import {
   activeView,
   closeDashboards,
@@ -321,11 +322,27 @@ function SessionDetail(props: {
           <button type="button" class="tb ghost" onClick={copyLink}>
             Copy link
           </button>
+          <Show when={props.session.captureId && !props.session.capture?.deleted}>
+            <a
+              class="tb ghost"
+              href={captureDownloadUrl(props.session.captureId as number)}
+              download
+            >
+              Download .usprof
+            </a>
+          </Show>
         </div>
       </div>
 
       <div class="dash-detail-meta muted">
         <span>By {props.session.ownerUsername}</span>
+        <Show when={props.session.capture}>
+          {(cap) => (
+            <span>
+              · Capture ({cap().projectName}, {formatBytes(cap().byteLen)})
+            </span>
+          )}
+        </Show>
         <Show when={props.session.keptAt !== null}>
           <span>· Kept</span>
         </Show>
@@ -714,6 +731,9 @@ function OpenDashboardsWindow() {
                         >
                           <div class="dash-card-head">
                             <strong>{s.name || `Session #${s.id}`}</strong>
+                            <Show when={s.captureId !== null && s.captureId !== undefined}>
+                              <span class="scope-badge">capture</span>
+                            </Show>
                             <Show when={s.pinStatus === "pinned"}>
                               <span class="scope-badge scope-badge-pin">pinned</span>
                             </Show>

@@ -11,7 +11,7 @@ mod picker;
 mod profiles;
 mod protocol;
 mod session;
-mod syscalls;
+mod share;
 pub mod terminal;
 mod values;
 

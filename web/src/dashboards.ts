@@ -57,6 +57,20 @@ export interface DashboardRecord {
   updatedAt: number | null;
 }
 
+export interface CaptureMeta {
+  id: number;
+  name: string;
+  projectId: number;
+  projectName: string;
+  byteLen: number;
+  samples: number;
+  durationNs: number;
+  redactedCount: number;
+  createdAt: number;
+  expiresAt: number | null;
+  deleted: boolean;
+}
+
 export interface SessionRecord {
   id: number;
   orgId: number;
@@ -67,6 +81,8 @@ export interface SessionRecord {
   name: string | null;
   sourceDashboardId: number | null;
   sourceBuiltin: string | null;
+  captureId?: number | null;
+  capture?: CaptureMeta | null;
   layout: unknown;
   scope: ViewScope;
   notes: string;
@@ -899,6 +915,8 @@ export interface ActiveViewState {
   mode: "dashboard" | "session";
   dashboardId: string | null;
   sessionId: number | null;
+  captureId: number | null;
+  capture: CaptureMeta | null;
   title: string;
   builtin: boolean;
   canEdit: boolean;
@@ -939,6 +957,8 @@ const INACTIVE_VIEW: ActiveViewState = {
   mode: "dashboard",
   dashboardId: null,
   sessionId: null,
+  captureId: null,
+  capture: null,
   title: "",
   builtin: false,
   canEdit: false,
@@ -1362,4 +1382,126 @@ export function formatTimeShort(ns: number): string {
 
 export function scopeKey(scope: ViewScope, sessionId: number | null, revision: number): string {
   return `${revision}:${sessionId ?? "live"}:${JSON.stringify(scope)}`;
+}
+
+export type CopyQuerySpec =
+  | { kind: "flame"; invert?: boolean; tree?: boolean }
+  | { kind: "over-time"; groupBy: string }
+  | { kind: "by-machine" }
+  | { kind: "breakdown"; dimension: string };
+
+function quoteShell(arg: string): string {
+  if (/^[A-Za-z0-9_./:=,@+-]+$/u.test(arg)) {
+    return arg;
+  }
+  return `'${arg.replaceAll("'", "'\"'\"'")}'`;
+}
+
+function formatDurationFlag(secs: number): string {
+  if (secs > 0 && secs % 86_400 === 0) {
+    return `${secs / 86_400}d`;
+  }
+  if (secs > 0 && secs % 3600 === 0) {
+    return `${secs / 3600}h`;
+  }
+  if (secs > 0 && secs % 60 === 0) {
+    return `${secs / 60}m`;
+  }
+  return `${secs}s`;
+}
+
+export function buildQueryCommand(
+  spec: CopyQuerySpec,
+  scope: ViewScope,
+  sessionId: number | null,
+  serverOrigin?: string,
+): string {
+  const parts: string[] = ["microscope", "query", spec.kind];
+
+  if (spec.kind === "flame") {
+    if (spec.invert) {
+      parts.push("--invert");
+    }
+    if (spec.tree) {
+      parts.push("--tree");
+    }
+  } else if (spec.kind === "over-time") {
+    parts.push("--group-by", spec.groupBy);
+  } else if (spec.kind === "breakdown") {
+    parts.push("--dimension", spec.dimension);
+  }
+
+  if (serverOrigin && serverOrigin !== "https://microscope.dev") {
+    parts.push("--server", serverOrigin);
+  }
+  if (sessionId !== null) {
+    parts.push("--session", String(sessionId));
+  }
+  if (scope.org_id !== null && scope.org_id !== undefined) {
+    parts.push("--org", String(scope.org_id));
+  }
+  for (const pid of scope.project_ids) {
+    parts.push("--project", String(pid));
+  }
+  for (const f of scope.filters) {
+    parts.push("--filter", `${f.dimension}=${f.value}`);
+  }
+  if (scope.time_range.kind === "relative") {
+    parts.push("--last", formatDurationFlag(scope.time_range.duration_secs));
+  } else {
+    parts.push(
+      "--from",
+      String(scope.time_range.start_time),
+      "--to",
+      String(scope.time_range.end_time),
+    );
+  }
+  if (scope.compare?.kind === "previous_version") {
+    parts.push("--compare", "previous-version");
+  }
+
+  return parts.map((arg) => quoteShell(arg)).join(" ");
+}
+
+export function buildCurlCommand(
+  spec: CopyQuerySpec,
+  scope: ViewScope,
+  sessionId: number | null,
+  serverOrigin: string,
+): string {
+  const origin = serverOrigin.replace(/\/+$/u, "");
+  const path =
+    spec.kind === "flame"
+      ? "/api/query/flame"
+      : spec.kind === "over-time"
+        ? "/api/query/over-time"
+        : spec.kind === "by-machine"
+          ? "/api/query/by-machine"
+          : "/api/query/breakdown";
+
+  const body: Record<string, unknown> = { scope };
+  if (sessionId !== null) {
+    body.session_id = sessionId;
+  }
+  if (spec.kind === "flame" && spec.invert) {
+    body.invert = true;
+  } else if (spec.kind === "over-time") {
+    body.group_by = spec.groupBy;
+  } else if (spec.kind === "breakdown") {
+    body.dimension = spec.dimension;
+  }
+
+  return [
+    "curl",
+    "-sS",
+    "-X",
+    "POST",
+    quoteShell(`${origin}${path}`),
+    "-H",
+    '"Authorization: Bearer $MICROSCOPE_TOKEN"',
+    "-H",
+    "'Content-Type: application/json'",
+    "-d",
+    quoteShell(JSON.stringify(body)),
+  ].join(" ");
 }

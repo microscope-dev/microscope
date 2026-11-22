@@ -2,8 +2,12 @@ import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, Match, Show, Switch } from "solid-js";
 
 import { checkAccount, useAccount } from "../../account";
+import { copyText } from "../../clipboard";
 import {
+  buildCurlCommand,
+  buildQueryCommand,
   computeLagMs,
+  type CopyQuerySpec,
   DEFAULT_SCOPE,
   formatDataLag,
   normalizeScope,
@@ -15,8 +19,10 @@ import {
 } from "../../dashboards";
 import { KIND } from "../../documents";
 import { openMachines } from "../../fleet";
+import { flash } from "../../tab";
 import type { Json, Pane, PaneId } from "../../workbench/layout";
 import { change } from "../../workbench/store";
+import { useDismiss } from "../dialog";
 import { showPane } from "../panes";
 
 export function updatePaneParams(id: PaneId, patch: Record<string, Json | undefined>): void {
@@ -210,6 +216,83 @@ export function LinkToggle(props: { linked: boolean; onToggle: () => void }) {
     >
       {props.linked ? "Linked" : "Unlinked"}
     </button>
+  );
+}
+
+export function CopyQueryMenu(props: {
+  spec: CopyQuerySpec;
+  scope: ViewScope;
+  sessionId: number | null;
+}) {
+  const [open, setOpen] = createSignal(false);
+  let anchor: HTMLDivElement | undefined;
+  useDismiss(
+    () => anchor,
+    open,
+    () => setOpen(false),
+  );
+
+  const copyCli = async () => {
+    const origin = typeof window === "undefined" ? undefined : window.location.origin;
+    const cmd = buildQueryCommand(props.spec, props.scope, props.sessionId, origin);
+    setOpen(false);
+    if (await copyText(cmd)) {
+      flash("Copied microscope query command.");
+    } else {
+      flash("Could not copy query command.");
+    }
+  };
+
+  const copyCurl = async () => {
+    const origin =
+      typeof window === "undefined" ? "https://microscope.dev" : window.location.origin;
+    const cmd = buildCurlCommand(props.spec, props.scope, props.sessionId, origin);
+    setOpen(false);
+    if (await copyText(cmd)) {
+      flash("Copied curl API call.");
+    } else {
+      flash("Could not copy curl command.");
+    }
+  };
+
+  return (
+    <div
+      class="anchor copy-query-wrap"
+      ref={(node) => {
+        anchor = node;
+      }}
+    >
+      <button
+        type="button"
+        class="tb ghost"
+        data-testid="copy-query-btn"
+        aria-haspopup="menu"
+        aria-expanded={open() ? "true" : "false"}
+        onClick={() => setOpen((was) => !was)}
+      >
+        Copy query
+      </button>
+      <Show when={open()}>
+        <div class="popover menu copy-query-menu" role="menu" aria-label="Copy query">
+          <button
+            type="button"
+            role="menuitem"
+            data-testid="copy-query-cli"
+            onClick={() => void copyCli()}
+          >
+            Copy <code>microscope query</code>
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            data-testid="copy-query-curl"
+            onClick={() => void copyCurl()}
+          >
+            Copy <code>curl</code> API call
+          </button>
+        </div>
+      </Show>
+    </div>
   );
 }
 

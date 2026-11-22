@@ -8,12 +8,12 @@ mod tests;
 
 use std::fmt::Write as _;
 
-use microscope::syscalls::blobs;
-use microscope::syscalls::fds::FdTable;
-use microscope::syscalls::filter::fd_value;
-use microscope::syscalls::specs::{self, Arg, Count, Direction, MemKind, Ret, Spec};
-use microscope::syscalls::{
-    Abi, Capture, CaptureState, Errno, EventFlags, Outcome, Pid, ProcessEnd, SyscallEvent, Tid,
+use crate::syscalls::blobs;
+use crate::syscalls::fds::FdTable;
+use crate::syscalls::filter::fd_value;
+use crate::syscalls::specs::{self, Arg, Count, Direction, MemKind, Ret, Spec};
+use crate::syscalls::{
+    Abi, Capture, CaptureState, Errno, EventFlags, Outcome, Pid, ProcessEnd, SyscallEvent,
     TraceEvent,
 };
 use nix::libc;
@@ -201,35 +201,6 @@ pub struct Context<'a> {
     pub fds: Option<&'a FdTable>,
 
     pub before: bool,
-}
-
-#[must_use]
-pub fn caught(stop: &microscope::SyscallStop) -> String {
-    let event = SyscallEvent {
-        thread: Tid::new(0),
-        process: Pid::new(0),
-        call: stop.call,
-        args: stop.args,
-        captured: stop.captured.to_vec(),
-        outcome: stop
-            .returned
-            .map_or(Outcome::Unfinished, Outcome::of_return),
-        entered: None,
-        exited: None,
-        stack: None,
-        flags: microscope::syscalls::EventFlags::default(),
-    };
-
-    let context = Context {
-        fds: None,
-        before: true,
-    };
-
-    if stop.returned.is_some() {
-        call(&event, context).text()
-    } else {
-        entry(&event, context).text()
-    }
 }
 
 #[must_use]

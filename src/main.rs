@@ -159,6 +159,8 @@ async fn async_main() -> ExitCode {
         Some(Tool::Report(report)) => return cli::profile::run_report(report),
         Some(Tool::Symbolize(symbolize)) => return cli::profile::run_symbolize(symbolize),
         Some(Tool::Symbols(symbols)) => return cli::symbols::run(symbols),
+        Some(Tool::Upload(upload)) => return cli::upload::run(upload),
+        Some(Tool::Query(query)) => return cli::query::run(query),
         Some(Tool::Login(login)) => return cli::auth::run_login(login),
         Some(Tool::Logout(logout)) => return cli::auth::run_logout(logout),
         Some(Tool::Whoami) => return cli::auth::run_whoami(),

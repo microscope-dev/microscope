@@ -7,6 +7,7 @@ pub mod sanitize;
 pub mod spans;
 pub mod symbols;
 pub mod syscalls;
+pub mod view;
 
 pub use model::{Architecture, ByteOrder, CodeRole, PointerWidth, TargetDescription};
 

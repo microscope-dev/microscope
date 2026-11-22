@@ -12,6 +12,7 @@ import {
 } from "solid-js";
 
 import { withinBase } from "../../base";
+import { isCaptureProfile } from "../../captures";
 import { parseSearch } from "../../focus";
 import { toHref } from "../../history";
 import {
@@ -49,6 +50,7 @@ import {
 import { threadName } from "../../profile/zones";
 import type { ProfileCommand, ProfileInfo, ProfileSummary } from "../../protocol";
 import { useConnection, useModel } from "../../store";
+import { openShare } from "../../tab";
 import type { PaneProps } from "../../workbench/kinds";
 import { change, useLayout, useLink, workbench } from "../../workbench/store";
 import { useDialogFocus, useDismiss } from "../dialog";
@@ -93,9 +95,10 @@ export function ProfilePaneBody(props: PaneProps) {
 
   const pathname = createMemo(() => withinBase(location.pathname));
   const inSession = createMemo(() => pathname().startsWith("/s/"));
+  const hosted = createMemo(() => isCaptureProfile(profile()));
   const addressed = createMemo(() => pathname() === `/profile/${profile()}`);
   const focused = useLayout((layout) => leadingPane(layout) === props.id);
-  const leads = createMemo(() => focused() && !inSession());
+  const leads = createMemo(() => focused() && !inSession() && !hosted());
 
   const search = createMemo(() => (leads() ? parseSearch(location.search) : null));
 
@@ -107,7 +110,9 @@ export function ProfilePaneBody(props: PaneProps) {
     }
     const next = by(now);
     const leading =
-      leadingPane(layout) === props.id && !withinBase(location.pathname).startsWith("/s/");
+      leadingPane(layout) === props.id &&
+      !withinBase(location.pathname).startsWith("/s/") &&
+      !isCaptureProfile(profile());
     change((each) => storeLook(each, props.id, next, carry).layout);
     if (leading) {
       navigate(toHref(`/profile/${profile()}`, next as Record<string, unknown>), {
@@ -370,12 +375,25 @@ function ProfileHead() {
   const zoned = createMemo(() => focus().summary.zoneSites.length > 0);
   const showZones = () => focus().setLook((prev) => withLook(prev, "view", "zones"), true);
   const showDetails = () => focus().setLook((prev) => withLook(prev, "view", "details"), true);
+  const open = useModel((model) => model.link === "open");
+  const canShareUpload = createMemo(() => open() && !isCaptureProfile(focus().profile));
 
   return (
     <div class="profile-head">
       <button type="button" class="tb ghost" onClick={showDetails}>
         File details
       </button>
+      <Show when={canShareUpload()}>
+        <button
+          type="button"
+          class="tb ghost"
+          data-testid="profile-share"
+          title="Upload this capture to Microscope and get a shareable link"
+          onClick={() => openShare(focus().profile)}
+        >
+          Share
+        </button>
+      </Show>
       <Show when={snapshots()}>
         <div class="segmented">
           <For each={SOURCES}>

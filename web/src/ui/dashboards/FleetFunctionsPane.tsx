@@ -11,6 +11,7 @@ import { nameOf, treeFromColumns } from "../../profile/tree";
 import type { PaneProps } from "../../workbench/kinds";
 import { useLoaded } from "../Orgs";
 import {
+  CopyQueryMenu,
   LinkToggle,
   PaneAuthGate,
   PaneEmptyState,
@@ -151,6 +152,7 @@ export function FleetFunctionsPane(props: PaneProps) {
               onInput={(e) => setFilter(e.currentTarget.value)}
             />
             <LinkToggle linked={ps.linked()} onToggle={ps.toggleLinked} />
+            <CopyQueryMenu spec={{ kind: "flame" }} scope={ps.scope()} sessionId={ps.sessionId()} />
             <PaneLagBadge linked={ps.linked()} streamed={ps.streamed()} />
           </div>
           <div class="pane-body">

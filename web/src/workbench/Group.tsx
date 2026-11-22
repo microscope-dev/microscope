@@ -239,7 +239,10 @@ function TabBadge(props: {
   needs: string | null;
 }) {
   const { useMissing } = useDock();
-  const missing = useMissing(() => props.needs);
+  const missing = useMissing(
+    () => props.needs,
+    () => props.pane,
+  );
   return (
     <Show when={missing() === null}>
       <Dynamic component={props.Badge} id={props.id} pane={props.pane} />

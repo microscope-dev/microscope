@@ -1,5 +1,6 @@
 import { createComponent, createMemo, Show, useContext } from "solid-js";
 
+import { isCaptureProfile } from "../captures";
 import { DOCUMENT_KINDS, documentsGroup, KIND, single, sourcePane } from "../documents";
 import type { View } from "../focus";
 import type { ProfileLook } from "../profile/look";
@@ -16,11 +17,12 @@ import {
   type Layout,
   type LinkId,
   open,
+  type Pane,
   type PaneId,
   paneOf,
 } from "../workbench/layout";
 import { lastLayout } from "../workbench/persist";
-import { change, useLink, workbench } from "../workbench/store";
+import { change, useLayout, useLink, workbench } from "../workbench/store";
 import { AccountBody, ConnectBody } from "./Account";
 import { Breakpoints, BreakpointsBadge } from "./Breakpoints";
 import { Console } from "./Console";
@@ -46,7 +48,7 @@ import { Output, OutputBadge } from "./Output";
 import { fileName } from "./paths";
 import { StartBody } from "./Picker";
 import { Processes, ProcessesBadge } from "./Processes";
-import { overview, paneParams, showOverview } from "./profile/link";
+import { overview, paneParams, profileOf, showOverview, viewOf } from "./profile/link";
 import { ProfilePaneBody } from "./profile/ProfilePage";
 import { Registers, RegistersBadge } from "./Registers";
 import { KeysBody, SettingsBody } from "./Settings";
@@ -200,11 +202,18 @@ function ThreadsBadge() {
   return <Show when={count() > 0}>{(n) => <span class="count">{n()}</span>}</Show>;
 }
 
-export function useMissing(need: () => string | null): () => string | null {
+export function useMissing(need: () => string | null, pane?: () => Pane): () => string | null {
   const focus = useContext(FocusContext);
   const link = useModel((model) => model.link);
   const role = useModel((model) => model.hello?.role ?? null);
   const debugging = useModel((model) => model.state?.session ?? null);
+  const hostedCapture = useLayout((layout) => {
+    const currentPane = pane?.();
+    if (!currentPane || viewOf(currentPane) === undefined) {
+      return false;
+    }
+    return isCaptureProfile(profileOf(layout, currentPane));
+  });
   return createMemo(() => {
     const currentLink = link();
     const connection =
@@ -231,7 +240,7 @@ export function useMissing(need: () => string | null): () => string | null {
             : "Nothing is being debugged. Launch, attach, or open a core dump from the File menu.")
         );
       case "connection":
-        return connection;
+        return hostedCapture() ? null : connection;
       case "control":
         return connection ?? (role() === "control" ? null : "This link can only view the session.");
       default:
@@ -367,7 +376,7 @@ export function startLayout(): Layout {
       });
 }
 
-export type Wants = "session" | "start" | "fleet";
+export type Wants = "session" | "start" | "fleet" | "capture";
 
 const FLEET_KINDS: ReadonlySet<KindId> = new Set([
   KIND.fleetOverTime,
@@ -403,10 +412,14 @@ export function misplaced(layout: Layout, wants: Wants): boolean {
     return true;
   }
   const session = panes.some((pane) => KINDS.get(pane.kind).needs === "session");
+  const hasCapture = panes.some((pane) => isCaptureProfile(profileOf(layout, pane)));
   if (wants === "fleet") {
-    return session || !panes.some((pane) => FLEET_KINDS.has(pane.kind));
+    return session || hasCapture || !panes.some((pane) => FLEET_KINDS.has(pane.kind));
   }
-  return wants === "session" ? !session : session;
+  if (wants === "capture") {
+    return session || !panes.some((pane) => viewOf(pane) !== undefined);
+  }
+  return wants === "session" ? !session : session || hasCapture;
 }
 
 export function restoreLayout(): string | null {

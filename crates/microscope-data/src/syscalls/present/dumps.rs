@@ -1,7 +1,7 @@
 use std::fmt::Write as _;
 
-use microscope::syscalls::blobs;
-use microscope::syscalls::{CaptureState, Outcome, SyscallEvent};
+use crate::syscalls::blobs;
+use crate::syscalls::{CaptureState, Outcome, SyscallEvent};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {

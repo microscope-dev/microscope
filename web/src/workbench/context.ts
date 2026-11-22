@@ -2,11 +2,12 @@ import { createContext, useContext } from "solid-js";
 
 import { assert } from "../assert";
 import type { Kinds } from "./kinds";
+import type { Pane } from "./layout";
 
 export interface DockSetup {
   readonly kinds: Kinds<string>;
 
-  useMissing(need: () => string | null): () => string | null;
+  useMissing(need: () => string | null, pane?: () => Pane): () => string | null;
 }
 
 export const DockContext = createContext<DockSetup | null>(null);

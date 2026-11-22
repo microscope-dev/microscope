@@ -142,7 +142,7 @@ function setMachineFilter(hostname: string | null) {
 
 export function ScopeBar() {
   const nowAccount = useAccount();
-  const isActive = useActiveView((v) => v.active);
+  const isActive = useActiveView((v) => v.active && v.captureId === null);
   const title = useActiveView((v) => v.title);
   const mode = useActiveView((v) => v.mode);
   const scope = useActiveView((v) => v.scope);

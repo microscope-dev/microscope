@@ -1,7 +1,7 @@
-use microscope::syscalls::SyscallEvent;
-use microscope::syscalls::blobs;
-use microscope::syscalls::sockaddr::SocketAddress;
-use microscope::syscalls::specs::{Arg, Count, Direction, Spec, Struct};
+use crate::syscalls::SyscallEvent;
+use crate::syscalls::blobs;
+use crate::syscalls::sockaddr::SocketAddress;
+use crate::syscalls::specs::{Arg, Count, Direction, Spec, Struct};
 use nix::libc;
 
 use super::{Kind, Tokens, sets};
@@ -908,7 +908,7 @@ pub fn siginfo(out: &mut Tokens, bytes: &[u8]) -> Option<()> {
     out.push(Kind::Constant, super::signal(signo));
     field(out, "si_code", Kind::Constant, si_code(signo, code));
     if errno != 0 {
-        let (name, _) = super::errno(microscope::syscalls::Errno(
+        let (name, _) = super::errno(crate::syscalls::Errno(
             u16::try_from(errno.unsigned_abs()).unwrap_or(0),
         ));
         field(out, "si_errno", Kind::Error, name);

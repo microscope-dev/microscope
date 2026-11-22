@@ -13,6 +13,7 @@ import { flash } from "../tab";
 import { isTextBox, keepsEscape } from "../workbench/keys";
 import { MenuBar } from "../workbench/MenuBar";
 import { COMMANDS, useCommands } from "./commands";
+import { CaptureSessionBar } from "./dashboards/CaptureSessionBar";
 import { DashboardsWindow } from "./dashboards/DashboardsWindow";
 import { ScopeBar } from "./dashboards/ScopeBar";
 import { DataWindow } from "./data/DataWindow";
@@ -88,6 +89,7 @@ export function Frame(props: { children?: JSX.Element }) {
             <RunToolbar />
           </Show>
           <ScopeBar />
+          <CaptureSessionBar />
         </header>
         {props.children}
         <StatusBar />

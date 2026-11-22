@@ -20,6 +20,7 @@ import { useLoaded } from "../Orgs";
 import { FlameGraph } from "../profile/FlameView";
 import { useTreeSearch } from "../profile/Search";
 import {
+  CopyQueryMenu,
   LinkToggle,
   PaneAuthGate,
   PaneEmptyState,
@@ -185,6 +186,11 @@ export function FleetFlamePane(props: PaneProps) {
               </button>
             </Show>
             <LinkToggle linked={ps.linked()} onToggle={ps.toggleLinked} />
+            <CopyQueryMenu
+              spec={{ kind: "flame", invert: invert() }}
+              scope={ps.scope()}
+              sessionId={ps.sessionId()}
+            />
             <Show when={searched().note}>
               {(note) => (
                 <span class="muted" data-testid="matched">

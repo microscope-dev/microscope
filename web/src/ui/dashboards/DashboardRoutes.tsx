@@ -52,6 +52,12 @@ function useViewLifecycle(preserveOnSessionMove: boolean) {
       if (applyingLayout || state.layout === prev.layout) {
         return;
       }
+      if (
+        JSON.stringify({ ...state.layout, focused: "" }) ===
+        JSON.stringify({ ...prev.layout, focused: "" })
+      ) {
+        return;
+      }
       if (activeView.getState().active) {
         markViewLayoutDirty();
       }
@@ -105,6 +111,8 @@ export function DashboardRoute() {
             mode: "dashboard",
             dashboardId: record.id,
             sessionId: null,
+            captureId: null,
+            capture: null,
             title: record.name,
             builtin: record.builtin,
             canEdit: record.canEdit,
@@ -220,7 +228,10 @@ export function RecordedSessionRoute(props: { sessionId: number }) {
           }
           flushActiveViewSave();
           const scope = normalizeScope({ ...session.scope, org_id: session.orgId });
-          applySavedLayout(session.layout);
+          const isCaptureSession = (session.captureId ?? null) !== null;
+          if (!session.locked) {
+            applySavedLayout(session.layout);
+          }
           activeView.setState({
             active: true,
             mode: "session",
@@ -228,7 +239,13 @@ export function RecordedSessionRoute(props: { sessionId: number }) {
               session.sourceBuiltin ??
               (session.sourceDashboardId ? String(session.sourceDashboardId) : null),
             sessionId: session.id,
-            title: session.name ?? `Session #${session.id}`,
+            captureId: session.captureId ?? null,
+            capture: session.capture ?? null,
+            title:
+              session.name ??
+              (isCaptureSession
+                ? (session.capture?.name ?? `Session #${session.id}`)
+                : `Session #${session.id}`),
             builtin: false,
             canEdit: session.isOwner,
             isOwner: session.isOwner,
@@ -266,6 +283,9 @@ export function RecordedSessionRoute(props: { sessionId: number }) {
   );
 
   const error = useActiveView((v) => v.error);
+  const captureId = useActiveView((v) => v.captureId);
+  const captureDeleted = useActiveView((v) => v.capture?.deleted === true);
+  const locked = useActiveView((v) => v.locked);
 
   return (
     <Show
@@ -291,13 +311,28 @@ export function RecordedSessionRoute(props: { sessionId: number }) {
         </Workbench>
       }
     >
-      <Workbench focus={null} wants="fleet" start={fleetOverviewLayout}>
+      <Workbench
+        focus={null}
+        wants={captureId() === null ? "fleet" : "capture"}
+        start={fleetOverviewLayout}
+      >
         <Show when={error()}>
           {(msg) => (
             <div class="workbench-notice error" role="alert">
               {msg()}
             </div>
           )}
+        </Show>
+        <Show when={locked()}>
+          {/* oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- styled notice */}
+          <div class="workbench-notice" role="status" data-testid="session-locked-notice">
+            You do not have permission to view this project.
+          </div>
+        </Show>
+        <Show when={captureDeleted()}>
+          <div class="workbench-notice error" role="alert" data-testid="capture-deleted-notice">
+            This capture has expired or been removed.
+          </div>
         </Show>
       </Workbench>
     </Show>
