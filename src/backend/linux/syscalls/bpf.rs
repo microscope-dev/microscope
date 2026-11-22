@@ -112,7 +112,7 @@ pub const DEFAULT_RING: u32 = 2 << 20;
 
 pub const STACK_COPY_RING: u32 = 8 << 20;
 
-const SMALLEST_RING: u32 = 256 << 10;
+pub const SMALLEST_RING: u32 = 256 << 10;
 
 pub const CAPPED_BYTES: u32 = 16;
 
@@ -1168,6 +1168,8 @@ pub struct BpfOptions {
     pub exceptions: Option<Exceptions>,
 
     pub streamed_per_second: Option<u32>,
+
+    pub max_ring_bytes: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1342,7 +1344,7 @@ fn load_object(btf: &Btf, rows: u32) -> Result<Ebpf, BpfError> {
         .map_err(load_error)
 }
 
-fn rings(ebpf: &mut Ebpf, engine: BpfOptions) -> Result<Vec<RingBuf<MapData>>, BpfError> {
+fn rings(ebpf: &mut Ebpf, engine: BpfOptions) -> Result<(Vec<RingBuf<MapData>>, u32), BpfError> {
     let mut events: ArrayOfMaps<&mut MapData, MapData> =
         ArrayOfMaps::try_from(ebpf.map_mut("EVENTS").ok_or_else(|| missing("EVENTS"))?)
             .map_err(load_error)?;
@@ -1352,6 +1354,14 @@ fn rings(ebpf: &mut Ebpf, engine: BpfOptions) -> Result<Vec<RingBuf<MapData>>, B
     } else {
         DEFAULT_RING
     };
+    if let Some(cap) = engine.max_ring_bytes {
+        let cap_pow2 = if cap == 0 {
+            SMALLEST_RING
+        } else {
+            (1_u32 << (u32::BITS - 1 - cap.leading_zeros())).max(SMALLEST_RING)
+        };
+        bytes = bytes.min(cap_pow2);
+    }
 
     'sizes: loop {
         let mut rings = Vec::with_capacity(cpus);
@@ -1380,7 +1390,7 @@ fn rings(ebpf: &mut Ebpf, engine: BpfOptions) -> Result<Vec<RingBuf<MapData>>, B
             rings.push(RingBuf::try_from(aya::maps::Map::RingBuf(ring)).map_err(load_error)?);
         }
 
-        return Ok(rings);
+        return Ok((rings, bytes));
     }
 }
 
@@ -1444,6 +1454,7 @@ struct Loaded {
     rows: Vec<SyscallId>,
     traced_calls: CallSet,
     stack_copy: bool,
+    ring_bytes: u32,
 
     fence: (
         ArrayOfMaps<MapData, Array<MapData, u32>>,
@@ -1501,7 +1512,7 @@ impl Loaded {
         );
 
         let mut ebpf = load_object(&btf, rows)?;
-        let rings = rings(&mut ebpf, engine)?;
+        let (rings, ring_bytes) = rings(&mut ebpf, engine)?;
         let mut specs = Vec::with_capacity(chosen.len());
         let session = 1;
         let base;
@@ -1573,6 +1584,7 @@ impl Loaded {
             rows: calls,
             traced_calls: options.calls.clone(),
             stack_copy: engine.stack_copy,
+            ring_bytes,
             fence,
             unexeced,
             generation: 0,
@@ -2282,6 +2294,11 @@ impl Engine {
         if loaded.stack_copy != engine.stack_copy {
             return false;
         }
+        if let Some(cap) = engine.max_ring_bytes
+            && loaded.ring_bytes > cap.max(SMALLEST_RING)
+        {
+            return false;
+        }
         loaded.traced_calls == options.calls
     }
 
@@ -2467,8 +2484,10 @@ fn run_with(
     let healthy = if persistent {
         for root in roots {
             traced.insert(root);
-            for child in perf::descendants(root) {
-                traced.insert(child);
+            if options.follow {
+                for child in perf::descendants(root) {
+                    traced.insert(child);
+                }
             }
         }
         loaded.reset(&traced, &laid_out).is_ok()
@@ -2520,28 +2539,35 @@ fn begin(
             }
             if options.stacks.is_some() {
                 mappings.push(
-                    perf::Events::attach_many(&live_roots, &MAPPINGS, MAPPING_EVENTS)
-                        .map_err(BpfError::Mappings)?,
+                    perf::Events::attach_many(
+                        &live_roots,
+                        options.follow,
+                        &MAPPINGS,
+                        MAPPING_EVENTS,
+                    )
+                    .map_err(BpfError::Mappings)?,
                 );
             }
 
             let mut all_procs: BTreeSet<u32> = live_roots.iter().copied().collect();
-            loop {
-                let mut found = Vec::new();
-                for &root in &live_roots {
-                    for child in perf::descendants(root) {
-                        if !all_procs.contains(&child) {
-                            found.push(child);
+            if options.follow {
+                loop {
+                    let mut found = Vec::new();
+                    for &root in &live_roots {
+                        for child in perf::descendants(root) {
+                            if !all_procs.contains(&child) {
+                                found.push(child);
+                            }
                         }
                     }
-                }
-                if found.is_empty() {
-                    break;
-                }
-                for child in found {
-                    targeted.insert(child);
-                    loaded.also_target(child)?;
-                    all_procs.insert(child);
+                    if found.is_empty() {
+                        break;
+                    }
+                    for child in found {
+                        targeted.insert(child);
+                        loaded.also_target(child)?;
+                        all_procs.insert(child);
+                    }
                 }
             }
 

@@ -81,6 +81,8 @@ pub mod flag {
     pub const USE_CLOCKID: u64 = 1 << 25;
 
     pub const CONTEXT_SWITCH: u64 = 1 << 26;
+
+    pub const INHERIT_THREAD: u64 = 1 << 35;
 }
 
 pub mod sample {

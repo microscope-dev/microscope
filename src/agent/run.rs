@@ -328,9 +328,9 @@ fn poll_loop(
                                     .set_applied_policy(policy.version, policy.sanitizer_version);
                             }
                         }
-                        ControlEffect::Burst(burst) => {
+                        ControlEffect::Bursts(bursts) => {
                             if let Some(p) = &pipeline {
-                                p.apply_burst(burst);
+                                p.apply_bursts(bursts);
                             }
                         }
                     }

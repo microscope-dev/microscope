@@ -35,7 +35,7 @@ pub use annotate::{CodeBlock, CodeLine, Disassembly, InstructionCost, LineCost, 
 pub use collector::ProbeSelection;
 pub use session::{
     Attachment, Recording, Save, Watch, affordable_rate, record, record_attached,
-    record_attached_many, record_watched,
+    record_attached_many, record_attached_many_exact, record_watched,
 };
 pub use symbols::ModuleSymbols;
 pub use syscall_trace::{
@@ -200,6 +200,8 @@ pub struct RecordOptions {
 
     pub ring_pages: usize,
 
+    pub max_queue_bytes: Option<usize>,
+
     pub max_events: usize,
 
     pub off_cpu: bool,
@@ -237,6 +239,7 @@ impl RecordOptions {
             kernel_stacks: false,
             max_frames: 512,
             ring_pages: preset.ring_pages(),
+            max_queue_bytes: None,
             max_events: 65_536,
             off_cpu: preset.off_cpu(),
             budget: preset.budget(),

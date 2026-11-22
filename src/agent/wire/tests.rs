@@ -1,6 +1,8 @@
 use proptest::prelude::*;
 
-use super::{EnrollKey, EnrollKeyError, KeyPair, Server, ServerError, signed_message};
+use super::{
+    EnrollKey, EnrollKeyError, KeyPair, PollResponse, Server, ServerError, signed_message,
+};
 
 const RFC_8032_SEED: [u8; 32] = [
     0x9d, 0x61, 0xb1, 0x9d, 0xef, 0xfd, 0x5a, 0x60, 0xba, 0x84, 0x4a, 0xf4, 0x92, 0xec, 0x2c, 0xc4,
@@ -106,6 +108,53 @@ fn a_server_url_carries_the_origin_and_maybe_the_key() {
         Server::parse("http://127.0.0.1.evil.test"),
         Err(ServerError::Scheme)
     );
+}
+
+#[test]
+fn poll_response_decodes_services_sanitizer_pattern_and_concurrent_bursts() {
+    let raw = r#"{
+        "version": 42,
+        "revoked": false,
+        "watch": null,
+        "flush": null,
+        "policy": {
+            "version": 7,
+            "sanitizer_version": 3,
+            "preset": "prod",
+            "time_unit": "1ms",
+            "rules": [],
+            "project_policies": [
+                { "project": "checkout", "preset": "dev", "time_unit": "1us" }
+            ],
+            "sanitizer": {
+                "enabled_builtins": ["emails"],
+                "rules": [
+                    {
+                        "name": "stripe key",
+                        "fields": ["syscall.string"],
+                        "pattern": "sk_live_[0-9a-zA-Z]+",
+                        "action": "redact",
+                        "project": "checkout"
+                    }
+                ],
+                "hash_key": "dGVzdGtleQ"
+            }
+        },
+        "bursts": [
+            { "id": 10, "duration_ms": 60000, "preset": "dev", "time_unit": "1us", "project": "checkout", "ends_at_ns": 999999999999 },
+            { "id": 11, "duration_ms": 60000, "preset": "max", "time_unit": "1ns", "project": "billing", "ends_at_ns": 999999999999 }
+        ],
+        "poll_after_ms": 50
+    }"#;
+    let decoded: PollResponse = serde_json::from_str(raw).expect("decode services PollResponse");
+    let policy = decoded.policy.expect("policy present");
+    let san = policy.sanitizer.expect("sanitizer present");
+    assert_eq!(san.rules.len(), 1);
+    assert_eq!(san.rules[0].pattern, "sk_live_[0-9a-zA-Z]+");
+    assert_eq!(san.rules[0].project.as_deref(), Some("checkout"));
+    assert_eq!(decoded.bursts.len(), 2);
+    assert_eq!(decoded.bursts[0].project.as_deref(), Some("checkout"));
+    assert_eq!(decoded.bursts[1].project.as_deref(), Some("billing"));
 }
 
 impl PartialEq for super::KeyPair {

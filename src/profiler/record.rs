@@ -341,6 +341,7 @@ pub struct Processor {
     paired: Option<(interpreted::RecordKey, Vec<u8>)>,
 
     paired_bytes: Vec<u8>,
+    exact_pids: Option<BTreeSet<Pid>>,
 }
 
 impl Processor {
@@ -402,7 +403,12 @@ impl Processor {
             interpreted: None,
             paired: None,
             paired_bytes: Vec::new(),
+            exact_pids: None,
         }
+    }
+
+    pub(super) fn restrict_pids(&mut self, pids: BTreeSet<Pid>) {
+        self.exact_pids = Some(pids);
     }
 
     pub fn interpret(&mut self, outputs: Vec<u64>) {
@@ -823,7 +829,28 @@ impl Processor {
         }
     }
 
+    const fn record_pid(record: &decode::Record<'_>) -> Option<Pid> {
+        match record {
+            decode::Record::Sample(sample) => Some(sample.pid),
+            decode::Record::Mmap(mmap) => Some(mmap.pid),
+            decode::Record::Output { pid, .. }
+            | decode::Record::Comm { pid, .. }
+            | decode::Record::Fork { pid, .. }
+            | decode::Record::Exit { pid, .. }
+            | decode::Record::Switch { pid, .. } => Some(*pid),
+            decode::Record::Lost { .. }
+            | decode::Record::Throttle { .. }
+            | decode::Record::Other { .. } => None,
+        }
+    }
+
     pub(super) fn process(&mut self, record: decode::Record<'_>) {
+        if let Some(allowed) = &self.exact_pids
+            && let Some(pid) = Self::record_pid(&record)
+            && !allowed.contains(&pid)
+        {
+            return;
+        }
         let time = record.time().unwrap_or(self.latest);
         self.account_before(time);
         self.map_lost_before(time);

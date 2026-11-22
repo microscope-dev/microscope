@@ -308,8 +308,9 @@ impl Events {
         let start = sys::flag::DISABLED | sys::flag::ENABLE_ON_EXEC;
         let pid = i32::try_from(pid).map_err(|_| OpenError::Cpus(std::io::Error::other("pid")))?;
         let cpus = online_cpus().map_err(OpenError::Cpus)?;
-        let (rings, pages, _, lease) = rings(attr(options, start), pid, &cpus, options, leased)?;
-        let sideband = match sideband_attr(options, start) {
+        let (rings, pages, _, lease) =
+            rings(attr(options, start, true), pid, &cpus, options, leased)?;
+        let sideband = match sideband_attr(options, start, true) {
             Some(attr) => into_rings(&attr, pid, &cpus, &rings)?,
             None => Vec::new(),
         };
@@ -343,25 +344,27 @@ impl Events {
 
     pub fn attach_many(
         pids: &[u32],
+        inherit: bool,
         options: &EventOptions,
         budget: usize,
     ) -> Result<Self, OpenError> {
         let cpus = online_cpus().map_err(OpenError::Cpus)?;
-        Self::attach_starting(pids, options, budget, &cpus, 0)
+        Self::attach_starting(pids, inherit, options, budget, &cpus, 0)
     }
 
     fn attach_held(pid: u32, options: &EventOptions, budget: usize) -> Result<Self, OpenError> {
         let cpus = online_cpus().map_err(OpenError::Cpus)?;
-        Self::attach_starting(&[pid], options, budget, &cpus, sys::flag::DISABLED)
+        Self::attach_starting(&[pid], true, options, budget, &cpus, sys::flag::DISABLED)
     }
 
     fn attach_many_held(
         pids: &[u32],
+        inherit: bool,
         options: &EventOptions,
         budget: usize,
     ) -> Result<Self, OpenError> {
         let cpus = online_cpus().map_err(OpenError::Cpus)?;
-        Self::attach_starting(pids, options, budget, &cpus, sys::flag::DISABLED)
+        Self::attach_starting(pids, inherit, options, budget, &cpus, sys::flag::DISABLED)
     }
 
     pub fn attach_on(
@@ -370,19 +373,20 @@ impl Events {
         budget: usize,
         cpus: &[u32],
     ) -> Result<Self, OpenError> {
-        Self::attach_starting(&[pid], options, budget, cpus, 0)
+        Self::attach_starting(&[pid], true, options, budget, cpus, 0)
     }
 
     fn attach_starting(
         pids: &[u32],
+        follow_descendants: bool,
         options: &EventOptions,
         budget: usize,
         cpus: &[u32],
         start: u64,
     ) -> Result<Self, OpenError> {
         raise_descriptor_limit();
-        let mut attr = attr(options, start);
-        let sideband = sideband_attr(options, 0);
+        let mut attr = attr(options, start, follow_descendants);
+        let sideband = sideband_attr(options, 0, follow_descendants);
         let per_thread = cpus.len() * if sideband.is_some() { 2 } else { 1 };
         let mut opened = std::collections::BTreeSet::new();
         let mut owner = None;
@@ -399,8 +403,10 @@ impl Events {
                     }
                     Err(error) => last_err = Some(error),
                 }
-                for child in descendants(pid) {
-                    all_threads.extend(self::threads(child).unwrap_or_default());
+                if follow_descendants {
+                    for child in descendants(pid) {
+                        all_threads.extend(self::threads(child).unwrap_or_default());
+                    }
                 }
             }
             if !any_ok && opened.is_empty() {
@@ -718,10 +724,12 @@ impl Events {
             .take_spans(until)
     }
 
-    #[cfg(test)]
     pub(crate) const fn set_queue_bytes(&mut self, bytes: usize) {
-        debug_assert!(bytes <= QUEUE_BYTES);
-        self.queue_bytes = bytes;
+        self.queue_bytes = if bytes > QUEUE_BYTES {
+            QUEUE_BYTES
+        } else {
+            bytes
+        };
     }
 
     #[cfg(test)]
@@ -891,13 +899,22 @@ const fn sideband_flags(switches: bool) -> u64 {
         | if switches { flag::CONTEXT_SWITCH } else { 0 }
 }
 
-fn attr(options: &EventOptions, start: u64) -> sys::Attr {
+const fn inherit_flags(follow_descendants: bool) -> u64 {
+    use sys::flag;
+    if follow_descendants {
+        flag::INHERIT
+    } else {
+        flag::INHERIT | flag::INHERIT_THREAD
+    }
+}
+
+fn attr(options: &EventOptions, start: u64, follow_descendants: bool) -> sys::Attr {
     use sys::flag;
     let mut attr = sys::Attr {
         size: sys::ATTR_SIZE,
         sample_type: decode::SAMPLE_TYPE,
         flags: start
-            | flag::INHERIT
+            | inherit_flags(follow_descendants)
             | if options.kernel {
                 0
             } else {
@@ -945,7 +962,11 @@ fn attr(options: &EventOptions, start: u64) -> sys::Attr {
     attr
 }
 
-fn sideband_attr(options: &EventOptions, start: u64) -> Option<sys::Attr> {
+fn sideband_attr(
+    options: &EventOptions,
+    start: u64,
+    follow_descendants: bool,
+) -> Option<sys::Attr> {
     use sys::flag;
     (options.source != Source::Mappings).then(|| sys::Attr {
         size: sys::ATTR_SIZE,
@@ -953,7 +974,7 @@ fn sideband_attr(options: &EventOptions, start: u64) -> Option<sys::Attr> {
         config: sys::COUNT_SW_DUMMY,
         sample_type: decode::SAMPLE_ID_TYPE,
         flags: start
-            | flag::INHERIT
+            | inherit_flags(follow_descendants)
             | flag::EXCLUDE_HV
             | flag::SAMPLE_ID_ALL
             | flag::USE_CLOCKID
@@ -1051,6 +1072,10 @@ fn threads(pid: u32) -> std::io::Result<Vec<u32>> {
 }
 
 pub fn descendants(pid: u32) -> Vec<u32> {
+    descendants_except(pid, &std::collections::BTreeSet::new())
+}
+
+pub fn descendants_except(pid: u32, skip: &std::collections::BTreeSet<u32>) -> Vec<u32> {
     let mut children: std::collections::BTreeMap<u32, Vec<u32>> = std::collections::BTreeMap::new();
     for entry in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
         let Some(process) = entry
@@ -1074,7 +1099,11 @@ pub fn descendants(pid: u32) -> Vec<u32> {
     let mut tree = vec![pid];
     let mut next = 0;
     while let Some(&process) = tree.get(next) {
-        tree.extend(children.remove(&process).unwrap_or_default());
+        for child in children.remove(&process).unwrap_or_default() {
+            if !skip.contains(&child) {
+                tree.push(child);
+            }
+        }
         next += 1;
     }
     tree.remove(0);
@@ -1167,6 +1196,7 @@ pub struct AttachedMany {
 
 pub fn attach_many(
     pids: &[u32],
+    inherit: bool,
     options: &EventOptions,
     budget: usize,
     held: bool,
@@ -1178,9 +1208,9 @@ pub fn attach_many(
     }
     let wake = sys::handoff().map_err(OpenError::Handoff)?;
     let events = if held {
-        Events::attach_many_held(pids, options, budget)?
+        Events::attach_many_held(pids, inherit, options, budget)?
     } else {
-        Events::attach_many(pids, options, budget)?
+        Events::attach_many(pids, inherit, options, budget)?
     };
     Ok(AttachedMany {
         events,

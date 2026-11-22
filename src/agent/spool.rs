@@ -45,6 +45,7 @@ pub struct Spool {
     total_bytes: u64,
     next_chunk: u64,
     dropped_chunks: u64,
+    highest_lost_chunk: u64,
     owner_gen: u64,
 }
 
@@ -84,10 +85,16 @@ impl Spool {
             total_bytes,
             next_chunk,
             dropped_chunks: 0,
+            highest_lost_chunk: 0,
             owner_gen: 0,
         };
         spool.evict()?;
         Ok(spool)
+    }
+
+    #[must_use]
+    pub const fn highest_lost_chunk(&self) -> u64 {
+        self.highest_lost_chunk
     }
 
     #[must_use]
@@ -178,6 +185,7 @@ impl Spool {
         self.entries.clear();
         self.total_bytes = 0;
         self.next_chunk = 1;
+        self.highest_lost_chunk = 0;
         self.owner_gen = self.owner_gen.saturating_add(1);
         write_atomic(&self.dir, NEXT_CHUNK_FILE, b"1\n")?;
         Ok(numbers.len())
@@ -209,6 +217,7 @@ impl Spool {
         let bytes = encoded.as_bytes();
         if bytes.len() > MAX_POST_BYTES {
             self.dropped_chunks = self.dropped_chunks.saturating_add(1);
+            self.highest_lost_chunk = self.highest_lost_chunk.max(number);
             return Ok(0);
         }
         let name = chunk_file_name(number);
@@ -275,6 +284,7 @@ impl Spool {
                             if let Some(removed) = self.entries.remove(&number) {
                                 self.total_bytes = self.total_bytes.saturating_sub(removed);
                             }
+                            self.highest_lost_chunk = self.highest_lost_chunk.max(number);
                             continue;
                         }
                         break;
@@ -305,7 +315,7 @@ impl Spool {
                 let project = normalize_project_dimension(&mut data);
                 normalize_legacy_clock(&mut data);
                 if has_project {
-                    if batch_project != project {
+                    if batch_project.is_none() || batch_project != project {
                         break;
                     }
                 } else {
@@ -379,6 +389,7 @@ impl Spool {
             self.total_bytes = self.total_bytes.saturating_sub(size);
         }
         self.dropped_chunks = self.dropped_chunks.saturating_add(1);
+        self.highest_lost_chunk = self.highest_lost_chunk.max(number);
         let path = self.dir.join(chunk_file_name(number));
         match fs::remove_file(&path) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
@@ -423,6 +434,7 @@ impl Spool {
             self.entries.remove(&oldest);
             self.total_bytes = self.total_bytes.saturating_sub(size);
             self.dropped_chunks = self.dropped_chunks.saturating_add(1);
+            self.highest_lost_chunk = self.highest_lost_chunk.max(oldest);
             let path = self.dir.join(chunk_file_name(oldest));
             match fs::remove_file(&path) {
                 Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),

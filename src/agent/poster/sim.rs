@@ -407,7 +407,7 @@ fn run_control_and_poster_seed(seed: u64) {
                         watch: active_watch.clone(),
                         flush: pending_flush,
                         policy: None,
-                        burst: None,
+                        bursts: Vec::new(),
                         poll_after_ms: 500,
                     }))
                 };
@@ -430,7 +430,7 @@ fn run_control_and_poster_seed(seed: u64) {
                             }
                             poster.request_flush(f.id, now);
                         }
-                        ControlEffect::ApplyPolicy(_) | ControlEffect::Burst(_) => {}
+                        ControlEffect::ApplyPolicy(_) | ControlEffect::Bursts(_) => {}
                     }
                 }
             }
@@ -569,6 +569,10 @@ fn pending_flush_honors_retry_backoff_and_expires_at_deadline() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "verifies delayed policy ack, same-epoch demotion, stale-replica rejection, and revocation reset"
+)]
 fn control_machine_resets_after_revocation_and_delays_policy_ack_until_applied() {
     use crate::agent::{
         control::{ControlAction, ControlEffect, ControlMachine, ControlOutcome},
@@ -578,6 +582,10 @@ fn control_machine_resets_after_revocation_and_delays_policy_ack_until_applied()
     let t0 = Instant(Duration::ZERO);
     let mut ctrl = ControlMachine::new(t0, vec!["proj".into()], vec!["svc".into()]);
 
+    let v_elevated = 5_u64;
+    let v_demoted = 6_u64;
+    let v_stale_epoch = 5_u64;
+
     let effects = ctrl.on(
         ControlOutcome::Directive(Box::new(PollResponse {
             version: 2,
@@ -585,7 +593,7 @@ fn control_machine_resets_after_revocation_and_delays_policy_ack_until_applied()
             watch: None,
             flush: None,
             policy: Some(PolicyDirective {
-                version: 3,
+                version: v_elevated,
                 preset: Some("dev".into()),
                 time_unit: Some("1us".into()),
                 sanitizer_version: 2,
@@ -593,7 +601,7 @@ fn control_machine_resets_after_revocation_and_delays_policy_ack_until_applied()
                 project_policies: Vec::new(),
                 sanitizer: None,
             }),
-            burst: None,
+            bursts: Vec::new(),
             poll_after_ms: 0,
         })),
         t0,
@@ -602,7 +610,7 @@ fn control_machine_resets_after_revocation_and_delays_policy_ack_until_applied()
     assert!(
         effects
             .iter()
-            .any(|e| matches!(e, ControlEffect::ApplyPolicy(p) if p.version == 3))
+            .any(|e| matches!(e, ControlEffect::ApplyPolicy(p) if p.version == v_elevated))
     );
     let ControlAction::Poll(before_apply) = ctrl.next(t0, true) else {
         panic!("expected poll");
@@ -610,12 +618,70 @@ fn control_machine_resets_after_revocation_and_delays_policy_ack_until_applied()
     assert_eq!(before_apply.policy_version, 0);
     assert_eq!(before_apply.sanitizer_version, 0);
 
-    ctrl.set_applied_policy(3, 2);
+    ctrl.set_applied_policy(v_elevated, 2);
     let ControlAction::Poll(after_apply) = ctrl.next(t0, true) else {
         panic!("expected poll");
     };
-    assert_eq!(after_apply.policy_version, 3);
+    assert_eq!(after_apply.policy_version, v_elevated);
     assert_eq!(after_apply.sanitizer_version, 2);
+
+    let demote_effects = ctrl.on(
+        ControlOutcome::Directive(Box::new(PollResponse {
+            version: 2,
+            revoked: false,
+            watch: None,
+            flush: None,
+            policy: Some(PolicyDirective {
+                version: v_demoted,
+                preset: Some("prod".into()),
+                time_unit: Some("1ms".into()),
+                sanitizer_version: 2,
+                rules: Vec::new(),
+                project_policies: Vec::new(),
+                sanitizer: None,
+            }),
+            bursts: Vec::new(),
+            poll_after_ms: 0,
+        })),
+        t0,
+        0.0,
+    );
+    assert!(
+        demote_effects
+            .iter()
+            .any(|e| matches!(e, ControlEffect::ApplyPolicy(p) if p.version == v_demoted))
+    );
+    ctrl.set_applied_policy(v_demoted, 2);
+    let ControlAction::Poll(after_demote) = ctrl.next(t0, true) else {
+        panic!("expected poll");
+    };
+    assert_eq!(after_demote.policy_version, v_demoted);
+
+    let stale_effects = ctrl.on(
+        ControlOutcome::Directive(Box::new(PollResponse {
+            version: 2,
+            revoked: false,
+            watch: None,
+            flush: None,
+            policy: Some(PolicyDirective {
+                version: v_stale_epoch,
+                preset: Some("dev".into()),
+                time_unit: Some("1us".into()),
+                sanitizer_version: 1,
+                rules: Vec::new(),
+                project_policies: Vec::new(),
+                sanitizer: None,
+            }),
+            bursts: Vec::new(),
+            poll_after_ms: 0,
+        })),
+        t0,
+        0.0,
+    );
+    assert!(
+        stale_effects.is_empty(),
+        "stale replica with older policy epoch and sanitizer version must never roll back agent"
+    );
 
     let rev_effects = ctrl.on(
         ControlOutcome::Directive(Box::new(PollResponse {
@@ -624,7 +690,7 @@ fn control_machine_resets_after_revocation_and_delays_policy_ack_until_applied()
             watch: None,
             flush: None,
             policy: None,
-            burst: None,
+            bursts: Vec::new(),
             poll_after_ms: 0,
         })),
         t0,

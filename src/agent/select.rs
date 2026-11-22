@@ -1,13 +1,21 @@
 use std::{
-    collections::BTreeMap,
-    fs,
+    collections::{BTreeMap, BTreeSet},
+    fs::{self, File},
+    io::Read as _,
     os::unix::fs::MetadataExt as _,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
+use nix::{
+    fcntl::{OFlag, openat, readlinkat},
+    sys::stat::Mode,
+};
 use object::Object as _;
 
 use super::host::Root;
+
+const MAX_ANNOTATION_BYTES: u64 = 256 * 1024;
+const MAX_OCI_CONFIG_BYTES: u64 = 2 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuleKind {
@@ -103,8 +111,22 @@ pub struct SelectedProcess {
     pub program: String,
     pub project: Option<String>,
     pub service: String,
+    pub service_explicit: bool,
     pub matched_by: String,
     pub meta: ProcessMetadata,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SelectionDecision {
+    Selected(Box<SelectedProcess>),
+    Excluded,
+    Unmatched,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ScanResult {
+    pub selected: Vec<SelectedProcess>,
+    pub excluded_pids: BTreeSet<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -219,14 +241,14 @@ fn rule_matches(rule: &SelectionRule, meta: &ProcessMetadata) -> bool {
 }
 
 #[must_use]
-pub fn evaluate_selection(
+pub fn classify_selection(
     meta: ProcessMetadata,
     local_rules: &[SelectionRule],
     remote_rules: &[SelectionRule],
     allow_remote_rules: bool,
-) -> Option<SelectedProcess> {
+) -> SelectionDecision {
     if meta.pod_record == Some(false) || meta.env_record == Some(false) {
-        return None;
+        return SelectionDecision::Excluded;
     }
 
     let active_remote: &[SelectionRule] = if allow_remote_rules {
@@ -236,13 +258,13 @@ pub fn evaluate_selection(
     };
     for rule in local_rules.iter().chain(active_remote.iter()) {
         if rule.action == RuleAction::Exclude && rule_matches(rule, &meta) {
-            return None;
+            return SelectionDecision::Excluded;
         }
     }
 
     let program = meta.program_name().to_owned();
     if program.is_empty() {
-        return None;
+        return SelectionDecision::Unmatched;
     }
 
     if meta.pod_record == Some(true) || meta.pod_project.is_some() {
@@ -253,56 +275,75 @@ pub fn evaluate_selection(
                 .find(|r| r.action == RuleAction::Record && rule_matches(r, &meta))
                 .and_then(|r| r.project.clone())
         });
-        let service = meta
+        let explicit_service = meta
             .pod_service
             .clone()
-            .or_else(|| meta.container_name.clone())
-            .unwrap_or_else(|| program.clone());
-        return Some(SelectedProcess {
+            .or_else(|| meta.container_name.clone());
+        let service_explicit = explicit_service.is_some();
+        let service = explicit_service.unwrap_or_else(|| program.clone());
+        return SelectionDecision::Selected(Box::new(SelectedProcess {
             pid: meta.pid,
             program,
             project,
             service,
+            service_explicit,
             matched_by: "pod annotation".to_owned(),
             meta,
-        });
+        }));
     }
 
     if meta.env_record == Some(true) || meta.env_project.is_some() {
         let project = meta.env_project.clone();
+        let service_explicit = meta.env_service.is_some();
         let service = meta.env_service.clone().unwrap_or_else(|| program.clone());
-        return Some(SelectedProcess {
+        return SelectionDecision::Selected(Box::new(SelectedProcess {
             pid: meta.pid,
             program,
             project,
             service,
+            service_explicit,
             matched_by: "env: MICROSCOPE_PROJECT".to_owned(),
             meta,
-        });
+        }));
     }
 
     for rule in local_rules.iter().chain(active_remote.iter()) {
         if rule.action == RuleAction::Record && rule_matches(rule, &meta) {
-            let service = rule
+            let explicit_service = rule
                 .service
                 .clone()
                 .or_else(|| meta.pod_service.clone())
                 .or_else(|| meta.env_service.clone())
-                .or_else(|| meta.container_name.clone())
-                .unwrap_or_else(|| program.clone());
+                .or_else(|| meta.container_name.clone());
+            let service_explicit = explicit_service.is_some();
+            let service = explicit_service.unwrap_or_else(|| program.clone());
             let matched_by = format!("rule: {} {}", rule.kind.name(), rule.pattern);
-            return Some(SelectedProcess {
+            return SelectionDecision::Selected(Box::new(SelectedProcess {
                 pid: meta.pid,
                 program,
                 project: rule.project.clone(),
                 service,
+                service_explicit,
                 matched_by,
                 meta,
-            });
+            }));
         }
     }
 
-    None
+    SelectionDecision::Unmatched
+}
+
+#[must_use]
+pub fn evaluate_selection(
+    meta: ProcessMetadata,
+    local_rules: &[SelectionRule],
+    remote_rules: &[SelectionRule],
+    allow_remote_rules: bool,
+) -> Option<SelectedProcess> {
+    match classify_selection(meta, local_rules, remote_rules, allow_remote_rules) {
+        SelectionDecision::Selected(chosen) => Some(*chosen),
+        SelectionDecision::Excluded | SelectionDecision::Unmatched => None,
+    }
 }
 
 pub fn scan_selected_processes(
@@ -312,10 +353,10 @@ pub fn scan_selected_processes(
     remote_rules: &[SelectionRule],
     allow_remote_rules: bool,
     build_ids: &mut BuildIdCache,
-) -> Vec<SelectedProcess> {
+) -> ScanResult {
     let proc_dir = root.path("/proc");
     let Ok(entries) = fs::read_dir(&proc_dir) else {
-        return Vec::new();
+        return ScanResult::default();
     };
     let mut pids: Vec<u32> = entries
         .flatten()
@@ -325,19 +366,21 @@ pub fn scan_selected_processes(
     pids.sort_unstable();
 
     let mut container_cache: BTreeMap<String, ContainerMeta> = BTreeMap::new();
-    let mut selected = Vec::new();
+    let mut result = ScanResult::default();
     for pid in pids {
         let Some(meta) = read_process_metadata(root, pid, options, &mut container_cache, build_ids)
         else {
             continue;
         };
-        if let Some(chosen) =
-            evaluate_selection(meta, local_rules, remote_rules, allow_remote_rules)
-        {
-            selected.push(chosen);
+        match classify_selection(meta, local_rules, remote_rules, allow_remote_rules) {
+            SelectionDecision::Selected(chosen) => result.selected.push(*chosen),
+            SelectionDecision::Excluded => {
+                result.excluded_pids.insert(pid);
+            }
+            SelectionDecision::Unmatched => {}
         }
     }
-    selected
+    result
 }
 
 #[derive(Clone, Default)]
@@ -398,7 +441,7 @@ fn read_process_metadata(
     let downward_paths =
         downward_annotation_paths(root, pid, options.pod_annotations_dir.as_deref());
     for path in downward_paths {
-        if let Ok(text) = fs::read_to_string(&path) {
+        if let Some(text) = read_bounded_regular_file(&path, MAX_ANNOTATION_BYTES) {
             apply_downward_annotations(&text, &mut cmeta);
         }
     }
@@ -515,6 +558,95 @@ fn is_hex_container_id(text: &str) -> bool {
     text.len() == 64 && text.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+fn open_confined_regular_file(path: &Path) -> Option<File> {
+    let parent = path.parent()?;
+    let leaf = path.file_name()?;
+    let root_fd = openat(
+        nix::fcntl::AT_FDCWD,
+        parent,
+        OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC | OFlag::O_NONBLOCK,
+        Mode::empty(),
+    )
+    .ok()?;
+    let mut dir_fd = root_fd.try_clone().ok()?;
+    let mut pending: std::collections::VecDeque<PathBuf> =
+        std::collections::VecDeque::from([PathBuf::from(leaf)]);
+    let mut symlinks_followed = 0_u8;
+
+    while let Some(next_path) = pending.pop_front() {
+        let mut components: Vec<std::ffi::OsString> = Vec::new();
+        for comp in next_path.components() {
+            match comp {
+                Component::Normal(seg) => components.push(seg.to_os_string()),
+                Component::CurDir => {}
+                Component::RootDir | Component::Prefix(_) | Component::ParentDir => return None,
+            }
+        }
+        if components.is_empty() {
+            return None;
+        }
+        let last_idx = components.len() - 1;
+        for (idx, seg) in components.iter().enumerate() {
+            let has_more_here = idx < last_idx;
+            let is_last = !has_more_here && pending.is_empty();
+            let flags = if is_last {
+                OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC
+            } else {
+                OFlag::O_RDONLY
+                    | OFlag::O_DIRECTORY
+                    | OFlag::O_NOFOLLOW
+                    | OFlag::O_NONBLOCK
+                    | OFlag::O_CLOEXEC
+            };
+            match openat(&dir_fd, seg.as_os_str(), flags, Mode::empty()) {
+                Ok(fd) => {
+                    if is_last {
+                        let file = File::from(fd);
+                        return file.metadata().ok()?.file_type().is_file().then_some(file);
+                    }
+                    dir_fd = fd;
+                }
+                Err(nix::errno::Errno::ELOOP | nix::errno::Errno::ENOTDIR) => {
+                    symlinks_followed = symlinks_followed.saturating_add(1);
+                    if symlinks_followed > 8 {
+                        return None;
+                    }
+                    let link_target = readlinkat(&dir_fd, seg.as_os_str()).ok()?;
+                    let target_path = PathBuf::from(link_target);
+                    if target_path.is_absolute() {
+                        return None;
+                    }
+                    if let Some(tail) = components.get(idx + 1..)
+                        && !tail.is_empty()
+                    {
+                        let mut rest = PathBuf::new();
+                        for rem in tail {
+                            rest.push(rem);
+                        }
+                        pending.push_front(rest);
+                    }
+                    pending.push_front(target_path);
+                    break;
+                }
+                Err(_) => return None,
+            }
+        }
+    }
+    None
+}
+
+fn read_bounded_regular_file(path: &Path, max_bytes: u64) -> Option<String> {
+    let file = open_confined_regular_file(path)?;
+    let meta = file.metadata().ok()?;
+    if !meta.file_type().is_file() {
+        return None;
+    }
+    let cap = usize::try_from(meta.len().min(max_bytes)).unwrap_or(0);
+    let mut buf = Vec::with_capacity(cap);
+    file.take(max_bytes).read_to_end(&mut buf).ok()?;
+    String::from_utf8(buf).ok()
+}
+
 fn load_container_meta(root: &Root, container_id: &str, runtime_dirs: &[PathBuf]) -> ContainerMeta {
     let mut meta = ContainerMeta::default();
     for dir in runtime_dirs {
@@ -525,7 +657,7 @@ fn load_container_meta(root: &Root, container_id: &str, runtime_dirs: &[PathBuf]
         };
         for rel in ["config.json", "userdata/config.json"] {
             let candidate = base.join(container_id).join(rel);
-            let Ok(text) = fs::read_to_string(&candidate) else {
+            let Some(text) = read_bounded_regular_file(&candidate, MAX_OCI_CONFIG_BYTES) else {
                 continue;
             };
             let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) else {
@@ -733,22 +865,26 @@ mod tests {
         }];
 
         let mut cache = BuildIdCache::default();
-        let selected = scan_selected_processes(&root, &opts, &[], &remote_rules, true, &mut cache);
+        let scan = scan_selected_processes(&root, &opts, &[], &remote_rules, true, &mut cache);
+        let selected = scan.selected;
         let pids: Vec<u32> = selected.iter().map(|s| s.pid).collect();
         assert_eq!(pids, vec![101, 102, 104]);
         assert_eq!(selected[0].project.as_deref(), Some("checkout"));
         assert_eq!(selected[0].matched_by, "pod annotation");
+        assert!(selected[0].service_explicit);
         assert_eq!(
             selected[0].meta.k8s_pod_name.as_deref(),
             Some("checkout-abc")
         );
         assert_eq!(selected[1].project.as_deref(), Some("billing"));
         assert_eq!(selected[1].matched_by, "env: MICROSCOPE_PROJECT");
+        assert!(!selected[1].service_explicit);
         assert_eq!(selected[2].project.as_deref(), Some("ops"));
         assert_eq!(selected[2].service, "remote-svc");
+        assert!(selected[2].service_explicit);
 
         let refused = scan_selected_processes(&root, &opts, &[], &remote_rules, false, &mut cache);
-        let refused_pids: Vec<u32> = refused.iter().map(|s| s.pid).collect();
+        let refused_pids: Vec<u32> = refused.selected.iter().map(|s| s.pid).collect();
         assert_eq!(refused_pids, vec![101, 102]);
 
         let exclude_local = vec![SelectionRule {
@@ -767,9 +903,14 @@ mod tests {
             &mut cache,
         );
         assert_eq!(
-            after_exclude.iter().map(|s| s.pid).collect::<Vec<_>>(),
+            after_exclude
+                .selected
+                .iter()
+                .map(|s| s.pid)
+                .collect::<Vec<_>>(),
             vec![102]
         );
+        assert!(after_exclude.excluded_pids.contains(&101));
     }
 
     #[test]
@@ -792,9 +933,72 @@ mod tests {
             self_pid: 99999,
         };
         let mut cache = BuildIdCache::default();
-        let selected = scan_selected_processes(&root, &opts, &[], &[], true, &mut cache);
-        assert_eq!(selected.len(), 1);
-        assert_eq!(selected[0].project.as_deref(), Some("payments"));
-        assert_eq!(selected[0].service, "pay-api");
+        let scan = scan_selected_processes(&root, &opts, &[], &[], true, &mut cache);
+        assert_eq!(scan.selected.len(), 1);
+        assert_eq!(scan.selected[0].project.as_deref(), Some("payments"));
+        assert_eq!(scan.selected[0].service, "pay-api");
+        assert!(scan.selected[0].service_explicit);
+    }
+
+    #[test]
+    fn downward_api_annotations_fifo_does_not_block_scanner() {
+        let scratch = Scratch::new();
+        let root_path = scratch.path();
+        write_proc(root_path, 301, "tricky-srv", "0::/\n", &[]);
+        let podinfo = root_path.join("proc/301/root/etc/podinfo");
+        fs::create_dir_all(&podinfo).unwrap();
+        let fifo = podinfo.join("annotations");
+        nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRWXU).unwrap();
+
+        let root = Root::at(root_path);
+        let opts = ScanOptions {
+            runtime_dirs: Vec::new(),
+            pod_annotations_dir: None,
+            self_pid: 99999,
+        };
+        let mut cache = BuildIdCache::default();
+        let scan = scan_selected_processes(&root, &opts, &[], &[], true, &mut cache);
+        assert!(scan.selected.is_empty());
+    }
+
+    #[test]
+    fn downward_api_k8s_projected_symlinks_work_while_escaping_symlinks_are_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let scratch = Scratch::new();
+        let root_path = scratch.path();
+        write_proc(root_path, 401, "k8s-app", "0::/\n", &[]);
+        let podinfo = root_path.join("proc/401/root/etc/podinfo");
+        let data_ts = podinfo.join("..2026_11_22_00_00_00.123456");
+        fs::create_dir_all(&data_ts).unwrap();
+        fs::write(
+            data_ts.join("annotations"),
+            "microscope.dev/record=\"true\"\nmicroscope.dev/project=\"checkout\"\n",
+        )
+        .unwrap();
+        symlink("..2026_11_22_00_00_00.123456", podinfo.join("..data")).unwrap();
+        symlink("..data/annotations", podinfo.join("annotations")).unwrap();
+
+        write_proc(root_path, 402, "escape-app", "0::/\n", &[]);
+        let outside = root_path.join("outside-annotations");
+        fs::write(&outside, "microscope.dev/record=\"true\"\n").unwrap();
+        let esc_podinfo = root_path.join("proc/402/root/etc/podinfo");
+        fs::create_dir_all(&esc_podinfo).unwrap();
+        symlink(&outside, esc_podinfo.join("annotations")).unwrap();
+
+        let root = Root::at(root_path);
+        let opts = ScanOptions {
+            runtime_dirs: Vec::new(),
+            pod_annotations_dir: None,
+            self_pid: 99999,
+        };
+        let mut cache = BuildIdCache::default();
+        let scan = scan_selected_processes(&root, &opts, &[], &[], true, &mut cache);
+        assert_eq!(
+            scan.selected.iter().map(|s| s.pid).collect::<Vec<_>>(),
+            vec![401],
+            "K8s projected symlink must work while escaping symlink must be rejected"
+        );
+        assert_eq!(scan.selected[0].project.as_deref(), Some("checkout"));
     }
 }

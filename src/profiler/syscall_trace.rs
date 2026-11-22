@@ -118,6 +118,8 @@ pub struct SyscallOptions {
 
     pub shared_bpf: Option<SharedBpfEngine>,
 
+    pub max_ring_bytes: Option<u32>,
+
     pub unavailable: Option<String>,
 }
 
@@ -137,6 +139,7 @@ impl SyscallOptions {
             },
             print: None,
             shared_bpf: None,
+            max_ring_bytes: None,
             unavailable: None,
         }
     }
@@ -330,6 +333,7 @@ impl SharedBpfEngine {
             stack_copy,
             exceptions: None,
             streamed_per_second: None,
+            max_ring_bytes: None,
         };
         Ok(Self {
             engine: Arc::new(Mutex::new(Some(bpf::Engine::load(&trace, engine)?))),
@@ -535,7 +539,7 @@ pub(super) enum Traced {
 
     Running(u32),
 
-    RunningMany(Vec<u32>),
+    RunningMany { pids: Vec<u32>, follow: bool },
 }
 
 impl SyscallTrace {
@@ -567,11 +571,15 @@ impl SyscallTrace {
         };
 
         let streams = level >= SyscallLevel::Calls;
+        let follow = match &traced {
+            Traced::RunningMany { follow, .. } => *follow,
+            Traced::Held(_) | Traced::Running(_) => true,
+        };
         let trace = TraceOptions {
             calls: options.traced(),
             limits,
             verbose: level == SyscallLevel::Full,
-            follow: true,
+            follow,
             stacks: Some(SharedStacks::default()),
         };
         let engine = BpfOptions {
@@ -586,6 +594,7 @@ impl SyscallTrace {
                 examples_per_minute: (!streams).then_some(EXAMPLES_PER_MINUTE),
             }),
             streamed_per_second: options.kept_per_second,
+            max_ring_bytes: options.max_ring_bytes,
         };
 
         let stacks = trace.stacks.clone();
@@ -838,7 +847,7 @@ fn run(
                     .map_err(|error| error.to_string())
             }
         }
-        (Traced::RunningMany(pids), Some(engine)) => {
+        (Traced::RunningMany { pids, .. }, Some(engine)) => {
             if let Some(shared) = shared_bpf {
                 let mut guard = shared.engine.lock().unwrap_or_else(PoisonError::into_inner);
                 if guard
@@ -877,11 +886,13 @@ fn run(
             ptrace::trace(Target::Attach(tree), trace, stop, sink)
                 .map_err(|error| error.to_string())
         }
-        (Traced::RunningMany(pids), None) => {
+        (Traced::RunningMany { pids, follow }, None) => {
             let mut tree = Vec::new();
             for pid in pids {
                 tree.push(pid);
-                tree.extend(crate::backend::perf::descendants(pid));
+                if follow {
+                    tree.extend(crate::backend::perf::descendants(pid));
+                }
             }
             ptrace::trace(Target::Attach(tree), trace, stop, sink)
                 .map_err(|error| error.to_string())

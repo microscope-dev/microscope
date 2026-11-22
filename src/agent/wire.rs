@@ -432,8 +432,8 @@ pub struct PollResponse {
     pub flush: Option<FlushDirective>,
     #[serde(default)]
     pub policy: Option<PolicyDirective>,
-    #[serde(default)]
-    pub burst: Option<BurstDirective>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bursts: Vec<BurstDirective>,
     #[serde(default)]
     pub poll_after_ms: u64,
 }

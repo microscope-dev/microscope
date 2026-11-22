@@ -319,12 +319,29 @@ pub fn record_attached(
     })
 }
 
+pub fn record_attached_many(
+    pids: &[u32],
+    options: &RecordOptions,
+    watch: &mut Watch<'_>,
+) -> Result<Attachment, RecordError> {
+    record_attached_many_mode(pids, true, options, watch)
+}
+
+pub fn record_attached_many_exact(
+    pids: &[u32],
+    options: &RecordOptions,
+    watch: &mut Watch<'_>,
+) -> Result<Attachment, RecordError> {
+    record_attached_many_mode(pids, false, options, watch)
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "attaches perf, optional BPF walker, and shared syscall trace to multiple PIDs under one CPU budget"
 )]
-pub fn record_attached_many(
+fn record_attached_many_mode(
     pids: &[u32],
+    follow_descendants: bool,
     options: &RecordOptions,
     watch: &mut Watch<'_>,
 ) -> Result<Attachment, RecordError> {
@@ -343,6 +360,9 @@ pub fn record_attached_many(
         perf_source(&program, &options.source, None, options.function_period)?;
     let watched = watch.every != Duration::MAX;
     let mut processor = processor(options, breakpoint, !watched);
+    if !follow_descendants {
+        processor.restrict_pids(pids.iter().copied().map(Pid::new).collect());
+    }
     let mut stack_bytes = SMALL_STACK_COPY;
     let mut stack_copy_desc = String::new();
     for &pid in pids {
@@ -368,8 +388,11 @@ pub fn record_attached_many(
     }
 
     let held = options.kernel_stacks || options.python == Some(PythonEngine::Bpf);
-    let perf::AttachedMany { events, wake } =
-        perf::attach_many(pids, &events, options.max_events, held)?;
+    let perf::AttachedMany { mut events, wake } =
+        perf::attach_many(pids, follow_descendants, &events, options.max_events, held)?;
+    if let Some(limit) = options.max_queue_bytes {
+        events.set_queue_bytes(limit);
+    }
     let mut walker = if held {
         Some(Walker::attach(
             &events,
@@ -382,7 +405,10 @@ pub fn record_attached_many(
     let mut thin = thinned(walker.as_mut(), &events, options);
 
     let syscalls = SyscallTrace::beside(
-        Traced::RunningMany(pids.to_vec()),
+        Traced::RunningMany {
+            pids: pids.to_vec(),
+            follow: follow_descendants,
+        },
         options,
         stack_bytes,
         watched,
@@ -394,9 +420,11 @@ pub fn record_attached_many(
         if attached_pids.insert(pid) {
             processor.attached(Pid::new(pid), now);
         }
-        for desc in perf::descendants(pid) {
-            if attached_pids.insert(desc) {
-                processor.attached(Pid::new(desc), now);
+        if follow_descendants {
+            for desc in perf::descendants(pid) {
+                if attached_pids.insert(desc) {
+                    processor.attached(Pid::new(desc), now);
+                }
             }
         }
     }

@@ -33,7 +33,7 @@ pub enum ControlEffect {
     SetWatch(Option<WatchDirective>),
     Flush(FlushDirective),
     ApplyPolicy(PolicyDirective),
-    Burst(Option<BurstDirective>),
+    Bursts(Vec<BurstDirective>),
 }
 
 #[derive(Clone, Debug)]
@@ -53,7 +53,7 @@ pub struct ControlMachine {
     need_token: bool,
     revoked: bool,
     active_watch: Option<WatchDirective>,
-    active_burst_id: Option<u64>,
+    active_burst_ids: Vec<u64>,
 }
 
 impl ControlMachine {
@@ -75,7 +75,7 @@ impl ControlMachine {
             need_token: false,
             revoked: false,
             active_watch: None,
-            active_burst_id: None,
+            active_burst_ids: Vec::new(),
         }
     }
 
@@ -88,7 +88,7 @@ impl ControlMachine {
         self.services = services;
     }
 
-    pub const fn reset(&mut self, now: Instant) {
+    pub fn reset(&mut self, now: Instant) {
         self.known_version = 0;
         self.last_flush_id = 0;
         self.empty_flush_id = 0;
@@ -101,7 +101,7 @@ impl ControlMachine {
         self.need_token = false;
         self.revoked = false;
         self.active_watch = None;
-        self.active_burst_id = None;
+        self.active_burst_ids.clear();
     }
 
     pub const fn set_applied_policy(&mut self, policy_version: u64, sanitizer_version: u64) {
@@ -212,22 +212,23 @@ impl ControlMachine {
                     effects.push(ControlEffect::Flush(flush));
                 }
                 if let Some(policy) = resp.policy {
-                    let newer_policy = policy.version > self.dispatched_policy_version;
-                    let newer_sanitizer =
+                    let changed_policy = policy.version > self.dispatched_policy_version;
+                    let changed_sanitizer =
                         policy.sanitizer_version > self.dispatched_sanitizer_version;
-                    if newer_policy || newer_sanitizer {
-                        self.dispatched_policy_version =
-                            self.dispatched_policy_version.max(policy.version);
-                        self.dispatched_sanitizer_version = self
-                            .dispatched_sanitizer_version
-                            .max(policy.sanitizer_version);
+                    if changed_policy || changed_sanitizer {
+                        if changed_policy {
+                            self.dispatched_policy_version = policy.version;
+                        }
+                        if changed_sanitizer {
+                            self.dispatched_sanitizer_version = policy.sanitizer_version;
+                        }
                         effects.push(ControlEffect::ApplyPolicy(policy));
                     }
                 }
-                let next_burst_id = resp.burst.as_ref().map(|b| b.id);
-                if next_burst_id != self.active_burst_id {
-                    self.active_burst_id = next_burst_id;
-                    effects.push(ControlEffect::Burst(resp.burst));
+                let next_burst_ids: Vec<u64> = resp.bursts.iter().map(|b| b.id).collect();
+                if next_burst_ids != self.active_burst_ids {
+                    self.active_burst_ids = next_burst_ids;
+                    effects.push(ControlEffect::Bursts(resp.bursts));
                 }
                 let wait = Duration::from_millis(resp.poll_after_ms.min(60_000));
                 self.next_poll = now.after(wait);
