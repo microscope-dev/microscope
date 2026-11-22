@@ -183,6 +183,21 @@ test("at 5-second refresh, a 60s-cadence real agent delivers hot_function on scr
     );
     await expect(flame.getByTestId("pane-lag")).toBeVisible();
 
+    const readSamples = async (): Promise<number> => {
+      const text = (await flame.getByTestId("recorded-summary").textContent()) ?? "";
+      const match = /([\d,]+)\s+samples/u.exec(text);
+      return match?.[1] ? Number(match[1].replaceAll(",", "")) : 0;
+    };
+    const initialSamples = await readSamples();
+    expect(initialSamples).toBeGreaterThan(0);
+
+    await expect
+      .poll(readSamples, {
+        timeout: 15_000,
+        message: "expected live SSE push to deliver additional samples within 15 seconds",
+      })
+      .toBeGreaterThan(initialSamples);
+
     await page.evaluate(() => {
       Object.defineProperty(document, "visibilityState", {
         configurable: true,

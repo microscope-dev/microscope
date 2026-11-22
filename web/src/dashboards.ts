@@ -273,6 +273,7 @@ export interface StreamedPaneData {
   serverTimeNs: number;
   newestDataNs: number | null;
   receivedAt: number;
+  streamKey?: string;
 }
 
 export const DEFAULT_SCOPE: ViewScope = {
@@ -544,6 +545,16 @@ export function openDashboardStream(
     }
     const ctrl = new AbortController();
     controller = ctrl;
+    let readyTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+      readyTimer = null;
+      ctrl.abort();
+    }, 5_000);
+    const clearReadyTimer = () => {
+      if (readyTimer !== null) {
+        clearTimeout(readyTimer);
+        readyTimer = null;
+      }
+    };
     try {
       const response = await fetch("/api/query/stream", {
         method: "POST",
@@ -559,6 +570,7 @@ export function openDashboardStream(
         return;
       }
       if (!response.ok || !response.body) {
+        clearReadyTimer();
         if (
           response.status === 400 ||
           response.status === 401 ||
@@ -580,6 +592,12 @@ export function openDashboardStream(
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+      const handleEvent = (ev: ParsedSseEvent) => {
+        if (ev.event === "status") {
+          clearReadyTimer();
+        }
+        dispatch(ev);
+      };
       const pump = async (): Promise<void> => {
         const { done, value } = await reader.read();
         if (done || closed) {
@@ -589,7 +607,7 @@ export function openDashboardStream(
         const parsed = parseSseChunk(buffer, chunk);
         buffer = parsed.rest;
         for (const ev of parsed.events) {
-          dispatch(ev);
+          handleEvent(ev);
         }
         await pump();
       };
@@ -599,7 +617,7 @@ export function openDashboardStream(
         if (trailing !== "" && !closed) {
           const parsed = parseSseChunk(buffer, trailing);
           for (const ev of parsed.events) {
-            dispatch(ev);
+            handleEvent(ev);
           }
         }
       } finally {
@@ -615,6 +633,7 @@ export function openDashboardStream(
         scheduleReconnect();
       }
     } finally {
+      clearReadyTimer();
       if (controller === ctrl) {
         controller = null;
       }
@@ -903,6 +922,8 @@ export interface ActiveViewState {
   movedToSession: boolean;
   streamActive: boolean;
   streamConnected: boolean;
+  streamReady: boolean;
+  streamKey: string | null;
   watching: boolean;
   watchedMachines: number;
   effectiveIntervalMs: number | null;
@@ -941,6 +962,8 @@ const INACTIVE_VIEW: ActiveViewState = {
   movedToSession: false,
   streamActive: false,
   streamConnected: false,
+  streamReady: false,
+  streamKey: null,
   watching: false,
   watchedMachines: 0,
   effectiveIntervalMs: null,

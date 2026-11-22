@@ -204,16 +204,29 @@ export function ScopeBar() {
       activeView.setState({
         streamActive: false,
         streamConnected: false,
+        streamReady: false,
+        streamKey: null,
         watching: false,
         watchedMachines: 0,
         effectiveIntervalMs: null,
+        newestDataNs: null,
+        serverTimeNs: null,
+        streamUpdatedAt: null,
+        streamedPanes: {},
       });
       return;
     }
     const reqScope = activeView.getState().scope;
     const reqSession = activeView.getState().sessionId;
     const panes = streamPanes();
-    activeView.setState({ streamActive: true });
+    activeView.setState({
+      streamActive: true,
+      streamConnected: false,
+      streamReady: false,
+      streamKey: key,
+      newestDataNs: null,
+      streamedPanes: {},
+    });
     let alive = true;
     const handle = openDashboardStream(
       {
@@ -224,7 +237,10 @@ export function ScopeBar() {
       {
         onOpen: () => {
           if (alive) {
-            activeView.setState({ streamConnected: true });
+            activeView.setState({
+              streamConnected: true,
+              streamKey: key,
+            });
           }
         },
         onStatus: (ev) => {
@@ -233,7 +249,10 @@ export function ScopeBar() {
           }
           const nowMs = Date.now();
           activeView.setState({
+            streamActive: true,
             streamConnected: true,
+            streamReady: true,
+            streamKey: key,
             watching: ev.watching,
             watchedMachines: ev.watchedMachines,
             effectiveIntervalMs: ev.effectiveIntervalMs,
@@ -251,18 +270,24 @@ export function ScopeBar() {
           const nowMs = Date.now();
           activeView.setState((prev) => ({
             lastFetchedAt: nowMs,
-            newestDataNs: ev.newestDataNs ?? prev.newestDataNs,
+            newestDataNs:
+              ev.newestDataNs === null
+                ? prev.streamKey === key
+                  ? prev.newestDataNs
+                  : null
+                : ev.newestDataNs,
             serverTimeNs: ev.serverTimeNs,
             streamUpdatedAt: nowMs,
             clockMs: nowMs,
             streamedPanes: {
-              ...prev.streamedPanes,
+              ...(prev.streamKey === key ? prev.streamedPanes : {}),
               [ev.id]: {
                 kind: ev.kind,
                 data: ev.data,
                 serverTimeNs: ev.serverTimeNs,
                 newestDataNs: ev.newestDataNs,
                 receivedAt: nowMs,
+                streamKey: key,
               },
             },
           }));
@@ -292,7 +317,15 @@ export function ScopeBar() {
         },
         onDisconnect: () => {
           if (alive) {
-            activeView.setState({ streamConnected: false });
+            activeView.setState({
+              streamActive: false,
+              streamConnected: false,
+              streamReady: false,
+              watching: false,
+              watchedMachines: 0,
+              effectiveIntervalMs: null,
+              streamedPanes: {},
+            });
           }
         },
         onFatal: () => {
@@ -300,9 +333,12 @@ export function ScopeBar() {
             activeView.setState({
               streamActive: false,
               streamConnected: false,
+              streamReady: false,
+              streamKey: null,
               watching: false,
               watchedMachines: 0,
               effectiveIntervalMs: null,
+              streamedPanes: {},
             });
           }
         },
@@ -314,16 +350,19 @@ export function ScopeBar() {
       activeView.setState({
         streamActive: false,
         streamConnected: false,
+        streamReady: false,
+        streamKey: null,
         watching: false,
         watchedMachines: 0,
         effectiveIntervalMs: null,
+        streamedPanes: {},
       });
     };
   });
 
   createEffect(
-    () => [isActive(), scope().refresh, streamActive()] as const,
-    ([active, refresh, streaming]) => {
+    () => [isActive(), scope().refresh] as const,
+    ([active, refresh]) => {
       if (!active) {
         return;
       }
@@ -332,7 +371,7 @@ export function ScopeBar() {
         setNowSec(Math.floor(nowMs / 1000));
         activeView.setState({ clockMs: nowMs });
       }, 2_000);
-      const ms = streaming ? null : REFRESH_MS[refresh];
+      const ms = REFRESH_MS[refresh];
       const timer = ms === null ? null : setInterval(() => bumpViewRevision(), ms);
       return () => {
         clearInterval(tick);
@@ -419,9 +458,7 @@ export function ScopeBar() {
       } catch {
       } finally {
         setFlushing(false);
-        if (!activeView.getState().streamActive) {
-          bumpViewRevision();
-        }
+        bumpViewRevision();
       }
     };
     void runFlush();

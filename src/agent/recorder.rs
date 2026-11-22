@@ -30,7 +30,14 @@ use crate::profiler::{
 };
 
 const AGENT_DEV_MAX_SYSCALL_CAP: u32 = 20_000;
-const EMPTY_FLUSH_GRACE: Duration = Duration::from_millis(400);
+
+#[derive(Clone, Copy)]
+struct PendingFlush {
+    id: u64,
+    deadline: std::time::Instant,
+    target_cut_seq: Option<u64>,
+    required_chunk: Option<u64>,
+}
 
 struct SharedState {
     server: String,
@@ -39,12 +46,19 @@ struct SharedState {
     need_token: bool,
     spool_seq: u64,
     spool: Spool,
+    attached: bool,
+    cut_seq: u64,
+    session_stop: Option<Arc<AtomicBool>>,
     watch: Option<WatchDirective>,
     watch_seq: u64,
-    flush_requested: Option<(u64, std::time::Instant)>,
+    flush_requested: Option<PendingFlush>,
     flush_completed: u64,
+    flush_empty_acked: u64,
+    flush_failed_id: u64,
     policy: Option<PolicyDirective>,
     policy_seq: u64,
+    applied_policy_version: u64,
+    applied_sanitizer_version: u64,
 }
 
 #[derive(Clone)]
@@ -67,17 +81,37 @@ impl PipelineControl {
         cvar.notify_all();
     }
 
-    pub fn request_flush(&self, flush_id: u64) {
-        self.flush_trigger.store(true, Ordering::SeqCst);
+    pub fn request_flush(&self, flush_id: u64, deadline_ms: u64) {
         let (lock, cvar) = &*self.shared;
         let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-        if guard
-            .flush_requested
-            .is_none_or(|(existing, _)| flush_id > existing)
+        let mut trigger_cut = false;
+        if flush_id > guard.flush_completed
+            && flush_id > guard.flush_failed_id
+            && guard
+                .flush_requested
+                .is_none_or(|existing| flush_id > existing.id)
         {
-            guard.flush_requested = Some((flush_id, std::time::Instant::now()));
+            if !guard.attached && guard.spool.is_empty() {
+                guard.flush_completed = guard.flush_completed.max(flush_id);
+                guard.flush_empty_acked = guard.flush_empty_acked.max(flush_id);
+                guard.flush_requested = None;
+            } else {
+                let target_cut_seq = guard.attached.then(|| guard.cut_seq.saturating_add(1));
+                let deadline = std::time::Instant::now()
+                    + Duration::from_millis(deadline_ms.clamp(100, 30_000));
+                guard.flush_requested = Some(PendingFlush {
+                    id: flush_id,
+                    deadline,
+                    target_cut_seq,
+                    required_chunk: None,
+                });
+                trigger_cut = guard.attached;
+            }
         }
         drop(guard);
+        if trigger_cut {
+            self.flush_trigger.store(true, Ordering::SeqCst);
+        }
         cvar.notify_all();
     }
 
@@ -88,11 +122,31 @@ impl PipelineControl {
         guard.flush_completed
     }
 
+    #[must_use]
+    pub fn empty_flush_id(&self) -> u64 {
+        let (lock, _) = &*self.shared;
+        let guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        guard.flush_empty_acked
+    }
+
+    #[must_use]
+    pub fn applied_policy_versions(&self) -> (u64, u64) {
+        let (lock, _) = &*self.shared;
+        let guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        (
+            guard.applied_policy_version,
+            guard.applied_sanitizer_version,
+        )
+    }
+
     pub fn apply_policy(&self, policy: PolicyDirective) {
         let (lock, cvar) = &*self.shared;
         let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
         guard.policy = Some(policy);
         guard.policy_seq = guard.policy_seq.saturating_add(1);
+        if let Some(session_stop) = &guard.session_stop {
+            session_stop.store(true, Ordering::SeqCst);
+        }
         drop(guard);
         cvar.notify_all();
     }
@@ -138,12 +192,19 @@ impl Pipeline {
                 need_token: false,
                 spool_seq: 0,
                 spool,
+                attached: false,
+                cut_seq: 0,
+                session_stop: None,
                 watch: None,
                 watch_seq: 0,
                 flush_requested: None,
                 flush_completed: 0,
+                flush_empty_acked: 0,
+                flush_failed_id: 0,
                 policy: None,
                 policy_seq: 0,
+                applied_policy_version: 1,
+                applied_sanitizer_version: 1,
             }),
             Condvar::new(),
         ));
@@ -233,7 +294,13 @@ impl Pipeline {
 
     pub fn stop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
-        let (_, cvar) = &*self.shared;
+        let (lock, cvar) = &*self.shared;
+        {
+            let guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(session_stop) = &guard.session_stop {
+                session_stop.store(true, Ordering::SeqCst);
+            }
+        }
         cvar.notify_all();
         if let Some(handle) = self.recorder.take() {
             let _ = handle.join();
@@ -467,32 +534,78 @@ fn build_chunk_data_with_offset(
     }
 }
 
-fn enqueue_profile(
+#[derive(Clone, Copy)]
+enum CutOutcome {
+    Pushed(u64),
+    Empty,
+    Failed,
+}
+
+fn finish_cut_locked(guard: &mut SharedState, outcome: CutOutcome, mark_detached: bool) {
+    if mark_detached {
+        guard.attached = false;
+        guard.session_stop = None;
+    }
+    guard.cut_seq = guard.cut_seq.saturating_add(1);
+    let current_cut = guard.cut_seq;
+    if let Some(mut pf) = guard.flush_requested
+        && pf
+            .target_cut_seq
+            .is_some_and(|target| current_cut >= target)
+        && pf.required_chunk.is_none()
+    {
+        match outcome {
+            CutOutcome::Pushed(chunk_no) => {
+                pf.required_chunk = Some(chunk_no);
+                guard.flush_requested = Some(pf);
+            }
+            CutOutcome::Empty => {
+                if guard.spool.is_empty() {
+                    guard.flush_completed = guard.flush_completed.max(pf.id);
+                    guard.flush_empty_acked = guard.flush_empty_acked.max(pf.id);
+                    guard.flush_requested = None;
+                }
+            }
+            CutOutcome::Failed => {
+                guard.flush_failed_id = guard.flush_failed_id.max(pf.id);
+                guard.flush_requested = None;
+            }
+        }
+    }
+}
+
+fn enqueue_and_complete_cut(
     profile: Profile,
     shared: &(Mutex<SharedState>, Condvar),
     record: &RecordConfig,
     host_name: &str,
     tags: &BTreeMap<String, String>,
     sanitizer: &Sanitizer,
+    mark_detached: bool,
 ) {
+    let (lock, cvar) = shared;
     if !profile_has_data(&profile) {
+        let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        finish_cut_locked(&mut guard, CutOutcome::Empty, mark_detached);
+        drop(guard);
+        cvar.notify_all();
         return;
     }
 
     let (now_ns, wall_offset_ns) = wall_clock_reference();
 
-    let (lock, cvar) = shared;
-    let (agent_id, number) = {
+    let alloc = {
         let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some(agent_id) = guard.agent_id else {
-            return;
-        };
-        let allocated = guard.spool.allocate_chunk();
+        guard
+            .agent_id
+            .and_then(|agent_id| guard.spool.allocate_chunk().ok().map(|n| (agent_id, n)))
+    };
+    let Some((agent_id, number)) = alloc else {
+        let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        finish_cut_locked(&mut guard, CutOutcome::Failed, mark_detached);
         drop(guard);
-        let Ok(number) = allocated else {
-            return;
-        };
-        (agent_id, number)
+        cvar.notify_all();
+        return;
     };
 
     let raw = build_chunk_data_with_offset(
@@ -508,21 +621,35 @@ fn enqueue_profile(
     let clean = sanitize_chunk(raw, record.time_unit, sanitizer);
 
     let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-    if guard.agent_id != Some(agent_id) {
-        return;
-    }
-    match guard.spool.push(number, &clean, agent_id, now_ns) {
-        Ok(0) => {
-            eprintln!("microscope agent: dropped oversized chunk {number} exceeding post limit");
-            return;
+    let outcome = if guard.agent_id == Some(agent_id) {
+        match guard.spool.push(number, &clean, agent_id, now_ns) {
+            Ok(0) => {
+                eprintln!(
+                    "microscope agent: dropped oversized chunk {number} exceeding post limit"
+                );
+                CutOutcome::Failed
+            }
+            Ok(_) => {
+                guard.spool_seq = guard.spool_seq.saturating_add(1);
+                CutOutcome::Pushed(number)
+            }
+            Err(error) => {
+                eprintln!("microscope agent: cannot spool chunk {number}: {error}");
+                CutOutcome::Failed
+            }
         }
-        Ok(_) => {}
-        Err(error) => {
-            eprintln!("microscope agent: cannot spool chunk {number}: {error}");
-            return;
-        }
-    }
-    guard.spool_seq = guard.spool_seq.saturating_add(1);
+    } else {
+        CutOutcome::Failed
+    };
+    finish_cut_locked(&mut guard, outcome, mark_detached);
+    drop(guard);
+    cvar.notify_all();
+}
+
+fn complete_failed_cut(shared: &(Mutex<SharedState>, Condvar), mark_detached: bool) {
+    let (lock, cvar) = shared;
+    let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+    finish_cut_locked(&mut guard, CutOutcome::Failed, mark_detached);
     drop(guard);
     cvar.notify_all();
 }
@@ -535,6 +662,10 @@ fn sleep_interruptible(stop: &AtomicBool, total: Duration) {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "runs the live recording attach loop with hot policy reload and cut correlation"
+)]
 fn recorder_loop(
     stop: &AtomicBool,
     flush_trigger: &AtomicBool,
@@ -555,6 +686,8 @@ fn recorder_loop(
     };
 
     let mut options = build_record_options(&record, shared_bpf.as_ref());
+    let base_preset = record.preset;
+    let base_time_unit = record.time_unit;
     let mut last_policy_seq = 0_u64;
 
     while !stop.load(Ordering::Relaxed) {
@@ -569,27 +702,27 @@ fn recorder_loop(
             }
         };
         if let Some(policy) = policy_update {
-            let preset_changed = if let Some(preset_name) = policy.preset.as_deref()
-                && let Some(preset) = parse_policy_preset(preset_name)
-                && preset != record.preset
-            {
-                record.preset = preset;
-                true
-            } else {
-                false
-            };
-            let unit_changed = if let Some(unit_name) = policy.time_unit.as_deref()
-                && let Some(unit) = parse_policy_time_unit(unit_name)
-                && unit != record.time_unit
-            {
-                record.time_unit = unit;
-                true
-            } else {
-                false
-            };
-            if preset_changed || unit_changed {
+            let next_preset = policy
+                .preset
+                .as_deref()
+                .and_then(parse_policy_preset)
+                .unwrap_or(base_preset);
+            let next_unit = policy
+                .time_unit
+                .as_deref()
+                .and_then(parse_policy_time_unit)
+                .unwrap_or(base_time_unit);
+            if next_preset != record.preset || next_unit != record.time_unit {
+                record.preset = next_preset;
+                record.time_unit = next_unit;
                 options = build_record_options(&record, shared_bpf.as_ref());
             }
+            let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+            guard.applied_policy_version = guard.applied_policy_version.max(policy.version);
+            guard.applied_sanitizer_version = guard
+                .applied_sanitizer_version
+                .max(policy.sanitizer_version);
+            drop(guard);
         }
 
         let Some(pid) = find_target_pid(&record.process) else {
@@ -597,14 +730,24 @@ fn recorder_loop(
             continue;
         };
 
+        let session_stop = Arc::new(AtomicBool::new(false));
+        {
+            let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+            if stop.load(Ordering::Relaxed) || guard.policy_seq != last_policy_seq {
+                continue;
+            }
+            guard.attached = true;
+            guard.session_stop = Some(Arc::clone(&session_stop));
+        }
+
         let mut publish = |_profile: Profile| {};
         let mut on_segment = |segment: Profile| {
-            enqueue_profile(segment, shared, &record, host_name, tags, sanitizer);
+            enqueue_and_complete_cut(segment, shared, &record, host_name, tags, sanitizer, false);
         };
         let mut watch = Watch {
             every: Duration::MAX,
             publish: &mut publish,
-            stop,
+            stop: &session_stop,
             save: Some(Save {
                 trigger: flush_trigger,
                 to: &mut on_segment,
@@ -613,16 +756,18 @@ fn recorder_loop(
 
         match record_attached(pid, &options, &mut watch) {
             Ok(attached) => {
-                enqueue_profile(
+                enqueue_and_complete_cut(
                     attached.profile,
                     shared,
                     &record,
                     host_name,
                     tags,
                     sanitizer,
+                    true,
                 );
             }
             Err(error) => {
+                complete_failed_cut(shared, true);
                 if shared_bpf
                     .as_ref()
                     .is_some_and(SharedBpfEngine::load_failed)
@@ -643,7 +788,11 @@ fn recorder_loop(
             }
         }
 
-        if !stop.load(Ordering::Relaxed) {
+        let policy_pending = {
+            let guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+            guard.policy_seq != last_policy_seq
+        };
+        if !stop.load(Ordering::Relaxed) && !policy_pending {
             sleep_interruptible(stop, Duration::from_millis(250));
         }
     }
@@ -676,7 +825,8 @@ fn poster_loop(
     let mut max_batch_chunks = usize::MAX;
 
     while !stop.load(Ordering::Relaxed) {
-        let (has_chunks, has_token, seq, watch_update, flush_req) = {
+        machine.expire_flush(now());
+        let (has_chunks, has_token, seq, watch_update, ready_flush, waiting_for_cut) = {
             let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
             let watch_update = if guard.watch_seq == last_watch_seq {
                 None
@@ -684,31 +834,51 @@ fn poster_loop(
                 last_watch_seq = guard.watch_seq;
                 Some(guard.watch.clone())
             };
-            let flush_req = guard.flush_requested;
-            if let Some((fid, req_at)) = flush_req
-                && guard.spool.is_empty()
-                && req_at.elapsed() >= EMPTY_FLUSH_GRACE
-            {
-                guard.flush_completed = guard.flush_completed.max(fid);
-                guard.flush_requested = None;
-                machine.clear_flush(fid);
+            let mut ready_flush: Option<(u64, u64)> = None;
+            let mut waiting_for_cut = false;
+            if let Some(pf) = guard.flush_requested {
+                let wall_now = std::time::Instant::now();
+                if wall_now >= pf.deadline {
+                    guard.flush_requested = None;
+                    machine.clear_flush(pf.id);
+                } else {
+                    let cut_done = pf.target_cut_seq.is_none_or(|t| guard.cut_seq >= t);
+                    if cut_done {
+                        if guard.spool.is_empty() && pf.required_chunk.is_none() {
+                            guard.flush_completed = guard.flush_completed.max(pf.id);
+                            guard.flush_empty_acked = guard.flush_empty_acked.max(pf.id);
+                            guard.flush_requested = None;
+                            machine.clear_flush(pf.id);
+                        } else {
+                            let rem_ms = u64::try_from(
+                                pf.deadline.saturating_duration_since(wall_now).as_millis(),
+                            )
+                            .unwrap_or(5_000)
+                            .max(100);
+                            ready_flush = Some((pf.id, rem_ms));
+                        }
+                    } else {
+                        waiting_for_cut = true;
+                    }
+                }
             }
             (
                 !guard.spool.is_empty(),
                 guard.token.is_some() && guard.agent_id.is_some(),
                 guard.spool_seq,
                 watch_update,
-                guard.flush_requested,
+                ready_flush,
+                waiting_for_cut,
             )
         };
         if let Some(watch_opt) = watch_update {
             machine.apply_watch(watch_opt.as_ref(), now());
         }
-        if let Some((fid, _)) = flush_req
+        if let Some((fid, rem_ms)) = ready_flush
             && fid > last_flush_seen
         {
             last_flush_seen = fid;
-            machine.request_flush(fid, now());
+            machine.request_flush_with_deadline(fid, rem_ms, now());
         }
         if seq != last_seq {
             let was_empty = last_seq == 0;
@@ -726,7 +896,7 @@ fn poster_loop(
                 let _ = cvar.wait_timeout(guard, Duration::from_millis(100));
             }
             PosterAction::Wait { until } => {
-                let cap = if machine.pending_flush().is_some() {
+                let cap = if waiting_for_cut || machine.active_flush(now()).is_some() {
                     Duration::from_millis(50)
                 } else {
                     Duration::from_millis(200)
@@ -736,13 +906,13 @@ fn poster_loop(
                 let _ = cvar.wait_timeout(guard, wait);
             }
             PosterAction::Post => {
-                let active_flush_id = machine.pending_flush();
-                let (token, batch) = {
+                let (token, batch, post_flush_id) = {
                     let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
                     let (Some(token), Some(agent_id)) = (guard.token.clone(), guard.agent_id)
                     else {
                         continue;
                     };
+                    let queued_total = guard.spool.stats().queued_chunks;
                     let batch = guard.spool.peek_batch_capped(
                         MAX_POST_BYTES,
                         max_batch_chunks,
@@ -750,8 +920,23 @@ fn poster_loop(
                         unix_now_ns(),
                         sanitizer,
                     );
+                    let wall_now = std::time::Instant::now();
+                    let post_flush_id = match (&batch, guard.flush_requested) {
+                        (Ok(Some(b)), Some(pf))
+                            if wall_now < pf.deadline
+                                && pf.target_cut_seq.is_none_or(|t| guard.cut_seq >= t) =>
+                        {
+                            let satisfies_cut = pf
+                                .required_chunk
+                                .map_or(b.chunk_count >= queued_total, |req| {
+                                    b.first_chunk <= req && req <= b.last_chunk
+                                });
+                            satisfies_cut.then_some(pf.id)
+                        }
+                        _ => None,
+                    };
                     drop(guard);
-                    (token, batch)
+                    (token, batch, post_flush_id)
                 };
                 let batch = match batch {
                     Ok(Some(batch)) => batch,
@@ -768,19 +953,21 @@ fn poster_loop(
                     }
                 };
 
-                let reply = client.ingest_with_flush(&token, &batch.post, active_flush_id);
+                let reply = client.ingest_with_flush(&token, &batch.post, post_flush_id);
                 let outcome = match reply {
                     IngestReply::Accepted { last_chunk } => {
                         max_batch_chunks = usize::MAX;
                         let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
                         let _ = guard.spool.ack(batch.owner_gen, last_chunk);
-                        if guard.spool.is_empty()
-                            && let Some(fid) = active_flush_id
+                        if let Some(fid) = post_flush_id
+                            && guard.flush_requested.is_some_and(|pf| {
+                                pf.id == fid
+                                    && pf.required_chunk.is_none_or(|req| last_chunk >= req)
+                            })
                         {
                             guard.flush_completed = guard.flush_completed.max(fid);
-                            if guard.flush_requested.is_some_and(|(cur, _)| cur <= fid) {
-                                guard.flush_requested = None;
-                            }
+                            guard.flush_requested = None;
+                            machine.clear_flush(fid);
                         }
                         drop(guard);
                         PosterOutcome::Accepted { last_chunk }
@@ -789,13 +976,17 @@ fn poster_loop(
                         max_batch_chunks = usize::MAX;
                         let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
                         let _ = guard.spool.ack(batch.owner_gen, last_chunk);
-                        if guard.spool.is_empty()
-                            && let Some(fid) = active_flush_id
+                        if let Some(fid) = post_flush_id
+                            && guard.flush_requested.is_some_and(|pf| {
+                                pf.id == fid
+                                    && pf
+                                        .required_chunk
+                                        .map_or(guard.spool.is_empty(), |req| last_chunk >= req)
+                            })
                         {
                             guard.flush_completed = guard.flush_completed.max(fid);
-                            if guard.flush_requested.is_some_and(|(cur, _)| cur <= fid) {
-                                guard.flush_requested = None;
-                            }
+                            guard.flush_requested = None;
+                            machine.clear_flush(fid);
                         }
                         drop(guard);
                         PosterOutcome::Overlap { last_chunk }
@@ -824,11 +1015,16 @@ fn poster_loop(
                                 continue;
                             }
                             max_batch_chunks = usize::MAX;
-                            let _ = lock
-                                .lock()
-                                .unwrap_or_else(PoisonError::into_inner)
-                                .spool
-                                .drop_chunk(batch.owner_gen, batch.first_chunk);
+                            let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+                            let _ = guard.spool.drop_chunk(batch.owner_gen, batch.first_chunk);
+                            if let Some(pf) = guard.flush_requested
+                                && pf.required_chunk == Some(batch.first_chunk)
+                            {
+                                guard.flush_failed_id = guard.flush_failed_id.max(pf.id);
+                                guard.flush_requested = None;
+                                machine.clear_flush(pf.id);
+                            }
+                            drop(guard);
                             continue;
                         }
                         PosterOutcome::Retry { retry_after }

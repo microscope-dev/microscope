@@ -311,6 +311,8 @@ pub struct PollRequest {
     #[serde(default)]
     pub last_flush_id: u64,
     #[serde(default)]
+    pub empty_flush_id: u64,
+    #[serde(default)]
     pub policy_version: u64,
     #[serde(default)]
     pub sanitizer_version: u64,

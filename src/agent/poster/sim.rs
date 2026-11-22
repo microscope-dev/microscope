@@ -538,3 +538,100 @@ fn deterministic_sim_control_watch_flush_and_revocation() {
         run_control_and_poster_seed(seed);
     }
 }
+
+#[test]
+fn pending_flush_honors_retry_backoff_and_expires_at_deadline() {
+    let start = Instant(Duration::ZERO);
+    let mut poster = PosterMachine::new(start, Duration::from_secs(60));
+    poster.request_flush_with_deadline(7, 2_000, start);
+    assert_eq!(poster.next(start, true, true), PosterAction::Post);
+
+    poster.on(
+        PosterOutcome::Retry {
+            retry_after: Some(Duration::from_secs(5)),
+        },
+        start,
+        true,
+        0.5,
+    );
+    let one_sec = start.after(Duration::from_secs(1));
+    assert_eq!(
+        poster.next(one_sec, true, true),
+        PosterAction::Wait {
+            until: start.after(Duration::from_secs(5)),
+        }
+    );
+
+    let after_deadline = start.after(Duration::from_secs(6));
+    assert_eq!(poster.active_flush(after_deadline), None);
+    poster.expire_flush(after_deadline);
+    assert_eq!(poster.pending_flush(), None);
+}
+
+#[test]
+fn control_machine_resets_after_revocation_and_delays_policy_ack_until_applied() {
+    use crate::agent::{
+        control::{ControlAction, ControlEffect, ControlMachine, ControlOutcome},
+        wire::{PolicyDirective, PollResponse},
+    };
+
+    let t0 = Instant(Duration::ZERO);
+    let mut ctrl = ControlMachine::new(t0, vec!["proj".into()], vec!["svc".into()]);
+
+    let effects = ctrl.on(
+        ControlOutcome::Directive(PollResponse {
+            version: 2,
+            revoked: false,
+            watch: None,
+            flush: None,
+            policy: Some(PolicyDirective {
+                version: 3,
+                preset: Some("dev".into()),
+                time_unit: Some("1us".into()),
+                sanitizer_version: 2,
+            }),
+            burst: None,
+            poll_after_ms: 0,
+        }),
+        t0,
+        0.0,
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, ControlEffect::ApplyPolicy(p) if p.version == 3))
+    );
+    let ControlAction::Poll(before_apply) = ctrl.next(t0, true) else {
+        panic!("expected poll");
+    };
+    assert_eq!(before_apply.policy_version, 1);
+    assert_eq!(before_apply.sanitizer_version, 1);
+
+    ctrl.set_applied_policy(3, 2);
+    let ControlAction::Poll(after_apply) = ctrl.next(t0, true) else {
+        panic!("expected poll");
+    };
+    assert_eq!(after_apply.policy_version, 3);
+    assert_eq!(after_apply.sanitizer_version, 2);
+
+    let rev_effects = ctrl.on(
+        ControlOutcome::Directive(PollResponse {
+            version: 3,
+            revoked: true,
+            watch: None,
+            flush: None,
+            policy: None,
+            burst: None,
+            poll_after_ms: 0,
+        }),
+        t0,
+        0.0,
+    );
+    assert_eq!(rev_effects, vec![ControlEffect::Revoked]);
+    assert_eq!(ctrl.next(t0, true), ControlAction::Revoked);
+
+    let t1 = t0.after(Duration::from_secs(1));
+    ctrl.reset(t1);
+    assert!(!ctrl.is_revoked());
+    assert!(matches!(ctrl.next(t1, true), ControlAction::Poll(_)));
+}

@@ -82,6 +82,7 @@ struct ControlBridgeState {
     token: Option<String>,
     need_token: bool,
     revoked: bool,
+    reset_seq: u64,
     pipeline: Option<PipelineControl>,
 }
 
@@ -102,6 +103,7 @@ impl PollHandle {
                 token: None,
                 need_token: false,
                 revoked: false,
+                reset_seq: 0,
                 pipeline,
             }),
             Condvar::new(),
@@ -122,6 +124,20 @@ impl PollHandle {
         if guard.token.is_some() {
             guard.need_token = false;
         }
+        drop(guard);
+        cvar.notify_all();
+    }
+
+    fn reset_for_enrollment(&self, token: Option<String>, pipeline: Option<PipelineControl>) {
+        let (lock, cvar) = &*self.bridge;
+        let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        guard.token = token;
+        guard.pipeline = pipeline;
+        guard.revoked = false;
+        if guard.token.is_some() {
+            guard.need_token = false;
+        }
+        guard.reset_seq = guard.reset_seq.saturating_add(1);
         drop(guard);
         cvar.notify_all();
     }
@@ -161,6 +177,10 @@ impl PollHandle {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "runs the long-poll control loop with revocation recovery and pipeline sync"
+)]
 fn poll_loop(
     bridge: &(Mutex<ControlBridgeState>, Condvar),
     client: &Client,
@@ -171,27 +191,51 @@ fn poll_loop(
     let now = || Instant(started.elapsed());
     let mut machine = ControlMachine::new(now(), projects, services);
     let (lock, cvar) = bridge;
+    let mut last_reset_seq = 0_u64;
 
     loop {
-        let (stop, token, pipeline) = {
+        let (stop, token, pipeline, reset_seq) = {
             let guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-            (guard.stop, guard.token.clone(), guard.pipeline.clone())
+            (
+                guard.stop,
+                guard.token.clone(),
+                guard.pipeline.clone(),
+                guard.reset_seq,
+            )
         };
         if stop {
             return;
+        }
+        if reset_seq != last_reset_seq {
+            last_reset_seq = reset_seq;
+            machine.reset(now());
         }
         if let Some(p) = &pipeline {
             let done = p.completed_flush_id();
             if done > machine.last_flush_id() {
                 machine.mark_flush_done(done, now());
             }
+            let empty_ack = p.empty_flush_id();
+            if empty_ack > machine.empty_flush_id() {
+                machine.mark_empty_flush(empty_ack, now());
+            }
+            let (pv, sv) = p.applied_policy_versions();
+            machine.set_applied_policy(pv, sv);
         }
         if token.is_some() && machine.needs_token() {
             machine.token_refreshed(now());
         }
 
         match machine.next(now(), token.is_some()) {
-            ControlAction::Revoked => return,
+            ControlAction::Revoked => {
+                let guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+                if guard.stop {
+                    return;
+                }
+                if guard.reset_seq == last_reset_seq {
+                    let _ = cvar.wait_timeout(guard, Duration::from_millis(200));
+                }
+            }
             ControlAction::NeedToken => {
                 let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
                 if guard.stop {
@@ -214,11 +258,22 @@ fn poll_loop(
                 let Some(tok) = token else {
                     continue;
                 };
+                let req_reset_seq = last_reset_seq;
                 let reply = client.poll(&tok, &req);
+                let stale = {
+                    let guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+                    guard.stop || guard.reset_seq != req_reset_seq
+                };
+                if stale {
+                    continue;
+                }
                 let outcome = match reply {
                     PollReply::Directive(resp) => ControlOutcome::Directive(resp),
                     PollReply::Unauthorized => {
                         let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+                        if guard.stop || guard.reset_seq != req_reset_seq {
+                            continue;
+                        }
                         if guard.token.as_deref() == Some(tok.as_str()) {
                             guard.token = None;
                             guard.need_token = true;
@@ -234,10 +289,11 @@ fn poll_loop(
                     match effect {
                         ControlEffect::Revoked => {
                             let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-                            guard.revoked = true;
-                            guard.token = None;
+                            if !guard.stop && guard.reset_seq == req_reset_seq {
+                                guard.revoked = true;
+                                guard.token = None;
+                            }
                             drop(guard);
-                            return;
                         }
                         ControlEffect::SetWatch(watch) => {
                             if let Some(p) = &pipeline {
@@ -246,14 +302,17 @@ fn poll_loop(
                         }
                         ControlEffect::Flush(flush) => {
                             if let Some(p) = &pipeline {
-                                p.request_flush(flush.id);
+                                p.request_flush(flush.id, flush.deadline_ms);
                             } else {
-                                machine.mark_flush_done(flush.id, now());
+                                machine.mark_empty_flush(flush.id, now());
                             }
                         }
                         ControlEffect::ApplyPolicy(policy) => {
                             if let Some(p) = &pipeline {
                                 p.apply_policy(policy);
+                            } else {
+                                machine
+                                    .set_applied_policy(policy.version, policy.sanitizer_version);
                             }
                         }
                         ControlEffect::Burst(_) => {}
@@ -472,11 +531,35 @@ impl Agent {
         let (outcome, error) = client::outcome(reply);
         if let Reply::Token(token) = reply {
             self.token = Some(token.token.clone());
+            if !refreshing
+                && self.pipeline.is_none()
+                && let Some(record) = self.config.record.as_ref()
+            {
+                let host_name = self
+                    .config
+                    .node
+                    .clone()
+                    .unwrap_or_else(|| recorder::host_name_from(Path::new("/")));
+                match Pipeline::start(&self.config, record, host_name, Some(token.agent_id), false)
+                {
+                    Ok(pipeline) => self.pipeline = Some(pipeline),
+                    Err(error) => {
+                        log(&format!("cannot start the recording pipeline: {error:#}"));
+                    }
+                }
+            }
             if let Some(pipeline) = &self.pipeline {
                 pipeline.set_auth(Some(token.agent_id), Some(token.token.clone()));
             }
             if let Some(poll) = &self.poll {
-                poll.set_token(Some(token.token.clone()));
+                if refreshing {
+                    poll.set_token(Some(token.token.clone()));
+                } else {
+                    poll.reset_for_enrollment(
+                        Some(token.token.clone()),
+                        self.pipeline.as_ref().map(Pipeline::control),
+                    );
+                }
             }
             self.status.last_refresh = Some(client::unix_now());
             if refreshing {

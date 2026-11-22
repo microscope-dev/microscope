@@ -99,6 +99,8 @@ export function usePaneScope(id: () => PaneId, pane: () => Pane): PaneScopeResul
   const barLocked = useActiveView((v) => v.locked);
   const barActive = useActiveView((v) => v.active);
   const barStreamActive = useActiveView((v) => v.streamActive);
+  const barStreamReady = useActiveView((v) => v.streamReady);
+  const barStreamKey = useActiveView((v) => v.streamKey);
   const barStreamedPanes = useActiveView((v) => v.streamedPanes);
 
   const [localRev, setLocalRev] = createSignal(0);
@@ -114,9 +116,22 @@ export function usePaneScope(id: () => PaneId, pane: () => Pane): PaneScopeResul
   const revision = createMemo(() => (linked() ? barRevision() : localRev()));
   const locked = createMemo(() => linked() && barLocked());
   const signedIn = createMemo(() => now().kind === "in");
-  const streamActive = createMemo(() => linked() && barStreamActive());
-  const streamed = createMemo<StreamedPaneData | null>(() =>
-    linked() ? (barStreamedPanes()[id()] ?? null) : null,
+  const streamed = createMemo<StreamedPaneData | null>(() => {
+    if (!linked()) {
+      return null;
+    }
+    const entry = barStreamedPanes()[id()] ?? null;
+    if (!entry) {
+      return null;
+    }
+    const curKey = barStreamKey();
+    if (entry.streamKey !== undefined && curKey !== null && entry.streamKey !== curKey) {
+      return null;
+    }
+    return entry;
+  });
+  const streamActive = createMemo(
+    () => linked() && barStreamActive() && (!barStreamReady() || streamed() !== null),
   );
 
   const toggleLinked = () => {
@@ -158,17 +173,12 @@ export function usePaneScope(id: () => PaneId, pane: () => Pane): PaneScopeResul
 
 export function PaneLagBadge(props: { linked: boolean; streamed: StreamedPaneData | null }) {
   const clockMs = useActiveView((v) => v.clockMs);
-  const newestDataNs = useActiveView((v) => v.newestDataNs);
-  const serverTimeNs = useActiveView((v) => v.serverTimeNs);
-  const streamUpdatedAt = useActiveView((v) => v.streamUpdatedAt);
   const label = createMemo(() => {
-    if (!props.linked) {
+    if (!props.linked || !props.streamed) {
       return null;
     }
     const pane = props.streamed;
-    const lag = pane
-      ? computeLagMs(pane.newestDataNs, pane.serverTimeNs, pane.receivedAt, clockMs())
-      : computeLagMs(newestDataNs(), serverTimeNs(), streamUpdatedAt(), clockMs());
+    const lag = computeLagMs(pane.newestDataNs, pane.serverTimeNs, pane.receivedAt, clockMs());
     return formatDataLag(lag);
   });
 

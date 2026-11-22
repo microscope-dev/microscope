@@ -28,6 +28,7 @@ pub struct PosterMachine {
     watch_until: Option<Instant>,
     watch_generation: u64,
     pending_flush: Option<u64>,
+    pending_flush_deadline: Option<Instant>,
     next_post: Instant,
     failures: u32,
     need_token: bool,
@@ -42,6 +43,7 @@ impl PosterMachine {
             watch_until: None,
             watch_generation: 0,
             pending_flush: None,
+            pending_flush_deadline: None,
             next_post: now,
             failures: 0,
             need_token: false,
@@ -61,6 +63,26 @@ impl PosterMachine {
     #[must_use]
     pub const fn pending_flush(&self) -> Option<u64> {
         self.pending_flush
+    }
+
+    #[must_use]
+    pub const fn active_flush(&self, now: Instant) -> Option<u64> {
+        let Some(id) = self.pending_flush else {
+            return None;
+        };
+        match self.pending_flush_deadline {
+            Some(deadline) if now.0.as_nanos() >= deadline.0.as_nanos() => None,
+            _ => Some(id),
+        }
+    }
+
+    pub const fn expire_flush(&mut self, now: Instant) {
+        if let Some(deadline) = self.pending_flush_deadline
+            && now.0.as_nanos() >= deadline.0.as_nanos()
+        {
+            self.pending_flush = None;
+            self.pending_flush_deadline = None;
+        }
     }
 
     #[must_use]
@@ -99,8 +121,14 @@ impl PosterMachine {
     }
 
     pub fn request_flush(&mut self, flush_id: u64, now: Instant) {
+        self.request_flush_with_deadline(flush_id, 5_000, now);
+    }
+
+    pub fn request_flush_with_deadline(&mut self, flush_id: u64, deadline_ms: u64, now: Instant) {
         if self.pending_flush.is_none_or(|cur| flush_id > cur) {
             self.pending_flush = Some(flush_id);
+            self.pending_flush_deadline =
+                Some(now.after(Duration::from_millis(deadline_ms.clamp(100, 30_000))));
             if self.failures == 0 && !self.need_token {
                 self.next_post = now;
             }
@@ -110,6 +138,7 @@ impl PosterMachine {
     pub fn clear_flush(&mut self, flush_id: u64) {
         if self.pending_flush == Some(flush_id) {
             self.pending_flush = None;
+            self.pending_flush_deadline = None;
         }
     }
 
@@ -123,7 +152,7 @@ impl PosterMachine {
 
     pub const fn chunk_queued(&mut self, now: Instant, was_empty: bool) {
         if self.failures == 0 && !self.need_token {
-            if self.pending_flush.is_some() {
+            if self.active_flush(now).is_some() {
                 self.next_post = now;
             } else if was_empty {
                 let interval = self.effective_interval(now);
@@ -151,7 +180,12 @@ impl PosterMachine {
         if !has_token {
             return PosterAction::NeedToken;
         }
-        if self.pending_flush.is_some() || now.0.as_nanos() >= self.next_post.0.as_nanos() {
+        if self.failures > 0 && now.0.as_nanos() < self.next_post.0.as_nanos() {
+            return PosterAction::Wait {
+                until: self.next_post,
+            };
+        }
+        if self.active_flush(now).is_some() || now.0.as_nanos() >= self.next_post.0.as_nanos() {
             PosterAction::Post
         } else {
             let capped = now.after(interval);
@@ -172,6 +206,7 @@ impl PosterMachine {
         jitter: f64,
     ) {
         assert!((0.0..=1.0).contains(&jitter));
+        self.expire_flush(now);
         let interval = self.effective_interval(now);
         match outcome {
             PosterOutcome::Accepted { .. } => {
@@ -179,6 +214,7 @@ impl PosterMachine {
                 self.need_token = false;
                 if !still_has_chunks {
                     self.pending_flush = None;
+                    self.pending_flush_deadline = None;
                 }
                 self.next_post = if still_has_chunks {
                     now

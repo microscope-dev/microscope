@@ -319,4 +319,31 @@ describe("dashboards URL and formatting helpers", () => {
       vi.unstubAllGlobals();
     }
   });
+
+  it("clears streamed panes and reports disconnect on 502 so direct queries can resume", async () => {
+    let disconnects = 0;
+    const fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(() =>
+      Promise.resolve(new Response("bad gateway", { status: 502 })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const handle = openDashboardStream(
+        {
+          scope: { ...DEFAULT_SCOPE, refresh: "s5" },
+          panes: [{ kind: "flame", id: "p0", invert: false }],
+        },
+        {
+          onDisconnect: () => {
+            disconnects += 1;
+          },
+        },
+      );
+      await vi.waitFor(() => {
+        expect(disconnects).toBeGreaterThanOrEqual(1);
+      });
+      handle.close();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });

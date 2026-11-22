@@ -39,8 +39,11 @@ pub enum ControlEffect {
 pub struct ControlMachine {
     known_version: u64,
     last_flush_id: u64,
+    empty_flush_id: u64,
     policy_version: u64,
     sanitizer_version: u64,
+    dispatched_policy_version: u64,
+    dispatched_sanitizer_version: u64,
     projects: Vec<String>,
     services: Vec<String>,
     next_poll: Instant,
@@ -56,8 +59,11 @@ impl ControlMachine {
         Self {
             known_version: 0,
             last_flush_id: 0,
+            empty_flush_id: 0,
             policy_version: 1,
             sanitizer_version: 1,
+            dispatched_policy_version: 1,
+            dispatched_sanitizer_version: 1,
             projects,
             services,
             next_poll: now,
@@ -65,6 +71,28 @@ impl ControlMachine {
             need_token: false,
             revoked: false,
             active_watch: None,
+        }
+    }
+
+    pub const fn reset(&mut self, now: Instant) {
+        self.known_version = 0;
+        self.last_flush_id = 0;
+        self.empty_flush_id = 0;
+        self.dispatched_policy_version = self.policy_version;
+        self.dispatched_sanitizer_version = self.sanitizer_version;
+        self.next_poll = now;
+        self.failures = 0;
+        self.need_token = false;
+        self.revoked = false;
+        self.active_watch = None;
+    }
+
+    pub const fn set_applied_policy(&mut self, policy_version: u64, sanitizer_version: u64) {
+        if policy_version > self.policy_version {
+            self.policy_version = policy_version;
+        }
+        if sanitizer_version > self.sanitizer_version {
+            self.sanitizer_version = sanitizer_version;
         }
     }
 
@@ -81,6 +109,11 @@ impl ControlMachine {
     #[must_use]
     pub const fn last_flush_id(&self) -> u64 {
         self.last_flush_id
+    }
+
+    #[must_use]
+    pub const fn empty_flush_id(&self) -> u64 {
+        self.empty_flush_id
     }
 
     pub const fn token_refreshed(&mut self, now: Instant) {
@@ -100,6 +133,18 @@ impl ControlMachine {
         }
     }
 
+    pub const fn mark_empty_flush(&mut self, flush_id: u64, now: Instant) {
+        if flush_id > self.empty_flush_id {
+            self.empty_flush_id = flush_id;
+            if flush_id > self.last_flush_id {
+                self.last_flush_id = flush_id;
+            }
+            if self.failures == 0 && !self.need_token {
+                self.next_poll = now;
+            }
+        }
+    }
+
     #[must_use]
     pub fn next(&self, now: Instant, has_token: bool) -> ControlAction {
         if self.revoked {
@@ -112,6 +157,7 @@ impl ControlMachine {
             ControlAction::Poll(PollRequest {
                 known_version: self.known_version,
                 last_flush_id: self.last_flush_id,
+                empty_flush_id: self.empty_flush_id,
                 policy_version: self.policy_version,
                 sanitizer_version: self.sanitizer_version,
                 projects: self.projects.clone(),
@@ -148,12 +194,15 @@ impl ControlMachine {
                     effects.push(ControlEffect::Flush(flush));
                 }
                 if let Some(policy) = resp.policy {
-                    let newer_policy = policy.version > self.policy_version;
-                    let newer_sanitizer = policy.sanitizer_version > self.sanitizer_version;
+                    let newer_policy = policy.version > self.dispatched_policy_version;
+                    let newer_sanitizer =
+                        policy.sanitizer_version > self.dispatched_sanitizer_version;
                     if newer_policy || newer_sanitizer {
-                        self.policy_version = self.policy_version.max(policy.version);
-                        self.sanitizer_version =
-                            self.sanitizer_version.max(policy.sanitizer_version);
+                        self.dispatched_policy_version =
+                            self.dispatched_policy_version.max(policy.version);
+                        self.dispatched_sanitizer_version = self
+                            .dispatched_sanitizer_version
+                            .max(policy.sanitizer_version);
                         effects.push(ControlEffect::ApplyPolicy(policy));
                     }
                 }
