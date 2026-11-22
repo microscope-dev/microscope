@@ -4,6 +4,7 @@ import { createEffect, createMemo, onSettled, Show } from "solid-js";
 
 import { base, withinBase } from "../base";
 import { dashboardsWindow } from "../dashboards";
+import { dataWindow } from "../dataPolicy";
 import { machinesWindow } from "../fleet";
 import { toHref } from "../history";
 import { commandName } from "../model";
@@ -14,6 +15,7 @@ import { MenuBar } from "../workbench/MenuBar";
 import { COMMANDS, useCommands } from "./commands";
 import { DashboardsWindow } from "./dashboards/DashboardsWindow";
 import { ScopeBar } from "./dashboards/ScopeBar";
+import { DataWindow } from "./data/DataWindow";
 import { MachinesWindow } from "./machines/MachinesWindow";
 import { People } from "./People";
 import { RunToolbar } from "./RunToolbar";
@@ -91,6 +93,7 @@ export function Frame(props: { children?: JSX.Element }) {
         <StatusBar />
         <MachinesWindow />
         <DashboardsWindow />
+        <DataWindow />
       </div>
     </Show>
   );
@@ -104,6 +107,7 @@ function useKeys() {
       machinesWindow.getState().open ||
       dashboardsWindow.getState().open ||
       dashboardsWindow.getState().saveDialogOpen ||
+      dataWindow.getState().open ||
       (event.key === "Escape" && keepsEscape(document.activeElement))
     ) {
       return;

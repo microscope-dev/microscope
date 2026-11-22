@@ -1461,6 +1461,7 @@ struct Loaded {
     shedding: Shed,
 
     runs: u64,
+    flushed_runs: u64,
     estimated: u64,
 }
 
@@ -1581,6 +1582,7 @@ impl Loaded {
             specs,
             shedding: Shed::default(),
             runs: 0,
+            flushed_runs: 0,
             estimated: 0,
         })
     }
@@ -1695,6 +1697,7 @@ impl Loaded {
             }
         }
 
+        self.flushed_runs = self.runs();
         Ok(())
     }
 
@@ -1914,22 +1917,29 @@ impl Loaded {
     }
 
     fn counted(&self, process: Pid) -> Folded {
-        self.half(self.generation, process)
+        self.half(self.generation, process).0
     }
 
     fn take_counted(&mut self, process: Pid) -> Result<Folded, BpfError> {
+        let current_runs = self.runs();
+        if current_runs == self.flushed_runs {
+            return Ok(Folded::default());
+        }
         let old = self.generation;
         self.configure(|config| config.flags ^= CONFIG_GENERATION)?;
         self.generation ^= 1;
         let (fence, token) = &mut self.fence;
         fence.set(0, token, 0).map_err(load_error)?;
-        let folded = self.half(old, process);
+        let (folded, nonzero_rows) = self.half(old, process);
+        self.flushed_runs = current_runs;
         let rows = u32::try_from(self.rows.len().max(1)).unwrap_or(u32::MAX);
-        if let Some(map) = self.ebpf.map_mut("STATS") {
+        if !nonzero_rows.is_empty()
+            && let Some(map) = self.ebpf.map_mut("STATS")
+        {
             let mut stats =
                 PerCpuArray::<_, Bytes<STAT_BYTES>>::try_from(map).map_err(load_error)?;
             let cpus = aya::util::nr_cpus().map_err(|(_, error)| load_error(error))?;
-            for row in 0..rows {
+            for row in nonzero_rows {
                 let zeros =
                     PerCpuValues::try_from(vec![[0; STAT_BYTES]; cpus]).map_err(load_error)?;
                 stats.set(old * rows + row, zeros, 0).map_err(load_error)?;
@@ -1969,9 +1979,10 @@ impl Loaded {
         Ok(folded)
     }
 
-    fn half(&self, half: u32, process: Pid) -> Folded {
+    fn half(&self, half: u32, process: Pid) -> (Folded, Vec<u32>) {
         let rows = u32::try_from(self.rows.len().max(1)).unwrap_or(u32::MAX);
         let mut stats = Vec::new();
+        let mut nonzero_rows = Vec::new();
         if let Some(map) = self.ebpf.map("THREAD_STATS")
             && let Ok(map) = HashMap::<_, Bytes<STAT_KEY_BYTES>, Bytes<STAT_BYTES>>::try_from(map)
         {
@@ -2002,12 +2013,17 @@ impl Loaded {
                     continue;
                 };
 
+                let mut had_calls = false;
                 for value in values.iter() {
                     if let Ok(value) = RawStatValue::read_from_bytes(value)
                         && value.calls > 0
                     {
                         stats.push((0, 0, call, value));
+                        had_calls = true;
                     }
+                }
+                if had_calls {
+                    nonzero_rows.push(row);
                 }
             }
         }
@@ -2028,7 +2044,7 @@ impl Loaded {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        fold(process, stats, errnos)
+        (fold(process, stats, errnos), nonzero_rows)
     }
 }
 
@@ -2277,6 +2293,17 @@ impl Engine {
         stop: &AtomicBool,
         sink: &mut dyn Sink,
     ) -> Result<Finished, BpfError> {
+        self.trace_running_many(&[pid], options, engine, stop, sink)
+    }
+
+    pub fn trace_running_many(
+        &mut self,
+        pids: &[u32],
+        options: &TraceOptions,
+        engine: BpfOptions,
+        stop: &AtomicBool,
+        sink: &mut dyn Sink,
+    ) -> Result<Finished, BpfError> {
         let Some(loaded) = self.loaded.as_mut() else {
             return Err(BpfError::Load(
                 "the persistent BPF engine was invalidated after a failed reset".into(),
@@ -2284,7 +2311,7 @@ impl Engine {
         };
         let (result, healthy) = run_with(
             loaded,
-            Start::Attach(pid),
+            Start::Attach(pids.to_vec()),
             options,
             engine,
             stop,
@@ -2326,7 +2353,17 @@ pub fn trace_running(
     stop: &AtomicBool,
     sink: &mut dyn Sink,
 ) -> Result<Finished, BpfError> {
-    run(Start::Attach(pid), options, engine, stop, sink)
+    run(Start::Attach(vec![pid]), options, engine, stop, sink)
+}
+
+pub fn trace_running_many(
+    pids: &[u32],
+    options: &TraceOptions,
+    engine: BpfOptions,
+    stop: &AtomicBool,
+    sink: &mut dyn Sink,
+) -> Result<Finished, BpfError> {
+    run(Start::Attach(pids.to_vec()), options, engine, stop, sink)
 }
 
 pub fn trace_held(
@@ -2339,9 +2376,9 @@ pub fn trace_held(
     run(Start::Held(pid), options, engine, stop, sink)
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Start {
-    Attach(u32),
+    Attach(Vec<u32>),
     Held(u32),
 }
 
@@ -2372,6 +2409,10 @@ fn run_with(
         return (Err(error), false);
     }
     sink.attached_by(&loaded.attachment);
+    let roots: Vec<u32> = match &start {
+        Start::Attach(pids) => pids.clone(),
+        Start::Held(pid) => vec![*pid],
+    };
     let mut targeted = BTreeSet::new();
     let Begun {
         first,
@@ -2424,9 +2465,11 @@ fn run_with(
     let Reader { sink, .. } = reader;
     sink.counted(loaded.counted(first));
     let healthy = if persistent {
-        traced.insert(first.get());
-        for child in perf::descendants(first.get()) {
-            traced.insert(child);
+        for root in roots {
+            traced.insert(root);
+            for child in perf::descendants(root) {
+                traced.insert(child);
+            }
         }
         loaded.reset(&traced, &laid_out).is_ok()
     } else {
@@ -2463,37 +2506,46 @@ fn begin(
             sink.attached(pid);
             Pid::new(pid)
         }
-        Start::Attach(pid) => {
-            if ended(pid) {
-                return Err(BpfError::NoProcess(pid));
-            }
+        Start::Attach(pids) => {
+            let live_roots: Vec<u32> = pids.iter().copied().filter(|&pid| !ended(pid)).collect();
+            let Some(&first_pid) = live_roots.first() else {
+                return Err(BpfError::NoProcess(pids.first().copied().unwrap_or(0)));
+            };
 
-            targeted.insert(pid);
-            loaded.target(pid)?;
+            targeted.insert(first_pid);
+            loaded.target(first_pid)?;
+            for &pid in live_roots.iter().skip(1) {
+                targeted.insert(pid);
+                loaded.also_target(pid)?;
+            }
             if options.stacks.is_some() {
                 mappings.push(
-                    perf::Events::attach(pid, &MAPPINGS, MAPPING_EVENTS)
+                    perf::Events::attach_many(&live_roots, &MAPPINGS, MAPPING_EVENTS)
                         .map_err(BpfError::Mappings)?,
                 );
             }
 
-            let mut children = BTreeSet::new();
+            let mut all_procs: BTreeSet<u32> = live_roots.iter().copied().collect();
             loop {
-                let found: Vec<u32> = perf::descendants(pid)
-                    .into_iter()
-                    .filter(|child| !children.contains(child))
-                    .collect();
+                let mut found = Vec::new();
+                for &root in &live_roots {
+                    for child in perf::descendants(root) {
+                        if !all_procs.contains(&child) {
+                            found.push(child);
+                        }
+                    }
+                }
                 if found.is_empty() {
                     break;
                 }
                 for child in found {
                     targeted.insert(child);
                     loaded.also_target(child)?;
-                    children.insert(child);
+                    all_procs.insert(child);
                 }
             }
 
-            for process in std::iter::once(pid).chain(children) {
+            for process in all_procs {
                 live.insert(Pid::new(process), exits(process));
                 sink.attached(process);
                 if let Some(stacks) = &options.stacks {
@@ -2504,7 +2556,7 @@ fn begin(
                 }
             }
 
-            Pid::new(pid)
+            Pid::new(first_pid)
         }
     };
 

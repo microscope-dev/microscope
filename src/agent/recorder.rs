@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::Path,
     sync::{
@@ -10,26 +10,37 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use microscope_data::{
-    capture::records::NONE,
+    capture::{Capture, records::NONE},
     object::{ChunkData, ChunkRow, DimensionRow, TimeUnit, shift_capture_times},
-    sanitize::{Builtin, HashKey, Sanitizer, sanitize_chunk},
+    sanitize::{Action, Builtin, HashKey, Rule, RuleSpec, Sanitizer, sanitize_chunk},
 };
 
 use super::{
     client::{Client, IngestReply},
-    config::{Config, RecordConfig},
+    config::{Config, Limits, RecordConfig, SanitizeConfig},
+    host::Root,
     machine::Instant,
     poster::{PosterAction, PosterMachine, PosterOutcome},
+    select::{
+        BuildIdCache, RuleAction, RuleKind, ScanOptions, SelectedProcess, SelectionRule,
+        scan_selected_processes,
+    },
+    split::filter_capture_by_pids,
     spool::{MAX_POST_BYTES, Spool},
-    wire::{PolicyDirective, WatchDirective},
+    wire::{BurstDirective, PolicyDirective, SanitizerPolicyDirective, WatchDirective},
 };
-use crate::profiler::{
-    Cuts, Preset, Profile, RecordOptions, Save, SharedBpfEngine, SyscallLevel, Watch,
-    record_attached,
+use crate::{
+    backend::perf,
+    profiler::{
+        Cuts, Preset, Profile, RecordOptions, Save, SharedBpfEngine, SyscallLevel, Watch,
+        budget::Budget, record_attached_many,
+    },
 };
 
 const AGENT_DEV_MAX_SYSCALL_CAP: u32 = 20_000;
+const RESCAN_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy)]
 struct PendingFlush {
@@ -57,8 +68,14 @@ struct SharedState {
     flush_failed_id: u64,
     policy: Option<PolicyDirective>,
     policy_seq: u64,
+    burst: Option<BurstDirective>,
+    burst_seq: u64,
     applied_policy_version: u64,
     applied_sanitizer_version: u64,
+    active_projects: Vec<String>,
+    active_services: Vec<String>,
+    sanitizer: Arc<Sanitizer>,
+    project_sanitizers: BTreeMap<String, Arc<Sanitizer>>,
 }
 
 #[derive(Clone)]
@@ -139,11 +156,30 @@ impl PipelineControl {
         )
     }
 
+    #[must_use]
+    pub fn active_targets(&self) -> (Vec<String>, Vec<String>) {
+        let (lock, _) = &*self.shared;
+        let guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        (guard.active_projects.clone(), guard.active_services.clone())
+    }
+
     pub fn apply_policy(&self, policy: PolicyDirective) {
         let (lock, cvar) = &*self.shared;
         let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
         guard.policy = Some(policy);
         guard.policy_seq = guard.policy_seq.saturating_add(1);
+        if let Some(session_stop) = &guard.session_stop {
+            session_stop.store(true, Ordering::SeqCst);
+        }
+        drop(guard);
+        cvar.notify_all();
+    }
+
+    pub fn apply_burst(&self, burst: Option<BurstDirective>) {
+        let (lock, cvar) = &*self.shared;
+        let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        guard.burst = burst;
+        guard.burst_seq = guard.burst_seq.saturating_add(1);
         if let Some(session_stop) = &guard.session_stop {
             session_stop.store(true, Ordering::SeqCst);
         }
@@ -176,11 +212,7 @@ impl Pipeline {
         let mut spool = Spool::open(&config.state_dir.join("spool"), max_bytes)?;
         spool.bind_owner(&server, agent_id, adopt_legacy)?;
         let client = Client::new(config.server.clone(), config.ca_file.as_deref())?;
-        let sanitizer = Arc::new(Sanitizer::new(
-            &Builtin::DEFAULT,
-            Vec::new(),
-            HashKey::new(b"microscope-agent-local"),
-        ));
+        let (initial_sanitizer, initial_proj_sanitizers) = build_sanitizers(&config.sanitize, None);
 
         let stop = Arc::new(AtomicBool::new(false));
         let flush_trigger = Arc::new(AtomicBool::new(false));
@@ -203,8 +235,14 @@ impl Pipeline {
                 flush_failed_id: 0,
                 policy: None,
                 policy_seq: 0,
-                applied_policy_version: 1,
-                applied_sanitizer_version: 1,
+                burst: None,
+                burst_seq: 0,
+                applied_policy_version: 0,
+                applied_sanitizer_version: 0,
+                active_projects: Vec::new(),
+                active_services: Vec::new(),
+                sanitizer: initial_sanitizer,
+                project_sanitizers: initial_proj_sanitizers,
             }),
             Condvar::new(),
         ));
@@ -212,8 +250,9 @@ impl Pipeline {
         let rec_stop = Arc::clone(&stop);
         let rec_trigger = Arc::clone(&flush_trigger);
         let rec_shared = Arc::clone(&shared);
-        let rec_sanitizer = Arc::clone(&sanitizer);
         let rec_config = record.clone();
+        let limits = config.limits.clone();
+        let local_sanitize = config.sanitize.clone();
         let tags = config.tags.clone();
         let recorder = thread::Builder::new()
             .name("microscope-agent-recorder".into())
@@ -222,10 +261,11 @@ impl Pipeline {
                     &rec_stop,
                     &rec_trigger,
                     &rec_shared,
-                    rec_config,
+                    &rec_config,
+                    &limits,
+                    &local_sanitize,
                     &host_name,
                     &tags,
-                    &rec_sanitizer,
                 );
             })?;
 
@@ -235,7 +275,7 @@ impl Pipeline {
         let poster = thread::Builder::new()
             .name("microscope-agent-poster".into())
             .spawn(move || {
-                poster_loop(&post_stop, &post_shared, &client, post_interval, &sanitizer);
+                poster_loop(&post_stop, &post_shared, &client, post_interval);
             })?;
 
         Ok(Self {
@@ -347,6 +387,36 @@ const fn preset_code(preset: Preset) -> u8 {
     }
 }
 
+const fn preset_rank(preset: Preset) -> u8 {
+    match preset {
+        Preset::Production => 0,
+        Preset::Development => 1,
+        Preset::Maximum => 2,
+    }
+}
+
+const fn time_unit_rank(unit: TimeUnit) -> u8 {
+    match unit {
+        TimeUnit::Ms => 0,
+        TimeUnit::Us => 1,
+        TimeUnit::Ns => 2,
+    }
+}
+
+const fn clamp_preset(preset: Preset, max_preset: Option<Preset>) -> Preset {
+    match max_preset {
+        Some(cap) if preset_rank(preset) > preset_rank(cap) => cap,
+        _ => preset,
+    }
+}
+
+const fn clamp_time_unit(unit: TimeUnit, min_unit: Option<TimeUnit>) -> TimeUnit {
+    match min_unit {
+        Some(cap) if time_unit_rank(unit) > time_unit_rank(cap) => cap,
+        _ => unit,
+    }
+}
+
 fn parse_policy_preset(name: &str) -> Option<Preset> {
     match name {
         "prod" | "production" => Some(Preset::Production),
@@ -359,51 +429,210 @@ fn parse_policy_preset(name: &str) -> Option<Preset> {
 fn parse_policy_time_unit(name: &str) -> Option<TimeUnit> {
     match name {
         "1ns" | "ns" => Some(TimeUnit::Ns),
-        "1us" | "us" => Some(TimeUnit::Us),
+        "1us" | "1µs" | "us" | "µs" => Some(TimeUnit::Us),
         "1ms" | "ms" => Some(TimeUnit::Ms),
         _ => None,
     }
 }
 
-fn find_target_pid(name: &str) -> Option<u32> {
-    let self_pid = std::process::id();
-    let entries = fs::read_dir("/proc").ok()?;
-    let mut best = None;
-    for entry in entries.flatten() {
-        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
-            continue;
-        };
-        if pid == self_pid {
-            continue;
-        }
-        let proc_dir = entry.path();
-        let comm_match =
-            fs::read_to_string(proc_dir.join("comm")).is_ok_and(|comm| comm.trim() == name);
-        let exe_match = !comm_match
-            && fs::read_link(proc_dir.join("exe")).is_ok_and(|exe| {
-                exe.file_name()
-                    .and_then(|f| f.to_str())
-                    .is_some_and(|f| f == name || f.strip_suffix(" (deleted)") == Some(name))
-            });
-        if comm_match || exe_match {
-            best = Some(best.map_or(pid, |current: u32| current.min(pid)));
+fn parse_action(raw: &str) -> Option<Action> {
+    match raw {
+        "redact" => Some(Action::Redact),
+        "hash" => Some(Action::Hash),
+        "mask" => Some(Action::Mask),
+        "drop-field" => Some(Action::DropField),
+        "drop-record" => Some(Action::DropRecord),
+        _ => None,
+    }
+}
+
+fn build_sanitizers(
+    local: &SanitizeConfig,
+    remote: Option<&SanitizerPolicyDirective>,
+) -> (Arc<Sanitizer>, BTreeMap<String, Arc<Sanitizer>>) {
+    let mut builtins: Vec<Builtin> = Builtin::DEFAULT
+        .iter()
+        .copied()
+        .filter(|b| !local.disable_builtins.contains(b))
+        .collect();
+    if let Some(rem) = remote {
+        for name in &rem.enabled_builtins {
+            if let Ok(b) = name.parse::<Builtin>()
+                && !local.disable_builtins.contains(&b)
+                && !builtins.contains(&b)
+            {
+                builtins.push(b);
+            }
         }
     }
-    best
+
+    let key_bytes: Vec<u8> = remote
+        .and_then(|r| r.hash_key.as_deref())
+        .and_then(|b64| URL_SAFE_NO_PAD.decode(b64).ok())
+        .filter(|bytes| !bytes.is_empty())
+        .unwrap_or_else(|| b"microscope-agent-local".to_vec());
+
+    let mut org_specs: Vec<RuleSpec> = local.rules.clone();
+    let mut per_project_specs: BTreeMap<String, Vec<RuleSpec>> = BTreeMap::new();
+    if let Some(rem) = remote {
+        for r in &rem.rules {
+            let Some(action) = parse_action(&r.action) else {
+                continue;
+            };
+            let spec = RuleSpec {
+                name: r.name.clone(),
+                fields: r.fields.clone(),
+                pattern: r.pattern.clone(),
+                action,
+            };
+            if Rule::new(&spec).is_err() {
+                continue;
+            }
+            if let Some(proj) = &r.project {
+                per_project_specs
+                    .entry(proj.to_ascii_lowercase())
+                    .or_default()
+                    .push(spec);
+            } else {
+                org_specs.push(spec);
+            }
+        }
+    }
+
+    let compile = |specs: &[RuleSpec]| -> Vec<Rule> {
+        specs
+            .iter()
+            .filter_map(|spec| Rule::new(spec).ok())
+            .collect()
+    };
+
+    let org_sanitizer = Arc::new(Sanitizer::new(
+        &builtins,
+        compile(&org_specs),
+        HashKey::new(&key_bytes),
+    ));
+
+    let mut project_sanitizers = BTreeMap::new();
+    for (proj_key, extra_specs) in per_project_specs {
+        let mut combined = org_specs.clone();
+        combined.extend(extra_specs);
+        project_sanitizers.insert(
+            proj_key,
+            Arc::new(Sanitizer::new(
+                &builtins,
+                compile(&combined),
+                HashKey::new(&key_bytes),
+            )),
+        );
+    }
+
+    (org_sanitizer, project_sanitizers)
+}
+
+fn remote_selection_rules(policy: Option<&PolicyDirective>) -> Vec<SelectionRule> {
+    let Some(pol) = policy else {
+        return Vec::new();
+    };
+    pol.rules
+        .iter()
+        .filter_map(|r| {
+            Some(SelectionRule {
+                kind: RuleKind::parse(&r.kind)?,
+                pattern: r.pattern.clone(),
+                action: RuleAction::parse(&r.action)?,
+                project: r.project.clone(),
+                service: r.service.clone(),
+            })
+        })
+        .collect()
+}
+
+fn effective_policy_for_process(
+    proc_sel: &SelectedProcess,
+    base_preset: Preset,
+    base_unit: TimeUnit,
+    policy: Option<&PolicyDirective>,
+    burst: Option<&BurstDirective>,
+    limits: &Limits,
+    now_ns: i64,
+) -> (Preset, TimeUnit) {
+    let mut preset = base_preset;
+    let mut unit = base_unit;
+
+    if let Some(pol) = policy {
+        if let Some(p) = pol.preset.as_deref().and_then(parse_policy_preset) {
+            preset = p;
+        }
+        if let Some(u) = pol.time_unit.as_deref().and_then(parse_policy_time_unit) {
+            unit = u;
+        }
+        if let Some(proj) = &proc_sel.project
+            && let Some(pp) = pol
+                .project_policies
+                .iter()
+                .find(|p| p.project.eq_ignore_ascii_case(proj))
+        {
+            if let Some(p) = parse_policy_preset(&pp.preset) {
+                preset = p;
+            }
+            if let Some(u) = parse_policy_time_unit(&pp.time_unit) {
+                unit = u;
+            }
+        }
+    }
+
+    if let Some(b) = burst
+        && b.ends_at_ns.is_none_or(|ends| ends > now_ns)
+    {
+        let project_matches = match (&b.project, &proc_sel.project) {
+            (None, _) => true,
+            (Some(bp), Some(pp)) => bp.eq_ignore_ascii_case(pp),
+            (Some(_), None) => false,
+        };
+        if project_matches {
+            if let Some(p) = parse_policy_preset(&b.preset)
+                && preset_rank(p) >= preset_rank(preset)
+            {
+                preset = p;
+            }
+            if let Some(u) = b.time_unit.as_deref().and_then(parse_policy_time_unit)
+                && time_unit_rank(u) >= time_unit_rank(unit)
+            {
+                unit = u;
+            }
+        }
+    }
+
+    (
+        clamp_preset(preset, limits.max_preset),
+        clamp_time_unit(unit, limits.min_time_unit),
+    )
 }
 
 fn build_record_options(
-    record: &RecordConfig,
+    preset: Preset,
+    chunk_ms: u64,
+    limits: &Limits,
     shared_bpf: Option<&SharedBpfEngine>,
+    allow_syscalls: bool,
 ) -> RecordOptions {
-    let mut options = RecordOptions::preset(record.preset);
-    options.cuts = Cuts::Segments(Duration::from_millis(record.chunk_ms));
+    let mut options = RecordOptions::preset(preset);
+    options.cuts = Cuts::Segments(Duration::from_millis(chunk_ms));
     options.symbols_later = false;
-    if let Some(bpf) = shared_bpf {
-        if record.preset != Preset::Production {
+    if let Some(cpu_pct) = limits.cpu_percent {
+        let mut budget = options.budget.unwrap_or(Budget::PRODUCTION);
+        budget.cpu = (f64::from(cpu_pct) / 100.0).clamp(0.01, 1.0);
+        options.budget = Some(budget);
+    }
+    if allow_syscalls {
+        if let Some(bpf) = shared_bpf {
+            if preset != Preset::Production {
+                options.syscalls.kept_per_second = Some(AGENT_DEV_MAX_SYSCALL_CAP);
+            }
+            options.syscalls.shared_bpf = Some(bpf.clone());
+        } else if preset != Preset::Production {
             options.syscalls.kept_per_second = Some(AGENT_DEV_MAX_SYSCALL_CAP);
         }
-        options.syscalls.shared_bpf = Some(bpf.clone());
     } else {
         options.syscalls.level = SyscallLevel::Off;
         options.syscalls.kept_per_second = None;
@@ -411,8 +640,7 @@ fn build_record_options(
     options
 }
 
-const fn profile_has_data(profile: &Profile) -> bool {
-    let c = profile.capture();
+const fn capture_has_data(c: &Capture) -> bool {
     !c.samples.is_empty()
         || !c.off_cpu.is_empty()
         || !c.syscalls.is_empty()
@@ -431,63 +659,8 @@ pub fn build_chunk_data(
     tags: &BTreeMap<String, String>,
     now_ns: i64,
 ) -> ChunkData {
-    build_chunk_data_with_offset(
-        profile,
-        agent_id,
-        chunk_number,
-        record,
-        host_name,
-        tags,
-        now_ns,
-        None,
-    )
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "packs a recorded profile with chunk metadata and clock alignment"
-)]
-fn build_chunk_data_with_offset(
-    profile: Profile,
-    agent_id: u64,
-    chunk_number: u64,
-    record: &RecordConfig,
-    host_name: &str,
-    tags: &BTreeMap<String, String>,
-    now_ns: i64,
-    wall_offset_ns: Option<i64>,
-) -> ChunkData {
     let mut capture = profile.into_capture();
-    let (mut mono_start, mut mono_end) = capture.span();
-    if mono_end == 0 && !capture.samples.is_empty() {
-        mono_start = capture
-            .samples
-            .iter()
-            .map(|s| s.time.get())
-            .min()
-            .unwrap_or(0);
-        mono_end = capture
-            .samples
-            .iter()
-            .map(|s| s.time.get())
-            .max()
-            .unwrap_or(0);
-    }
-    let (start, end, sampled_ns) = if mono_end > 0 {
-        let delta = wall_offset_ns.unwrap_or_else(|| now_ns.saturating_sub(mono_end));
-        shift_capture_times(&mut capture, delta);
-        let shifted_start = mono_start.saturating_add(delta);
-        let shifted_end = mono_end.saturating_add(delta).max(shifted_start);
-        let span_ns = shifted_end.saturating_sub(shifted_start).max(0);
-        (
-            shifted_start,
-            shifted_end,
-            u64::try_from(span_ns).unwrap_or(0),
-        )
-    } else {
-        (now_ns, now_ns, 0)
-    };
-
+    let (start, end, sampled_ns) = align_capture_times(&mut capture, now_ns, None);
     let mut dimensions = vec![
         DimensionRow {
             process: NONE,
@@ -534,6 +707,161 @@ fn build_chunk_data_with_offset(
     }
 }
 
+fn align_capture_times(
+    capture: &mut Capture,
+    now_ns: i64,
+    wall_offset_ns: Option<i64>,
+) -> (i64, i64, u64) {
+    let (mut mono_start, mut mono_end) = capture.span();
+    if mono_end == 0 && !capture.samples.is_empty() {
+        mono_start = capture
+            .samples
+            .iter()
+            .map(|s| s.time.get())
+            .min()
+            .unwrap_or(0);
+        mono_end = capture
+            .samples
+            .iter()
+            .map(|s| s.time.get())
+            .max()
+            .unwrap_or(0);
+    }
+    if mono_end > 0 {
+        let delta = wall_offset_ns.unwrap_or_else(|| now_ns.saturating_sub(mono_end));
+        shift_capture_times(capture, delta);
+        let shifted_start = mono_start.saturating_add(delta);
+        let shifted_end = mono_end.saturating_add(delta).max(shifted_start);
+        let span_ns = shifted_end.saturating_sub(shifted_start).max(0);
+        (
+            shifted_start,
+            shifted_end,
+            u64::try_from(span_ns).unwrap_or(0),
+        )
+    } else {
+        (now_ns, now_ns, 0)
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "builds one project-scoped ChunkData with per-process metadata dimensions from a filtered capture"
+)]
+fn build_selected_chunk_data(
+    mut capture: Capture,
+    agent_id: u64,
+    chunk_number: u64,
+    project: Option<&str>,
+    selected: &[&SelectedProcess],
+    preset: Preset,
+    time_unit: TimeUnit,
+    host_name: &str,
+    tags: &BTreeMap<String, String>,
+    now_ns: i64,
+    wall_offset_ns: i64,
+) -> ChunkData {
+    let (start, end, sampled_ns) = align_capture_times(&mut capture, now_ns, Some(wall_offset_ns));
+
+    let mut dimensions = vec![DimensionRow {
+        process: NONE,
+        name: "host.name".into(),
+        value: host_name.to_owned(),
+    }];
+    if let Some(proj) = project
+        && !proj.trim().is_empty()
+    {
+        dimensions.push(DimensionRow {
+            process: NONE,
+            name: "microscope.project".into(),
+            value: proj.to_owned(),
+        });
+    }
+    for (key, value) in tags {
+        if key == "microscope.project" {
+            continue;
+        }
+        dimensions.push(DimensionRow {
+            process: NONE,
+            name: key.clone(),
+            value: value.clone(),
+        });
+    }
+
+    let by_pid: BTreeMap<u32, &SelectedProcess> = selected.iter().map(|s| (s.pid, *s)).collect();
+    let mut attached_any = false;
+    for (idx, proc_row) in capture.processes.iter().enumerate() {
+        let proc_idx = u32::try_from(idx).unwrap_or(NONE);
+        let sel = by_pid
+            .get(&proc_row.pid.get())
+            .copied()
+            .or_else(|| selected.first().copied());
+        if let Some(s) = sel {
+            attached_any = true;
+            push_selected_dimensions(&mut dimensions, proc_idx, s);
+        }
+    }
+    if !attached_any && let Some(s) = selected.first() {
+        push_selected_dimensions(&mut dimensions, NONE, s);
+    }
+
+    ChunkData {
+        capture,
+        chunks: vec![ChunkRow {
+            agent: agent_id,
+            number: chunk_number,
+            start,
+            end,
+            sampled_ns,
+            preset: preset_code(preset),
+            time_unit,
+            policy: 0,
+            rules: String::new(),
+        }],
+        dimensions,
+        sanitizer_counts: Vec::new(),
+    }
+}
+
+fn push_selected_dimensions(
+    dimensions: &mut Vec<DimensionRow>,
+    process: u32,
+    sel: &SelectedProcess,
+) {
+    let mut push = |name: &str, value: &str| {
+        if !value.is_empty() {
+            dimensions.push(DimensionRow {
+                process,
+                name: name.to_owned(),
+                value: value.to_owned(),
+            });
+        }
+    };
+    push("service.name", &sel.service);
+    push("process.executable.name", &sel.program);
+    push("microscope.selection", &sel.matched_by);
+    if let Some(path) = &sel.meta.exe_path {
+        push("process.executable.path", path);
+    }
+    if let Some(bid) = &sel.meta.build_id {
+        push("process.executable.build_id", bid);
+    }
+    if let Some(unit) = &sel.meta.systemd_unit {
+        push("systemd.unit", unit);
+    }
+    if let Some(pod) = &sel.meta.k8s_pod_name {
+        push("k8s.pod.name", pod);
+    }
+    if let Some(ns) = &sel.meta.k8s_namespace {
+        push("k8s.namespace.name", ns);
+    }
+    if let Some(cname) = &sel.meta.container_name {
+        push("container.name", cname);
+    }
+    if let Some(img) = &sel.meta.container_image {
+        push("container.image.name", img);
+    }
+}
+
 #[derive(Clone, Copy)]
 enum CutOutcome {
     Pushed(u64),
@@ -574,17 +902,31 @@ fn finish_cut_locked(guard: &mut SharedState, outcome: CutOutcome, mark_detached
     }
 }
 
-fn enqueue_and_complete_cut(
-    profile: Profile,
+#[derive(Clone)]
+struct PlannedTarget {
+    selected: SelectedProcess,
+    preset: Preset,
+    time_unit: TimeUnit,
+}
+
+type CutBucket<'a> = BTreeMap<(Option<String>, u8), (TimeUnit, Vec<&'a SelectedProcess>)>;
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "splits a multi-process segment by project, builds metadata, sanitizes, and spools each project cleanly"
+)]
+fn enqueue_multi_project_cut(
+    profile: &Profile,
     shared: &(Mutex<SharedState>, Condvar),
-    record: &RecordConfig,
+    targets: &[PlannedTarget],
+    preset: Preset,
     host_name: &str,
     tags: &BTreeMap<String, String>,
-    sanitizer: &Sanitizer,
     mark_detached: bool,
 ) {
     let (lock, cvar) = shared;
-    if !profile_has_data(&profile) {
+    let capture = profile.capture();
+    if !capture_has_data(capture) || targets.is_empty() {
         let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
         finish_cut_locked(&mut guard, CutOutcome::Empty, mark_detached);
         drop(guard);
@@ -592,55 +934,106 @@ fn enqueue_and_complete_cut(
         return;
     }
 
+    let mut by_bucket: CutBucket<'_> = BTreeMap::new();
+    for t in targets {
+        let key = (t.selected.project.clone(), time_unit_rank(t.time_unit));
+        by_bucket
+            .entry(key)
+            .or_insert_with(|| (t.time_unit, Vec::new()))
+            .1
+            .push(&t.selected);
+    }
+
     let (now_ns, wall_offset_ns) = wall_clock_reference();
+    let mut last_pushed: Option<u64> = None;
+    let mut any_failed = false;
 
-    let alloc = {
-        let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-        guard
-            .agent_id
-            .and_then(|agent_id| guard.spool.allocate_chunk().ok().map(|n| (agent_id, n)))
-    };
-    let Some((agent_id, number)) = alloc else {
-        let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-        finish_cut_locked(&mut guard, CutOutcome::Failed, mark_detached);
-        drop(guard);
-        cvar.notify_all();
-        return;
-    };
+    for ((proj_opt, _), (time_unit, members)) in by_bucket {
+        let mut allowed_pids: BTreeSet<u32> = BTreeSet::new();
+        for m in &members {
+            allowed_pids.insert(m.pid);
+            for child in perf::descendants(m.pid) {
+                allowed_pids.insert(child);
+            }
+        }
+        let filtered = filter_capture_by_pids(capture, &allowed_pids);
+        if !capture_has_data(&filtered) {
+            continue;
+        }
 
-    let raw = build_chunk_data_with_offset(
-        profile,
-        agent_id,
-        number,
-        record,
-        host_name,
-        tags,
-        now_ns,
-        Some(wall_offset_ns),
-    );
-    let clean = sanitize_chunk(raw, record.time_unit, sanitizer);
+        let (alloc, sanitizer) = {
+            let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+            let san = proj_opt
+                .as_deref()
+                .and_then(|p| guard.project_sanitizers.get(&p.to_ascii_lowercase()))
+                .cloned()
+                .unwrap_or_else(|| Arc::clone(&guard.sanitizer));
+            let alloc = guard
+                .agent_id
+                .and_then(|agent_id| guard.spool.allocate_chunk().ok().map(|n| (agent_id, n)));
+            drop(guard);
+            (alloc, san)
+        };
+        let Some((agent_id, number)) = alloc else {
+            any_failed = true;
+            continue;
+        };
 
-    let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-    let outcome = if guard.agent_id == Some(agent_id) {
-        match guard.spool.push(number, &clean, agent_id, now_ns) {
-            Ok(0) => {
+        let raw = build_selected_chunk_data(
+            filtered,
+            agent_id,
+            number,
+            proj_opt.as_deref(),
+            &members,
+            preset,
+            time_unit,
+            host_name,
+            tags,
+            now_ns,
+            wall_offset_ns,
+        );
+        let clean = sanitize_chunk(raw, time_unit, &sanitizer);
+
+        let push_result = {
+            let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+            if guard.agent_id == Some(agent_id) {
+                let res = guard.spool.push(number, &clean, agent_id, now_ns);
+                if matches!(res, Ok(n) if n > 0) {
+                    guard.spool_seq = guard.spool_seq.saturating_add(1);
+                }
+                drop(guard);
+                Some(res)
+            } else {
+                drop(guard);
+                None
+            }
+        };
+        match push_result {
+            Some(Ok(0)) => {
                 eprintln!(
                     "microscope agent: dropped oversized chunk {number} exceeding post limit"
                 );
-                CutOutcome::Failed
+                any_failed = true;
             }
-            Ok(_) => {
-                guard.spool_seq = guard.spool_seq.saturating_add(1);
-                CutOutcome::Pushed(number)
+            Some(Ok(_)) => {
+                last_pushed = Some(number);
             }
-            Err(error) => {
+            Some(Err(error)) => {
                 eprintln!("microscope agent: cannot spool chunk {number}: {error}");
-                CutOutcome::Failed
+                any_failed = true;
+            }
+            None => {
+                any_failed = true;
             }
         }
-    } else {
-        CutOutcome::Failed
+    }
+
+    let outcome = match (last_pushed, any_failed) {
+        (Some(n), _) => CutOutcome::Pushed(n),
+        (None, true) => CutOutcome::Failed,
+        (None, false) => CutOutcome::Empty,
     };
+    let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
     finish_cut_locked(&mut guard, outcome, mark_detached);
     drop(guard);
     cvar.notify_all();
@@ -662,18 +1055,34 @@ fn sleep_interruptible(stop: &AtomicBool, total: Duration) {
     }
 }
 
+fn plan_signature(targets: &[PlannedTarget]) -> Vec<(u32, Option<String>, u8, u8)> {
+    targets
+        .iter()
+        .map(|t| {
+            (
+                t.selected.pid,
+                t.selected.project.clone(),
+                preset_code(t.preset),
+                time_unit_rank(t.time_unit),
+            )
+        })
+        .collect()
+}
+
 #[expect(
+    clippy::too_many_arguments,
     clippy::too_many_lines,
-    reason = "runs the live recording attach loop with hot policy reload and cut correlation"
+    reason = "runs multi-process discovery, policy/burst/limit enforcement, shared-budget recording, and dynamic rescanning"
 )]
 fn recorder_loop(
     stop: &AtomicBool,
     flush_trigger: &AtomicBool,
     shared: &(Mutex<SharedState>, Condvar),
-    mut record: RecordConfig,
+    record: &RecordConfig,
+    limits: &Limits,
+    local_sanitize: &SanitizeConfig,
     host_name: &str,
     tags: &BTreeMap<String, String>,
-    sanitizer: &Sanitizer,
 ) {
     let mut shared_bpf = match SharedBpfEngine::available() {
         Ok(engine) => Some(engine),
@@ -685,115 +1094,282 @@ fn recorder_loop(
         }
     };
 
-    let mut options = build_record_options(&record, shared_bpf.as_ref());
-    let base_preset = record.preset;
-    let base_time_unit = record.time_unit;
+    let root = Root::system();
+    let scan_opts = ScanOptions {
+        runtime_dirs: record.runtime_dirs.clone(),
+        pod_annotations_dir: record.pod_annotations_dir.clone(),
+        self_pid: std::process::id(),
+    };
+    let mut build_ids = BuildIdCache::default();
+    let mut active_policy: Option<PolicyDirective> = None;
+    let mut active_burst: Option<BurstDirective> = None;
     let mut last_policy_seq = 0_u64;
+    let mut last_burst_seq = 0_u64;
 
     while !stop.load(Ordering::Relaxed) {
         let (lock, _) = shared;
-        let policy_update = {
+        let (policy_update, burst_update) = {
             let guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-            if guard.policy_seq == last_policy_seq {
+            let p_upd = if guard.policy_seq == last_policy_seq {
                 None
             } else {
                 last_policy_seq = guard.policy_seq;
-                guard.policy.clone()
-            }
+                Some(guard.policy.clone())
+            };
+            let b_upd = if guard.burst_seq == last_burst_seq {
+                None
+            } else {
+                last_burst_seq = guard.burst_seq;
+                Some(guard.burst.clone())
+            };
+            (p_upd, b_upd)
         };
-        if let Some(policy) = policy_update {
-            let next_preset = policy
-                .preset
-                .as_deref()
-                .and_then(parse_policy_preset)
-                .unwrap_or(base_preset);
-            let next_unit = policy
-                .time_unit
-                .as_deref()
-                .and_then(parse_policy_time_unit)
-                .unwrap_or(base_time_unit);
-            if next_preset != record.preset || next_unit != record.time_unit {
-                record.preset = next_preset;
-                record.time_unit = next_unit;
-                options = build_record_options(&record, shared_bpf.as_ref());
+
+        if let Some(pol_opt) = policy_update {
+            if let Some(pol) = &pol_opt {
+                let (org_san, proj_sans) = build_sanitizers(local_sanitize, pol.sanitizer.as_ref());
+                let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+                guard.sanitizer = org_san;
+                guard.project_sanitizers = proj_sans;
+                guard.applied_policy_version = guard.applied_policy_version.max(pol.version);
+                guard.applied_sanitizer_version =
+                    guard.applied_sanitizer_version.max(pol.sanitizer_version);
             }
-            let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-            guard.applied_policy_version = guard.applied_policy_version.max(policy.version);
-            guard.applied_sanitizer_version = guard
-                .applied_sanitizer_version
-                .max(policy.sanitizer_version);
-            drop(guard);
+            active_policy = pol_opt;
+        }
+        if let Some(b_opt) = burst_update {
+            active_burst = b_opt;
         }
 
-        let Some(pid) = find_target_pid(&record.process) else {
-            sleep_interruptible(stop, Duration::from_millis(200));
-            continue;
-        };
+        let remote_rules = remote_selection_rules(active_policy.as_ref());
+        let selected = scan_selected_processes(
+            &root,
+            &scan_opts,
+            &record.rules,
+            &remote_rules,
+            limits.allow_remote_rules,
+            &mut build_ids,
+        );
 
+        let now_ns = unix_now_ns();
+        let planned: Vec<PlannedTarget> = selected
+            .into_iter()
+            .map(|sel| {
+                let (preset, time_unit) = effective_policy_for_process(
+                    &sel,
+                    record.preset,
+                    record.time_unit,
+                    active_policy.as_ref(),
+                    active_burst.as_ref(),
+                    limits,
+                    now_ns,
+                );
+                PlannedTarget {
+                    selected: sel,
+                    preset,
+                    time_unit,
+                }
+            })
+            .collect();
+
+        {
+            let mut projs: BTreeSet<String> = BTreeSet::new();
+            let mut svcs: BTreeSet<String> = BTreeSet::new();
+            for t in &planned {
+                if let Some(p) = &t.selected.project {
+                    projs.insert(p.clone());
+                }
+                svcs.insert(t.selected.service.clone());
+            }
+            let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+            guard.active_projects = projs.into_iter().collect();
+            guard.active_services = svcs.into_iter().collect();
+        }
+
+        if planned.is_empty() {
+            let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(pf) = guard.flush_requested
+                && guard.spool.is_empty()
+            {
+                guard.flush_completed = guard.flush_completed.max(pf.id);
+                guard.flush_empty_acked = guard.flush_empty_acked.max(pf.id);
+                guard.flush_requested = None;
+            }
+            drop(guard);
+            sleep_interruptible(stop, Duration::from_millis(250));
+            continue;
+        }
+
+        let current_sig = plan_signature(&planned);
         let session_stop = Arc::new(AtomicBool::new(false));
         {
             let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-            if stop.load(Ordering::Relaxed) || guard.policy_seq != last_policy_seq {
+            if stop.load(Ordering::Relaxed)
+                || guard.policy_seq != last_policy_seq
+                || guard.burst_seq != last_burst_seq
+            {
                 continue;
             }
             guard.attached = true;
             guard.session_stop = Some(Arc::clone(&session_stop));
         }
 
-        let mut publish = |_profile: Profile| {};
-        let mut on_segment = |segment: Profile| {
-            enqueue_and_complete_cut(segment, shared, &record, host_name, tags, sanitizer, false);
-        };
-        let mut watch = Watch {
-            every: Duration::MAX,
-            publish: &mut publish,
-            stop: &session_stop,
-            save: Some(Save {
-                trigger: flush_trigger,
-                to: &mut on_segment,
-            }),
-        };
+        let mut by_preset: BTreeMap<u8, (Preset, Vec<PlannedTarget>)> = BTreeMap::new();
+        for t in planned {
+            by_preset
+                .entry(preset_code(t.preset))
+                .or_insert_with(|| (t.preset, Vec::new()))
+                .1
+                .push(t);
+        }
+        let groups: Vec<(Preset, Vec<PlannedTarget>)> = by_preset.into_values().collect();
+        let watcher_stop = Arc::new(AtomicBool::new(false));
 
-        match record_attached(pid, &options, &mut watch) {
-            Ok(attached) => {
-                enqueue_and_complete_cut(
-                    attached.profile,
-                    shared,
-                    &record,
-                    host_name,
-                    tags,
-                    sanitizer,
-                    true,
-                );
-            }
-            Err(error) => {
-                complete_failed_cut(shared, true);
-                if shared_bpf
-                    .as_ref()
-                    .is_some_and(SharedBpfEngine::load_failed)
+        let mut bpf_failed = false;
+        thread::scope(|scope| {
+            let watcher_done = Arc::clone(&watcher_stop);
+            let sess_stop_watch = Arc::clone(&session_stop);
+            let watch_root = Root::system();
+            let watch_scan_opts = scan_opts.clone();
+            let watch_local_rules = record.rules.clone();
+            let watch_remote_rules = remote_rules.clone();
+            let watch_policy = active_policy.clone();
+            let watch_burst = active_burst.clone();
+            let watch_limits = limits.clone();
+            let watch_base_preset = record.preset;
+            let watch_base_unit = record.time_unit;
+            let watch_sig = current_sig.clone();
+
+            scope.spawn(move || {
+                let mut local_cache = BuildIdCache::default();
+                while !stop.load(Ordering::Relaxed)
+                    && !watcher_done.load(Ordering::Relaxed)
+                    && !sess_stop_watch.load(Ordering::Relaxed)
                 {
-                    eprintln!(
-                        "microscope agent: syscall BPF failed to load ({error}); falling back to samples only"
+                    sleep_interruptible(&watcher_done, RESCAN_INTERVAL);
+                    if stop.load(Ordering::Relaxed)
+                        || watcher_done.load(Ordering::Relaxed)
+                        || sess_stop_watch.load(Ordering::Relaxed)
+                    {
+                        break;
+                    }
+                    let rescanned = scan_selected_processes(
+                        &watch_root,
+                        &watch_scan_opts,
+                        &watch_local_rules,
+                        &watch_remote_rules,
+                        watch_limits.allow_remote_rules,
+                        &mut local_cache,
                     );
-                    shared_bpf = None;
-                    options = build_record_options(&record, None);
-                    continue;
+                    let now_check = unix_now_ns();
+                    let next_plan: Vec<PlannedTarget> = rescanned
+                        .into_iter()
+                        .map(|sel| {
+                            let (preset, time_unit) = effective_policy_for_process(
+                                &sel,
+                                watch_base_preset,
+                                watch_base_unit,
+                                watch_policy.as_ref(),
+                                watch_burst.as_ref(),
+                                &watch_limits,
+                                now_check,
+                            );
+                            PlannedTarget {
+                                selected: sel,
+                                preset,
+                                time_unit,
+                            }
+                        })
+                        .collect();
+                    if plan_signature(&next_plan) != watch_sig {
+                        sess_stop_watch.store(true, Ordering::SeqCst);
+                        break;
+                    }
                 }
-                if !stop.load(Ordering::Relaxed) {
-                    eprintln!(
-                        "microscope agent: recording {} (pid {pid}) failed: {error}",
-                        record.process
-                    );
+            });
+
+            let mut handles = Vec::with_capacity(groups.len());
+            for (idx, (preset, targets)) in groups.into_iter().enumerate() {
+                let use_shared = if idx == 0 { shared_bpf.clone() } else { None };
+                let allow_syscalls = shared_bpf.is_some();
+                let options = build_record_options(
+                    preset,
+                    record.chunk_ms,
+                    limits,
+                    use_shared.as_ref(),
+                    allow_syscalls,
+                );
+                let sess_stop = Arc::clone(&session_stop);
+                let is_last_group = idx == 0;
+                handles.push(scope.spawn(move || {
+                    let pids: Vec<u32> = targets.iter().map(|t| t.selected.pid).collect();
+                    let mut publish = |_profile: Profile| {};
+                    let mut on_segment = |segment: Profile| {
+                        enqueue_multi_project_cut(
+                            &segment, shared, &targets, preset, host_name, tags, false,
+                        );
+                    };
+                    let mut watch = Watch {
+                        every: Duration::MAX,
+                        publish: &mut publish,
+                        stop: &sess_stop,
+                        save: Some(Save {
+                            trigger: flush_trigger,
+                            to: &mut on_segment,
+                        }),
+                    };
+                    match record_attached_many(&pids, &options, &mut watch) {
+                        Ok(attached) => {
+                            enqueue_multi_project_cut(
+                                &attached.profile,
+                                shared,
+                                &targets,
+                                preset,
+                                host_name,
+                                tags,
+                                is_last_group,
+                            );
+                            Ok(())
+                        }
+                        Err(error) => {
+                            if is_last_group {
+                                complete_failed_cut(shared, true);
+                            }
+                            if !stop.load(Ordering::Relaxed) {
+                                eprintln!(
+                                    "microscope agent: recording pids {pids:?} failed: {error}"
+                                );
+                            }
+                            Err(error)
+                        }
+                    }
+                }));
+            }
+
+            for handle in handles {
+                if let Ok(Err(_)) = handle.join()
+                    && shared_bpf
+                        .as_ref()
+                        .is_some_and(SharedBpfEngine::load_failed)
+                {
+                    bpf_failed = true;
                 }
             }
+            watcher_stop.store(true, Ordering::SeqCst);
+        });
+
+        if bpf_failed {
+            eprintln!("microscope agent: syscall BPF failed to load; falling back to samples only");
+            shared_bpf = None;
+            continue;
         }
 
-        let policy_pending = {
+        let update_pending = {
             let guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-            guard.policy_seq != last_policy_seq
+            guard.policy_seq != last_policy_seq || guard.burst_seq != last_burst_seq
         };
-        if !stop.load(Ordering::Relaxed) && !policy_pending {
-            sleep_interruptible(stop, Duration::from_millis(250));
+        if !stop.load(Ordering::Relaxed) && !update_pending {
+            sleep_interruptible(stop, Duration::from_millis(150));
         }
     }
 }
@@ -806,14 +1382,13 @@ fn jitter() -> f64 {
 
 #[expect(
     clippy::too_many_lines,
-    reason = "drives the poster state machine with dynamic watch intervals and flush coordination"
+    reason = "drives the poster state machine with dynamic watch intervals, hot sanitizer updates, and flush coordination"
 )]
 fn poster_loop(
     stop: &AtomicBool,
     shared: &(Mutex<SharedState>, Condvar),
     client: &Client,
     post_interval: Duration,
-    sanitizer: &Sanitizer,
 ) {
     let started = std::time::Instant::now();
     let now = || Instant(started.elapsed());
@@ -912,13 +1487,14 @@ fn poster_loop(
                     else {
                         continue;
                     };
+                    let sanitizer = Arc::clone(&guard.sanitizer);
                     let queued_total = guard.spool.stats().queued_chunks;
                     let batch = guard.spool.peek_batch_capped(
                         MAX_POST_BYTES,
                         max_batch_chunks,
                         agent_id,
                         unix_now_ns(),
-                        sanitizer,
+                        &sanitizer,
                     );
                     let wall_now = std::time::Instant::now();
                     let post_flush_id = match (&batch, guard.flush_requested) {
@@ -1061,7 +1637,7 @@ mod tests {
     use microscope_data::object::{ObjectReader, TimeUnit, decode_tables};
 
     use super::*;
-    use crate::agent::scratch::Scratch;
+    use crate::agent::{scratch::Scratch, select::ProcessMetadata};
 
     #[test]
     fn planted_secrets_in_real_recording_never_leave_the_agent() {
@@ -1096,6 +1672,9 @@ mod tests {
             chunk_ms: 5_000,
             post_ms: 10_000,
             spool_mib: 64,
+            rules: Vec::new(),
+            runtime_dirs: Vec::new(),
+            pod_annotations_dir: None,
         };
         let tags = BTreeMap::from([(
             "custom_tag".to_owned(),
@@ -1165,5 +1744,285 @@ mod tests {
             !decoded.sanitizer_counts.is_empty(),
             "expected sanitizer counts to record scrubbed secrets"
         );
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "end-to-end integration test covering three programs, two projects, and spool post verification"
+    )]
+    fn three_programs_records_two_into_two_projects_and_never_mentions_third() {
+        struct KillOnDrop(std::process::Child);
+        impl Drop for KillOnDrop {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let a = KillOnDrop(
+            Command::new("/bin/sh")
+                .env("MICROSCOPE_PROJECT", "alpha")
+                .args(["-c", "while :; do :; done"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("spawn alpha"),
+        );
+        let b = KillOnDrop(
+            Command::new("/bin/sh")
+                .env("MICROSCOPE_PROJECT", "beta")
+                .args(["-c", "while :; do :; done"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("spawn beta"),
+        );
+        let c = KillOnDrop(
+            Command::new("/bin/sh")
+                .args(["-c", "while :; do :; done"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("spawn third"),
+        );
+
+        let pid_a = a.0.id();
+        let pid_b = b.0.id();
+        let pid_c = c.0.id();
+
+        let mut options = RecordOptions::preset(Preset::Production);
+        options.syscalls.level = SyscallLevel::Off;
+        let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_timer = Arc::clone(&stop);
+        let stopper = thread::spawn(move || {
+            let _ = started_rx.recv();
+            thread::sleep(Duration::from_millis(400));
+            stop_timer.store(true, Ordering::SeqCst);
+        });
+        let mut started_tx = Some(started_tx);
+        let mut publish = |_: Profile| {
+            if let Some(tx) = started_tx.take() {
+                let _ = tx.send(());
+            }
+        };
+        let mut watch = Watch {
+            every: Duration::MAX,
+            publish: &mut publish,
+            stop: &stop,
+            save: None,
+        };
+        let attached = record_attached_many(&[pid_a, pid_b], &options, &mut watch)
+            .expect("record two processes");
+        let _ = stopper.join();
+        drop(a);
+        drop(b);
+        drop(c);
+
+        let sel_a = SelectedProcess {
+            pid: pid_a,
+            program: "prog-alpha".into(),
+            project: Some("alpha".into()),
+            service: "svc-alpha".into(),
+            matched_by: "env: MICROSCOPE_PROJECT".into(),
+            meta: ProcessMetadata {
+                pid: pid_a,
+                comm: "prog-alpha".into(),
+                ..ProcessMetadata::default()
+            },
+        };
+        let sel_b = SelectedProcess {
+            pid: pid_b,
+            program: "prog-beta".into(),
+            project: Some("beta".into()),
+            service: "svc-beta".into(),
+            matched_by: "env: MICROSCOPE_PROJECT".into(),
+            meta: ProcessMetadata {
+                pid: pid_b,
+                comm: "prog-beta".into(),
+                ..ProcessMetadata::default()
+            },
+        };
+
+        let scratch = Scratch::new();
+        let mut spool = Spool::open(&scratch.path().join("spool"), 4 * 1024 * 1024).expect("spool");
+        let policy = Sanitizer::new(&Builtin::DEFAULT, Vec::new(), HashKey::new(b"test-key"));
+        let (now_ns, wall_offset) = wall_clock_reference();
+
+        let cap_a = filter_capture_by_pids(attached.profile.capture(), &BTreeSet::from([pid_a]));
+        let cap_b = filter_capture_by_pids(attached.profile.capture(), &BTreeSet::from([pid_b]));
+        assert!(cap_a.validate().is_ok());
+        assert!(cap_b.validate().is_ok());
+        assert!(
+            !cap_a.processes.iter().any(|p| p.pid.get() == pid_c)
+                && !cap_b.processes.iter().any(|p| p.pid.get() == pid_c)
+        );
+        assert!(!cap_a.processes.iter().any(|p| p.pid.get() == pid_b));
+        assert!(!cap_b.processes.iter().any(|p| p.pid.get() == pid_a));
+
+        let raw_a = build_selected_chunk_data(
+            cap_a,
+            7,
+            1,
+            Some("alpha"),
+            &[&sel_a],
+            Preset::Production,
+            TimeUnit::Ms,
+            "host-1",
+            &BTreeMap::new(),
+            now_ns,
+            wall_offset,
+        );
+        let raw_b = build_selected_chunk_data(
+            cap_b,
+            7,
+            2,
+            Some("beta"),
+            &[&sel_b],
+            Preset::Production,
+            TimeUnit::Ms,
+            "host-1",
+            &BTreeMap::new(),
+            now_ns,
+            wall_offset,
+        );
+        spool
+            .push(1, &sanitize_chunk(raw_a, TimeUnit::Ms, &policy), 7, now_ns)
+            .expect("push a");
+        spool
+            .push(2, &sanitize_chunk(raw_b, TimeUnit::Ms, &policy), 7, now_ns)
+            .expect("push b");
+
+        let batch1 = spool
+            .peek_batch(MAX_POST_BYTES, 7, now_ns, &policy)
+            .expect("peek 1")
+            .expect("batch 1");
+        assert_eq!(batch1.first_chunk, 1);
+        assert_eq!(batch1.last_chunk, 1);
+        spool
+            .ack(batch1.owner_gen, batch1.last_chunk)
+            .expect("ack 1");
+
+        let batch2 = spool
+            .peek_batch(MAX_POST_BYTES, 7, now_ns, &policy)
+            .expect("peek 2")
+            .expect("batch 2");
+        assert_eq!(batch2.first_chunk, 2);
+        assert_eq!(batch2.last_chunk, 2);
+        spool
+            .ack(batch2.owner_gen, batch2.last_chunk)
+            .expect("ack 2");
+
+        for (post, wanted_proj, forbidden_proj) in [
+            (batch1.post.as_bytes(), "alpha", "beta"),
+            (batch2.post.as_bytes(), "beta", "alpha"),
+        ] {
+            let reader = ObjectReader::open(post).expect("open");
+            let dec = decode_tables(&reader.part_sections(0, None).expect("sec")).expect("dec");
+            assert!(
+                dec.dimensions
+                    .iter()
+                    .any(|d| d.name == "microscope.project" && d.value == wanted_proj)
+            );
+            assert!(
+                !dec.dimensions
+                    .iter()
+                    .any(|d| d.value.contains(forbidden_proj))
+            );
+            assert!(!dec.capture.processes.iter().any(|p| p.pid.get() == pid_c));
+        }
+    }
+
+    #[test]
+    #[ignore = "multi-process CPU budget benchmark; run in --release under microscope-bpf with -- --ignored --nocapture"]
+    fn measure_many_processes_under_one_cpu_budget() {
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("build/test-programs/hot-calls");
+        assert!(
+            fixture.exists(),
+            "hot-calls fixture missing at {}; run `just build-test-programs` first",
+            fixture.display()
+        );
+        for count in [1usize, 4, 8, 16] {
+            let mut children: Vec<std::process::Child> = (0..count)
+                .map(|_| {
+                    std::process::Command::new(&fixture)
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn()
+                        .expect("spawn hot-calls")
+                })
+                .collect();
+            let pids: Vec<u32> = children.iter().map(std::process::Child::id).collect();
+            thread::sleep(Duration::from_millis(200));
+
+            let mut options = RecordOptions::preset(Preset::Production);
+            options.cuts = Cuts::Segments(Duration::from_secs(10));
+            let stop = Arc::new(AtomicBool::new(false));
+            let stop_timer = Arc::clone(&stop);
+            let stopper = thread::spawn(move || {
+                thread::sleep(Duration::from_secs(22));
+                stop_timer.store(true, Ordering::SeqCst);
+            });
+
+            let trigger = AtomicBool::new(false);
+            let (mut seg_idx, mut total_samples) = (0usize, 0usize);
+            let (mut steady_net_ns, mut steady_wall_ns) = (0u64, 0u64);
+            let (mut total_raised, mut total_kept) = (0u64, 0u64);
+            let mut observed_pids: BTreeSet<u32> = BTreeSet::new();
+            let mut collect = |profile: Profile| {
+                let cap = profile.capture();
+                total_samples += cap.samples.len();
+                observed_pids.extend(cap.processes.iter().map(|p| p.pid.get()));
+                let (cpu_ns, load_ns) = profile.recorder_cpu();
+                let net_ns = cpu_ns
+                    .saturating_sub(load_ns)
+                    .saturating_sub(profile.recorder_setup());
+                let (s, e) = profile.span();
+                let span_ns = u64::try_from(e.saturating_sub(s)).unwrap_or(0);
+                if let Some((raised, kept)) = profile.kept_share() {
+                    total_raised += raised;
+                    total_kept += kept;
+                }
+                if seg_idx == 1 && span_ns > 5_000_000_000 {
+                    steady_net_ns += net_ns;
+                    steady_wall_ns += span_ns;
+                }
+                seg_idx += 1;
+            };
+            let mut publish = |_: Profile| {};
+            let mut watch = Watch {
+                every: Duration::MAX,
+                publish: &mut publish,
+                stop: &stop,
+                save: Some(Save {
+                    trigger: &trigger,
+                    to: &mut collect,
+                }),
+            };
+
+            let attached =
+                record_attached_many(&pids, &options, &mut watch).expect("record many processes");
+            collect(attached.profile);
+            let _ = stopper.join();
+            for ch in &mut children {
+                let _ = ch.kill();
+                let _ = ch.wait();
+            }
+
+            let steady_pct = if steady_wall_ns > 0 {
+                (Duration::from_nanos(steady_net_ns).as_secs_f64()
+                    / Duration::from_nanos(steady_wall_ns).as_secs_f64())
+                    * 100.0
+            } else {
+                0.0
+            };
+            let matched = pids.iter().filter(|p| observed_pids.contains(p)).count();
+            eprintln!(
+                "MULTI_PROC_BUDGET procs={count:>2} steady_cpu_pct={steady_pct:.3}% kept={total_kept}/{total_raised} samples={total_samples} observed_pids={matched}/{count}"
+            );
+            assert_eq!(matched, count, "expected all {count} PIDs to be observed");
+            assert!(total_samples > 0, "expected samples for {count} PIDs");
+        }
     }
 }

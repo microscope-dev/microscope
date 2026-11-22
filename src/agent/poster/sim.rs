@@ -401,7 +401,7 @@ fn run_control_and_poster_seed(seed: u64) {
                         id: flush_id,
                         deadline_ms: 10_000,
                     });
-                    ControlOutcome::Directive(PollResponse {
+                    ControlOutcome::Directive(Box::new(PollResponse {
                         version,
                         revoked: revoked_triggered,
                         watch: active_watch.clone(),
@@ -409,7 +409,7 @@ fn run_control_and_poster_seed(seed: u64) {
                         policy: None,
                         burst: None,
                         poll_after_ms: 500,
-                    })
+                    }))
                 };
                 for effect in control.on(outcome, now, rng.next_f64()) {
                     match effect {
@@ -579,7 +579,7 @@ fn control_machine_resets_after_revocation_and_delays_policy_ack_until_applied()
     let mut ctrl = ControlMachine::new(t0, vec!["proj".into()], vec!["svc".into()]);
 
     let effects = ctrl.on(
-        ControlOutcome::Directive(PollResponse {
+        ControlOutcome::Directive(Box::new(PollResponse {
             version: 2,
             revoked: false,
             watch: None,
@@ -589,10 +589,13 @@ fn control_machine_resets_after_revocation_and_delays_policy_ack_until_applied()
                 preset: Some("dev".into()),
                 time_unit: Some("1us".into()),
                 sanitizer_version: 2,
+                rules: Vec::new(),
+                project_policies: Vec::new(),
+                sanitizer: None,
             }),
             burst: None,
             poll_after_ms: 0,
-        }),
+        })),
         t0,
         0.0,
     );
@@ -604,8 +607,8 @@ fn control_machine_resets_after_revocation_and_delays_policy_ack_until_applied()
     let ControlAction::Poll(before_apply) = ctrl.next(t0, true) else {
         panic!("expected poll");
     };
-    assert_eq!(before_apply.policy_version, 1);
-    assert_eq!(before_apply.sanitizer_version, 1);
+    assert_eq!(before_apply.policy_version, 0);
+    assert_eq!(before_apply.sanitizer_version, 0);
 
     ctrl.set_applied_policy(3, 2);
     let ControlAction::Poll(after_apply) = ctrl.next(t0, true) else {
@@ -615,7 +618,7 @@ fn control_machine_resets_after_revocation_and_delays_policy_ack_until_applied()
     assert_eq!(after_apply.sanitizer_version, 2);
 
     let rev_effects = ctrl.on(
-        ControlOutcome::Directive(PollResponse {
+        ControlOutcome::Directive(Box::new(PollResponse {
             version: 3,
             revoked: true,
             watch: None,
@@ -623,7 +626,7 @@ fn control_machine_resets_after_revocation_and_delays_policy_ack_until_applied()
             policy: None,
             burst: None,
             poll_after_ms: 0,
-        }),
+        })),
         t0,
         0.0,
     );

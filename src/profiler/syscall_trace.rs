@@ -264,6 +264,7 @@ struct Shared {
     window: Option<u64>,
 
     flushing: bool,
+    flush_every: u64,
     last_flush: u64,
 
     trigger: Option<String>,
@@ -505,7 +506,7 @@ impl Sink for Held {
 
     fn segment_due(&mut self, time: u64) -> bool {
         let mut shared = lock(&self.shared);
-        let due = shared.flushing && time.saturating_sub(shared.last_flush) >= FLUSH_EVERY;
+        let due = shared.flushing && time.saturating_sub(shared.last_flush) >= shared.flush_every;
         if due {
             shared.last_flush = time;
         }
@@ -528,14 +529,20 @@ impl Sink for Held {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(super) enum Traced {
     Held(u32),
 
     Running(u32),
+
+    RunningMany(Vec<u32>),
 }
 
 impl SyscallTrace {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "configures BPF/ptrace options, shared state, and spawns the syscall trace thread"
+    )]
     pub(super) fn beside(
         traced: Traced,
         recording: &RecordOptions,
@@ -591,6 +598,16 @@ impl SyscallTrace {
                 Cuts::Whole | Cuts::Segments(_) => None,
             },
             flushing: recording.cuts != Cuts::Whole,
+            flush_every: match recording.cuts {
+                Cuts::Whole => 0,
+                Cuts::Window(_) => FLUSH_EVERY,
+                Cuts::Segments(span) => u64::try_from(
+                    (span / 2)
+                        .clamp(Duration::from_secs(1), Duration::from_secs(10))
+                        .as_nanos(),
+                )
+                .unwrap_or(FLUSH_EVERY),
+            },
             last_flush: 0,
             trigger: None,
             saving: None,
@@ -751,6 +768,10 @@ fn names_files(call: SyscallId) -> bool {
     })
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "dispatches held, single-PID, and multi-PID traces across shared and standalone BPF engines"
+)]
 fn run(
     traced: Traced,
     bpf: Option<BpfOptions>,
@@ -817,6 +838,35 @@ fn run(
                     .map_err(|error| error.to_string())
             }
         }
+        (Traced::RunningMany(pids), Some(engine)) => {
+            if let Some(shared) = shared_bpf {
+                let mut guard = shared.engine.lock().unwrap_or_else(PoisonError::into_inner);
+                if guard
+                    .as_ref()
+                    .is_none_or(|loaded| !loaded.compatible(trace, engine))
+                {
+                    *guard = None;
+                    match bpf::Engine::load(trace, engine) {
+                        Ok(loaded) => *guard = Some(loaded),
+                        Err(error) => {
+                            shared.load_failed.store(true, Ordering::Relaxed);
+                            return Err(error.to_string());
+                        }
+                    }
+                }
+                guard.as_mut().map_or_else(
+                    || Err("the shared BPF engine failed to initialize".to_owned()),
+                    |loaded| {
+                        loaded
+                            .trace_running_many(&pids, trace, engine, stop, sink)
+                            .map_err(|error| error.to_string())
+                    },
+                )
+            } else {
+                bpf::trace_running_many(&pids, trace, engine, stop, sink)
+                    .map_err(|error| error.to_string())
+            }
+        }
         (Traced::Held(pid), None) => {
             ptrace::trace_held(pid, trace, stop, sink).map_err(|error| error.to_string())
         }
@@ -824,6 +874,15 @@ fn run(
             let tree = std::iter::once(pid)
                 .chain(crate::backend::perf::descendants(pid))
                 .collect();
+            ptrace::trace(Target::Attach(tree), trace, stop, sink)
+                .map_err(|error| error.to_string())
+        }
+        (Traced::RunningMany(pids), None) => {
+            let mut tree = Vec::new();
+            for pid in pids {
+                tree.push(pid);
+                tree.extend(crate::backend::perf::descendants(pid));
+            }
             ptrace::trace(Target::Attach(tree), trace, stop, sink)
                 .map_err(|error| error.to_string())
         }
@@ -981,6 +1040,7 @@ mod tests {
             settings: Vec::new(),
             window: None,
             flushing: false,
+            flush_every: FLUSH_EVERY,
             last_flush: 0,
             trigger: None,
             saving: None,
@@ -1018,6 +1078,7 @@ mod tests {
             settings: Vec::new(),
             window: None,
             flushing: false,
+            flush_every: FLUSH_EVERY,
             last_flush: 0,
             trigger: None,
             saving: None,

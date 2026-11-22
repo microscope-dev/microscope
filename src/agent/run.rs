@@ -95,8 +95,15 @@ impl PollHandle {
         let client = Client::new(config.server.clone(), config.ca_file.as_deref())?;
         let (projects, services) = config.record.as_ref().map_or_else(
             || (Vec::new(), Vec::new()),
-            |rec| (vec![rec.project.clone()], vec![rec.service.clone()]),
+            |rec| {
+                if rec.process.is_empty() {
+                    (Vec::new(), Vec::new())
+                } else {
+                    (vec![rec.project.clone()], vec![rec.service.clone()])
+                }
+            },
         );
+        let limits = config.limits.to_wire();
         let bridge = Arc::new((
             Mutex::new(ControlBridgeState {
                 stop: false,
@@ -112,7 +119,7 @@ impl PollHandle {
         let _ = thread::Builder::new()
             .name("microscope-agent-poll".into())
             .spawn(move || {
-                poll_loop(&worker_bridge, &client, projects, services);
+                poll_loop(&worker_bridge, &client, projects, services, limits);
             })?;
         Ok(Self { bridge })
     }
@@ -186,10 +193,12 @@ fn poll_loop(
     client: &Client,
     projects: Vec<String>,
     services: Vec<String>,
+    limits: super::wire::AgentLimits,
 ) {
     let started = std::time::Instant::now();
     let now = || Instant(started.elapsed());
     let mut machine = ControlMachine::new(now(), projects, services);
+    machine.set_limits(Some(limits));
     let (lock, cvar) = bridge;
     let mut last_reset_seq = 0_u64;
 
@@ -221,6 +230,10 @@ fn poll_loop(
             }
             let (pv, sv) = p.applied_policy_versions();
             machine.set_applied_policy(pv, sv);
+            let (projs, svcs) = p.active_targets();
+            if !projs.is_empty() || !svcs.is_empty() {
+                machine.set_targets(projs, svcs);
+            }
         }
         if token.is_some() && machine.needs_token() {
             machine.token_refreshed(now());
@@ -315,7 +328,11 @@ fn poll_loop(
                                     .set_applied_policy(policy.version, policy.sanitizer_version);
                             }
                         }
-                        ControlEffect::Burst(_) => {}
+                        ControlEffect::Burst(burst) => {
+                            if let Some(p) = &pipeline {
+                                p.apply_burst(burst);
+                            }
+                        }
                     }
                 }
             }
@@ -666,6 +683,8 @@ impl Agent {
             };
             let same_state_dir = config.state_dir == self.config.state_dir;
             let pipeline_changed = config.record != self.config.record
+                || config.limits != self.config.limits
+                || config.sanitize != self.config.sanitize
                 || config.server.origin() != self.config.server.origin()
                 || config.ca_file != self.config.ca_file
                 || !same_state_dir

@@ -66,7 +66,10 @@ memory_mib = 256
         loaded.limits,
         Limits {
             cpu_percent: Some(5),
-            memory_mib: Some(256)
+            memory_mib: Some(256),
+            max_preset: None,
+            min_time_unit: None,
+            allow_remote_rules: true,
         }
     );
     assert_eq!(loaded.path.as_deref(), Some(config.path()));

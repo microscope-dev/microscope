@@ -11,6 +11,7 @@ import {
   openDashboards,
   openSaveDashboardDialog,
 } from "../dashboards";
+import { openData } from "../dataPolicy";
 import { documentsGroup, KIND } from "../documents";
 import { type Look, openMachines } from "../fleet";
 import { type At, inView, stringifySearch, type View, watching } from "../focus";
@@ -555,6 +556,13 @@ export const COMMANDS = registry({
   enrollmentKeys: machines("Enrollment keys", { view: "keys" }),
   dashboards: dashboardCommand("Dashboards…", "dashboards", [{ key: "d", alt: true, shift: true }]),
   sessions: dashboardCommand("Sessions…", "sessions"),
+  data: {
+    label: "Data…",
+    menu: standalone ? "Dashboards" : null,
+    keys: [],
+    available: signedIn,
+    run: () => openData("services"),
+  },
   saveDashboard: {
     label: "Save as dashboard…",
     menu: standalone ? "Dashboards" : null,

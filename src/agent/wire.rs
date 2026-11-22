@@ -305,6 +305,20 @@ pub struct IngestResponse {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentLimits {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_preset: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_time_unit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_remote_rules: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_percent: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_mib: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PollRequest {
     #[serde(default)]
     pub known_version: u64,
@@ -320,6 +334,8 @@ pub struct PollRequest {
     pub projects: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub services: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits: Option<AgentLimits>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hold_ms: Option<u64>,
 }
@@ -338,6 +354,45 @@ pub struct FlushDirective {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordingRuleDirective {
+    pub id: i64,
+    pub kind: String,
+    pub pattern: String,
+    pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectPolicyDirective {
+    pub project: String,
+    pub preset: String,
+    pub time_unit: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SanitizerRuleDirective {
+    pub name: String,
+    pub fields: Vec<String>,
+    pub pattern: String,
+    pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SanitizerPolicyDirective {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enabled_builtins: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<SanitizerRuleDirective>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hash_key: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PolicyDirective {
     pub version: u64,
     pub sanitizer_version: u64,
@@ -345,6 +400,12 @@ pub struct PolicyDirective {
     pub preset: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub time_unit: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<RecordingRuleDirective>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub project_policies: Vec<ProjectPolicyDirective>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sanitizer: Option<SanitizerPolicyDirective>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -352,6 +413,12 @@ pub struct BurstDirective {
     pub id: u64,
     pub duration_ms: u64,
     pub preset: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_unit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ends_at_ns: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -34,7 +34,8 @@ pub use crate::unwind::sample::CHAIN_LIMIT;
 pub use annotate::{CodeBlock, CodeLine, Disassembly, InstructionCost, LineCost, LineCosts};
 pub use collector::ProbeSelection;
 pub use session::{
-    Attachment, Recording, Save, Watch, affordable_rate, record, record_attached, record_watched,
+    Attachment, Recording, Save, Watch, affordable_rate, record, record_attached,
+    record_attached_many, record_watched,
 };
 pub use symbols::ModuleSymbols;
 pub use syscall_trace::{

@@ -3,7 +3,8 @@ use std::time::Duration;
 use super::{
     machine::Instant,
     wire::{
-        BurstDirective, FlushDirective, PolicyDirective, PollRequest, PollResponse, WatchDirective,
+        AgentLimits, BurstDirective, FlushDirective, PolicyDirective, PollRequest, PollResponse,
+        WatchDirective,
     },
 };
 
@@ -21,7 +22,7 @@ pub enum ControlAction {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ControlOutcome {
-    Directive(PollResponse),
+    Directive(Box<PollResponse>),
     Unauthorized,
     Retry { retry_after: Option<Duration> },
 }
@@ -32,7 +33,7 @@ pub enum ControlEffect {
     SetWatch(Option<WatchDirective>),
     Flush(FlushDirective),
     ApplyPolicy(PolicyDirective),
-    Burst(BurstDirective),
+    Burst(Option<BurstDirective>),
 }
 
 #[derive(Clone, Debug)]
@@ -46,11 +47,13 @@ pub struct ControlMachine {
     dispatched_sanitizer_version: u64,
     projects: Vec<String>,
     services: Vec<String>,
+    limits: Option<AgentLimits>,
     next_poll: Instant,
     failures: u32,
     need_token: bool,
     revoked: bool,
     active_watch: Option<WatchDirective>,
+    active_burst_id: Option<u64>,
 }
 
 impl ControlMachine {
@@ -60,31 +63,45 @@ impl ControlMachine {
             known_version: 0,
             last_flush_id: 0,
             empty_flush_id: 0,
-            policy_version: 1,
-            sanitizer_version: 1,
-            dispatched_policy_version: 1,
-            dispatched_sanitizer_version: 1,
+            policy_version: 0,
+            sanitizer_version: 0,
+            dispatched_policy_version: 0,
+            dispatched_sanitizer_version: 0,
             projects,
             services,
+            limits: None,
             next_poll: now,
             failures: 0,
             need_token: false,
             revoked: false,
             active_watch: None,
+            active_burst_id: None,
         }
+    }
+
+    pub fn set_limits(&mut self, limits: Option<AgentLimits>) {
+        self.limits = limits;
+    }
+
+    pub fn set_targets(&mut self, projects: Vec<String>, services: Vec<String>) {
+        self.projects = projects;
+        self.services = services;
     }
 
     pub const fn reset(&mut self, now: Instant) {
         self.known_version = 0;
         self.last_flush_id = 0;
         self.empty_flush_id = 0;
-        self.dispatched_policy_version = self.policy_version;
-        self.dispatched_sanitizer_version = self.sanitizer_version;
+        self.policy_version = 0;
+        self.sanitizer_version = 0;
+        self.dispatched_policy_version = 0;
+        self.dispatched_sanitizer_version = 0;
         self.next_poll = now;
         self.failures = 0;
         self.need_token = false;
         self.revoked = false;
         self.active_watch = None;
+        self.active_burst_id = None;
     }
 
     pub const fn set_applied_policy(&mut self, policy_version: u64, sanitizer_version: u64) {
@@ -162,6 +179,7 @@ impl ControlMachine {
                 sanitizer_version: self.sanitizer_version,
                 projects: self.projects.clone(),
                 services: self.services.clone(),
+                limits: self.limits.clone(),
                 hold_ms: None,
             })
         } else {
@@ -206,8 +224,10 @@ impl ControlMachine {
                         effects.push(ControlEffect::ApplyPolicy(policy));
                     }
                 }
-                if let Some(burst) = resp.burst {
-                    effects.push(ControlEffect::Burst(burst));
+                let next_burst_id = resp.burst.as_ref().map(|b| b.id);
+                if next_burst_id != self.active_burst_id {
+                    self.active_burst_id = next_burst_id;
+                    effects.push(ControlEffect::Burst(resp.burst));
                 }
                 let wait = Duration::from_millis(resp.poll_after_ms.min(60_000));
                 self.next_poll = now.after(wait);

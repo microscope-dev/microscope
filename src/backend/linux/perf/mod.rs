@@ -341,9 +341,27 @@ impl Events {
         Self::attach_on(pid, options, budget, &cpus)
     }
 
+    pub fn attach_many(
+        pids: &[u32],
+        options: &EventOptions,
+        budget: usize,
+    ) -> Result<Self, OpenError> {
+        let cpus = online_cpus().map_err(OpenError::Cpus)?;
+        Self::attach_starting(pids, options, budget, &cpus, 0)
+    }
+
     fn attach_held(pid: u32, options: &EventOptions, budget: usize) -> Result<Self, OpenError> {
         let cpus = online_cpus().map_err(OpenError::Cpus)?;
-        Self::attach_starting(pid, options, budget, &cpus, sys::flag::DISABLED)
+        Self::attach_starting(&[pid], options, budget, &cpus, sys::flag::DISABLED)
+    }
+
+    fn attach_many_held(
+        pids: &[u32],
+        options: &EventOptions,
+        budget: usize,
+    ) -> Result<Self, OpenError> {
+        let cpus = online_cpus().map_err(OpenError::Cpus)?;
+        Self::attach_starting(pids, options, budget, &cpus, sys::flag::DISABLED)
     }
 
     pub fn attach_on(
@@ -352,11 +370,11 @@ impl Events {
         budget: usize,
         cpus: &[u32],
     ) -> Result<Self, OpenError> {
-        Self::attach_starting(pid, options, budget, cpus, 0)
+        Self::attach_starting(&[pid], options, budget, cpus, 0)
     }
 
     fn attach_starting(
-        pid: u32,
+        pids: &[u32],
         options: &EventOptions,
         budget: usize,
         cpus: &[u32],
@@ -370,11 +388,27 @@ impl Events {
         let mut owner = None;
 
         loop {
-            let mut threads = threads(pid).map_err(OpenError::NoProcess)?;
-            for child in descendants(pid) {
-                threads.extend(self::threads(child).unwrap_or_default());
+            let mut all_threads = Vec::new();
+            let mut last_err = None;
+            let mut any_ok = false;
+            for &pid in pids {
+                match threads(pid) {
+                    Ok(ts) => {
+                        any_ok = true;
+                        all_threads.extend(ts);
+                    }
+                    Err(error) => last_err = Some(error),
+                }
+                for child in descendants(pid) {
+                    all_threads.extend(self::threads(child).unwrap_or_default());
+                }
             }
-            let new: Vec<u32> = threads
+            if !any_ok && opened.is_empty() {
+                return Err(OpenError::NoProcess(
+                    last_err.unwrap_or_else(|| std::io::Error::from_raw_os_error(libc::ESRCH)),
+                ));
+            }
+            let new: Vec<u32> = all_threads
                 .into_iter()
                 .filter(|tid| !opened.contains(tid))
                 .collect();
@@ -438,7 +472,8 @@ impl Events {
         let events = owner
             .ok_or_else(|| OpenError::NoProcess(std::io::Error::from_raw_os_error(libc::ESRCH)))?;
         record!(
-            "perf attach to {pid}: {} threads, {} CPUs, {} pages each",
+            "perf attach to {:?}: {} threads, {} CPUs, {} pages each",
+            pids,
             opened.len(),
             cpus.len(),
             events.pages
@@ -1121,6 +1156,35 @@ pub fn attach(
     Ok(Attached {
         events,
         process: ProcessWatch(process),
+    })
+}
+
+#[derive(Debug)]
+pub struct AttachedMany {
+    pub events: Events,
+    pub wake: ProcessWatch,
+}
+
+pub fn attach_many(
+    pids: &[u32],
+    options: &EventOptions,
+    budget: usize,
+    held: bool,
+) -> Result<AttachedMany, OpenError> {
+    if pids.is_empty() {
+        return Err(OpenError::NoProcess(std::io::Error::from_raw_os_error(
+            libc::ESRCH,
+        )));
+    }
+    let wake = sys::handoff().map_err(OpenError::Handoff)?;
+    let events = if held {
+        Events::attach_many_held(pids, options, budget)?
+    } else {
+        Events::attach_many(pids, options, budget)?
+    };
+    Ok(AttachedMany {
+        events,
+        wake: ProcessWatch(wake),
     })
 }
 

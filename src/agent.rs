@@ -13,6 +13,8 @@ pub mod recorder;
 pub mod run;
 #[cfg(test)]
 mod scratch;
+pub mod select;
+pub mod split;
 pub mod spool;
 pub mod store;
 pub mod wire;

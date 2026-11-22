@@ -166,13 +166,13 @@ pub fn record_watched(
 
     events.read_while(|| {
         let Ok(()) = gate.open() else { return };
-        let started = executed.recv().is_ok().then_some(pid);
+        let started: Vec<u32> = executed.recv().is_ok().then_some(pid).into_iter().collect();
         drive(
             &mut processor,
             &events,
             watch,
             options,
-            started,
+            &started,
             syscalls.as_ref(),
             walker.as_mut(),
             thin.take(),
@@ -289,7 +289,7 @@ pub fn record_attached(
             &events,
             watch,
             options,
-            Some(pid),
+            &[pid],
             syscalls.as_ref(),
             walker.as_mut(),
             thin.take(),
@@ -307,6 +307,135 @@ pub fn record_attached(
     if !stopped {
         processor.exited(Pid::new(pid));
     }
+
+    let mut capture = processor.finish();
+    if let Some(syscalls) = syscalls {
+        capture = syscalls.merge(&capture).map_err(RecordError::Syscalls)?;
+    }
+
+    Ok(Attachment {
+        profile: Profile { capture },
+        exited: !stopped,
+    })
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "attaches perf, optional BPF walker, and shared syscall trace to multiple PIDs under one CPU budget"
+)]
+pub fn record_attached_many(
+    pids: &[u32],
+    options: &RecordOptions,
+    watch: &mut Watch<'_>,
+) -> Result<Attachment, RecordError> {
+    let _span = crate::span!("record attached many");
+    let Some(&lead_pid) = pids.first() else {
+        return Err(
+            perf::OpenError::NoProcess(std::io::Error::from_raw_os_error(nix::libc::ESRCH)).into(),
+        );
+    };
+    let options = &resolved(options)?;
+    if options.kernel_stacks || options.python == Some(PythonEngine::Bpf) {
+        crate::backend::bpf::sampler::check_namespace()?;
+    }
+    let program = PathBuf::from(format!("/proc/{lead_pid}/exe"));
+    let (source, breakpoint) =
+        perf_source(&program, &options.source, None, options.function_period)?;
+    let watched = watch.every != Duration::MAX;
+    let mut processor = processor(options, breakpoint, !watched);
+    let mut stack_bytes = SMALL_STACK_COPY;
+    let mut stack_copy_desc = String::new();
+    for &pid in pids {
+        let exe = PathBuf::from(format!("/proc/{pid}/exe"));
+        let (bytes, desc) = stack_copy(&mut processor, &exe, options.stack);
+        if bytes >= stack_bytes {
+            stack_bytes = bytes;
+            stack_copy_desc = desc;
+        }
+    }
+    let events = perf::EventOptions {
+        source,
+        stack_bytes,
+        kernel: options.kernel_stacks,
+        ring_pages: options.ring_pages,
+        switches: options.off_cpu,
+    };
+
+    if let perf::Source::Breakpoint { period, .. } = source
+        && period > 1
+    {
+        processor.fixed_period(period);
+    }
+
+    let held = options.kernel_stacks || options.python == Some(PythonEngine::Bpf);
+    let perf::AttachedMany { events, wake } =
+        perf::attach_many(pids, &events, options.max_events, held)?;
+    let mut walker = if held {
+        Some(Walker::attach(
+            &events,
+            &mut processor,
+            options.kernel_stacks,
+        )?)
+    } else {
+        None
+    };
+    let mut thin = thinned(walker.as_mut(), &events, options);
+
+    let syscalls = SyscallTrace::beside(
+        Traced::RunningMany(pids.to_vec()),
+        options,
+        stack_bytes,
+        watched,
+    )
+    .map_err(RecordError::Syscalls)?;
+    let now = monotonic();
+    let mut attached_pids = std::collections::BTreeSet::new();
+    for &pid in pids {
+        if attached_pids.insert(pid) {
+            processor.attached(Pid::new(pid), now);
+        }
+        for desc in perf::descendants(pid) {
+            if attached_pids.insert(desc) {
+                processor.attached(Pid::new(desc), now);
+            }
+        }
+    }
+    let name = std::fs::read_link(&program).unwrap_or(program);
+    let pages = events.pages();
+    settings(
+        &mut processor,
+        options,
+        &name,
+        lead_pid,
+        pages,
+        stack_bytes,
+        stack_copy_desc,
+    );
+    if let Some(walker) = &mut walker {
+        walker.refresh(&mut processor);
+        events.start();
+    }
+
+    let mut stopped = false;
+    events.read_while(|| {
+        drive(
+            &mut processor,
+            &events,
+            watch,
+            options,
+            pids,
+            syscalls.as_ref(),
+            walker.as_mut(),
+            thin.take(),
+            wake.as_fd(),
+            || {
+                record!("record: stopping, detaching from {:?}", pids);
+                stopped = true;
+                true
+            },
+        );
+    });
+    processor.collection_cpu(events.reader_cpu());
 
     let mut capture = processor.finish();
     if let Some(syscalls) = syscalls {
@@ -696,7 +825,7 @@ fn drive(
     events: &perf::Events,
     watch: &mut Watch<'_>,
     options: &RecordOptions,
-    started: Option<u32>,
+    started: &[u32],
     syscalls: Option<&SyscallTrace>,
     mut walker: Option<&mut Walker>,
     thin: Option<Thin>,
@@ -705,26 +834,39 @@ fn drive(
 ) {
     let ended = || perf::sys::readable(exit, Duration::ZERO);
     processor.set_up();
+    let any_started = !started.is_empty();
     let mut pacer = options
         .budget
-        .filter(|_| started.is_some())
+        .filter(|_| any_started)
         .map(|budget| Pacer::new(budget, monotonic(), processor, syscalls, thin, options));
-    let mut snapshots = started.map_or_else(Vec::new, |pid| snapshotters(pid, options));
+    let mut snapshots: Vec<Snapshots> = started
+        .iter()
+        .flat_map(|&pid| snapshotters(pid, options))
+        .collect();
     let mut probes = started
+        .first()
+        .copied()
         .filter(|_| options.probes != ProbeSelection::Off)
         .map(|pid| Collector::new(pid, options.probes.clone(), options.probe_timeout));
-    let started = started.is_some();
+    let started = any_started;
 
+    let segmented = !matches!(options.cuts, Cuts::Whole);
     let observing = match options.cuts {
-        Cuts::Whole => None,
-        Cuts::Window(span) | Cuts::Segments(span) => Some(
+        Cuts::Window(span) => Some(
             (span / 8)
                 .min(watch.every)
                 .min(Duration::from_millis(250))
                 .max(Duration::from_millis(10)),
         ),
+        Cuts::Segments(_) if watch.every != Duration::MAX => Some(
+            watch
+                .every
+                .min(Duration::from_millis(250))
+                .max(Duration::from_millis(10)),
+        ),
+        Cuts::Whole | Cuts::Segments(_) => None,
     };
-    if observing.is_some() {
+    if segmented {
         processor.observe(monotonic(), events.counts());
     }
     let mut observed = std::time::Instant::now();
@@ -733,6 +875,7 @@ fn drive(
         Cuts::Whole | Cuts::Window(_) => None,
     };
     let mut pending_save = None;
+    let mut pending_cut = None;
     let watched = watch.every != Duration::MAX;
     let live = |processor: &mut record::Processor| {
         let capture = processor.snapshot();
@@ -783,6 +926,12 @@ fn drive(
             }
             if let Some(every) = observing {
                 wait = wait.min(every.saturating_sub(observed.elapsed()));
+            }
+            if let Some((every, cut)) = segments {
+                wait = wait.min(every.saturating_sub(cut.elapsed()));
+            }
+            if pending_save.is_some() || pending_cut.is_some() {
+                wait = wait.min(Duration::from_nanos(WATERMARK_DELAY));
             }
             if started {
                 wait = wait.min(publish.saturating_sub(published.elapsed()));
@@ -845,12 +994,13 @@ fn drive(
                 syscalls,
                 triggered || called,
                 &mut pending_save,
+                &mut pending_cut,
                 &mut segments,
             );
         }
 
         if started && published.elapsed() >= publish {
-            if observing.is_none() {
+            if !segmented {
                 processor.observe(monotonic(), events.counts());
             }
             (watch.publish)(live(processor));
@@ -874,7 +1024,7 @@ fn drive(
         snapshots.finish(processor);
     }
     processor.observe(end, events.counts());
-    if observing.is_some() {
+    if segmented {
         processor.ingest(&[], None);
     }
     if let Some(syscalls) = syscalls {
@@ -888,6 +1038,7 @@ fn drive(
     if pending_save.is_some()
         && let Some(save) = &mut watch.save
     {
+        let mut no_cut = None;
         save_when_due(
             save,
             processor,
@@ -895,11 +1046,16 @@ fn drive(
             syscalls,
             false,
             &mut pending_save,
+            &mut no_cut,
             &mut segments,
         );
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "coordinates trigger saves, periodic segment cuts, and syscall cuts"
+)]
 fn save_when_due(
     save: &mut Save<'_>,
     processor: &mut record::Processor,
@@ -907,19 +1063,32 @@ fn save_when_due(
     syscalls: Option<&SyscallTrace>,
     triggered: bool,
     pending: &mut Option<u64>,
+    pending_cut: &mut Option<u64>,
     segments: &mut Option<(Duration, std::time::Instant)>,
 ) {
     let requested = save.trigger.swap(false, Ordering::Relaxed) || triggered;
     if requested && pending.is_none() {
-        let at = monotonic();
-        processor.observe(at, events.counts());
-        *pending = Some(at);
+        if let Some(at) = pending_cut.take() {
+            *pending = Some(at);
+        } else {
+            let at = monotonic();
+            processor.observe(at, events.counts());
+            *pending = Some(at);
+        }
     }
 
     let due = segments
         .as_ref()
         .is_some_and(|(every, cut)| cut.elapsed() >= *every);
-    let ready = pending.map_or(due && processor.observed(0), |at| processor.observed(at));
+    if due && pending.is_none() && pending_cut.is_none() {
+        let at = monotonic();
+        processor.observe(at, events.counts());
+        *pending_cut = Some(at);
+    }
+
+    let ready = pending
+        .or(*pending_cut)
+        .is_some_and(|at| processor.observed(at));
     if !ready {
         return;
     }
@@ -929,6 +1098,7 @@ fn save_when_due(
         return;
     };
     *pending = None;
+    *pending_cut = None;
     record!("record: saved, segment due {due}");
     if let Some((_, cut)) = segments {
         *cut = std::time::Instant::now();

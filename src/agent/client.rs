@@ -23,7 +23,7 @@ const BODY_LIMIT: u64 = 64 * 1024;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum PollReply {
-    Directive(PollResponse),
+    Directive(Box<PollResponse>),
     Unauthorized,
     Refused {
         status: u16,
@@ -214,7 +214,7 @@ impl Client {
         match status {
             200 => serde_json::from_str::<PollResponse>(&text).map_or_else(
                 |error| PollReply::Unreachable(format!("bad poll answer: {error}")),
-                PollReply::Directive,
+                |resp| PollReply::Directive(Box::new(resp)),
             ),
             401 | 403 => PollReply::Unauthorized,
             _ => PollReply::Refused {

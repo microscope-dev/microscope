@@ -4,11 +4,17 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use microscope_data::object::TimeUnit;
+use microscope_data::{
+    object::TimeUnit,
+    sanitize::{Action, Builtin, Rule, RuleSpec},
+};
 use ring::digest::{SHA256, digest};
 use serde::Deserialize;
 
-use super::wire::{EnrollKey, EnrollKeyError, Server, ServerError};
+use super::{
+    select::{RuleAction, RuleKind, SelectionRule, default_runtime_dirs},
+    wire::{AgentLimits, EnrollKey, EnrollKeyError, Server, ServerError},
+};
 use crate::profiler::Preset;
 
 pub const DEFAULT_PATH: &str = "/etc/microscope/agent.toml";
@@ -30,13 +36,41 @@ struct File {
     cloud_metadata: Option<bool>,
     report_network: Option<bool>,
     #[serde(default)]
-    limits: Limits,
+    limits: LimitsFile,
     record: Option<RecordFile>,
+    #[serde(default)]
+    sanitize: SanitizeFile,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LimitsFile {
+    cpu_percent: Option<u8>,
+    memory_mib: Option<u32>,
+    max_preset: Option<String>,
+    min_time_unit: Option<String>,
+    allow_remote_rules: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuleFile {
+    kind: String,
+    pattern: String,
+    #[serde(default = "default_rule_action")]
+    action: String,
+    project: Option<String>,
+    service: Option<String>,
+}
+
+fn default_rule_action() -> String {
+    "record".to_owned()
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RecordFile {
+    enabled: Option<bool>,
     process: Option<String>,
     service: Option<String>,
     project: Option<String>,
@@ -45,6 +79,34 @@ struct RecordFile {
     chunk_ms: Option<u64>,
     post_ms: Option<u64>,
     spool_mib: Option<u32>,
+    #[serde(default)]
+    rules: Vec<RuleFile>,
+    runtime_dirs: Option<Vec<PathBuf>>,
+    pod_annotations_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SanitizeRuleFile {
+    name: String,
+    fields: Vec<String>,
+    pattern: String,
+    action: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SanitizeFile {
+    #[serde(default)]
+    disable_builtins: Vec<String>,
+    #[serde(default)]
+    rules: Vec<SanitizeRuleFile>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SanitizeConfig {
+    pub disable_builtins: Vec<Builtin>,
+    pub rules: Vec<RuleSpec>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,13 +119,61 @@ pub struct RecordConfig {
     pub chunk_ms: u64,
     pub post_ms: u64,
     pub spool_mib: u32,
+    pub rules: Vec<SelectionRule>,
+    pub runtime_dirs: Vec<PathBuf>,
+    pub pod_annotations_dir: Option<PathBuf>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Limits {
     pub cpu_percent: Option<u8>,
     pub memory_mib: Option<u32>,
+    pub max_preset: Option<Preset>,
+    pub min_time_unit: Option<TimeUnit>,
+    pub allow_remote_rules: bool,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            cpu_percent: None,
+            memory_mib: None,
+            max_preset: None,
+            min_time_unit: None,
+            allow_remote_rules: true,
+        }
+    }
+}
+
+impl Limits {
+    #[must_use]
+    pub fn to_wire(&self) -> AgentLimits {
+        AgentLimits {
+            max_preset: self.max_preset.map(|p| preset_name(p).to_owned()),
+            min_time_unit: self.min_time_unit.map(|u| time_unit_name(u).to_owned()),
+            allow_remote_rules: Some(self.allow_remote_rules),
+            cpu_percent: self.cpu_percent,
+            memory_mib: self.memory_mib,
+        }
+    }
+}
+
+#[must_use]
+pub const fn preset_name(preset: Preset) -> &'static str {
+    match preset {
+        Preset::Production => "prod",
+        Preset::Development => "dev",
+        Preset::Maximum => "max",
+    }
+}
+
+#[must_use]
+pub const fn time_unit_name(unit: TimeUnit) -> &'static str {
+    match unit {
+        TimeUnit::Ms => "1ms",
+        TimeUnit::Us => "1us",
+        TimeUnit::Ns => "1ns",
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -81,6 +191,7 @@ pub struct Config {
     pub node_ips: Vec<IpAddr>,
     pub limits: Limits,
     pub record: Option<RecordConfig>,
+    pub sanitize: SanitizeConfig,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -119,6 +230,8 @@ pub enum ConfigError {
     Memory,
     #[error("record.{name} is invalid: {value:?}")]
     Record { name: &'static str, value: String },
+    #[error("sanitize.{name} is invalid: {value:?}")]
+    Sanitize { name: &'static str, value: String },
 }
 
 pub trait Environment {
@@ -178,6 +291,30 @@ pub fn fingerprint(path: Option<&Path>) -> Option<[u8; 32]> {
     read(path).ok().map(|(_, _, fingerprint)| fingerprint)
 }
 
+fn parse_preset_str(raw: &str, field: &'static str) -> Result<Preset, ConfigError> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "prod" | "production" => Ok(Preset::Production),
+        "dev" | "development" => Ok(Preset::Development),
+        "max" | "maximum" => Ok(Preset::Maximum),
+        _ => Err(ConfigError::Record {
+            name: field,
+            value: raw.to_owned(),
+        }),
+    }
+}
+
+fn parse_time_unit_str(raw: &str, field: &'static str) -> Result<TimeUnit, ConfigError> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1ns" | "ns" => Ok(TimeUnit::Ns),
+        "1us" | "1µs" | "us" | "µs" => Ok(TimeUnit::Us),
+        "1ms" | "ms" => Ok(TimeUnit::Ms),
+        _ => Err(ConfigError::Record {
+            name: field,
+            value: raw.to_owned(),
+        }),
+    }
+}
+
 pub fn load(path: Option<&Path>, env: &dyn Environment) -> Result<Config, ConfigError> {
     let (path, file, fingerprint) = read(path)?;
 
@@ -207,21 +344,45 @@ pub fn load(path: Option<&Path>, env: &dyn Environment) -> Result<Config, Config
         .transpose()?
         .unwrap_or_default();
 
-    let limits = file.limits;
-    if limits
-        .cpu_percent
-        .is_some_and(|cpu| !(1..=100).contains(&cpu))
-    {
+    let cpu_percent = match env.get("MICROSCOPE_CPU_PERCENT") {
+        Some(text) => Some(text.parse::<u8>().map_err(|_| ConfigError::Cpu)?),
+        None => file.limits.cpu_percent,
+    };
+    if cpu_percent.is_some_and(|cpu| !(1..=100).contains(&cpu)) {
         return Err(ConfigError::Cpu);
     }
-    if limits
+    if file
+        .limits
         .memory_mib
         .is_some_and(|memory| !(16..=65536).contains(&memory))
     {
         return Err(ConfigError::Memory);
     }
+    let max_preset = env
+        .get("MICROSCOPE_MAX_PRESET")
+        .or(file.limits.max_preset)
+        .map(|raw| parse_preset_str(&raw, "max_preset"))
+        .transpose()?;
+    let min_time_unit = env
+        .get("MICROSCOPE_MIN_TIME_UNIT")
+        .or(file.limits.min_time_unit)
+        .map(|raw| parse_time_unit_str(&raw, "min_time_unit"))
+        .transpose()?;
+    let allow_remote_rules = boolean(
+        env,
+        "MICROSCOPE_ALLOW_REMOTE_RULES",
+        file.limits.allow_remote_rules,
+    )?;
+    let limits = Limits {
+        cpu_percent,
+        memory_mib: file.limits.memory_mib,
+        max_preset,
+        min_time_unit,
+        allow_remote_rules,
+    };
 
     let record = load_record(file.record, env)?;
+    let sanitize = load_sanitize(file.sanitize)?;
 
     Ok(Config {
         path,
@@ -244,62 +405,125 @@ pub fn load(path: Option<&Path>, env: &dyn Environment) -> Result<Config, Config
         node_ips,
         limits,
         record,
+        sanitize,
     })
 }
 
+fn load_sanitize(file: SanitizeFile) -> Result<SanitizeConfig, ConfigError> {
+    let mut disable_builtins = Vec::new();
+    for raw in file.disable_builtins {
+        let b: Builtin = raw.parse().map_err(|_| ConfigError::Sanitize {
+            name: "disable_builtins",
+            value: raw,
+        })?;
+        if !disable_builtins.contains(&b) {
+            disable_builtins.push(b);
+        }
+    }
+    let mut rules = Vec::with_capacity(file.rules.len());
+    for rf in file.rules {
+        let action = match rf.action.trim() {
+            "redact" => Action::Redact,
+            "hash" => Action::Hash,
+            "mask" => Action::Mask,
+            "drop-field" => Action::DropField,
+            "drop-record" => Action::DropRecord,
+            other => {
+                return Err(ConfigError::Sanitize {
+                    name: "action",
+                    value: other.to_owned(),
+                });
+            }
+        };
+        let spec = RuleSpec {
+            name: rf.name,
+            fields: rf.fields,
+            pattern: rf.pattern,
+            action,
+        };
+        Rule::new(&spec).map_err(|e| ConfigError::Sanitize {
+            name: "rules",
+            value: e.to_string(),
+        })?;
+        rules.push(spec);
+    }
+    Ok(SanitizeConfig {
+        disable_builtins,
+        rules,
+    })
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "parses all [record] config fields, rules, and env overrides together"
+)]
 fn load_record(
     file: Option<RecordFile>,
     env: &dyn Environment,
 ) -> Result<Option<RecordConfig>, ConfigError> {
     let file = file.unwrap_or_default();
+    let enabled = boolean(env, "MICROSCOPE_RECORD_ENABLED", file.enabled)?;
+    if !enabled {
+        return Ok(None);
+    }
+
     let process = name(
         "record.process",
         env.get("MICROSCOPE_RECORD_PROCESS").or(file.process),
     )?;
-    let Some(process) = process else {
-        return Ok(None);
-    };
     let service = name(
         "record.service",
         env.get("MICROSCOPE_RECORD_SERVICE").or(file.service),
-    )?
-    .unwrap_or_else(|| process.clone());
+    )?;
     let project = name(
         "record.project",
         env.get("MICROSCOPE_RECORD_PROJECT").or(file.project),
-    )?
-    .unwrap_or_else(|| "default".to_owned());
+    )?;
 
-    let preset = match env
-        .get("MICROSCOPE_RECORD_PRESET")
-        .or(file.preset)
-        .as_deref()
-    {
-        None | Some("prod" | "production") => Preset::Production,
-        Some("dev" | "development") => Preset::Development,
-        Some("max" | "maximum") => Preset::Maximum,
-        Some(other) => {
+    let mut rules = Vec::new();
+    if let Some(proc_pat) = &process {
+        rules.push(SelectionRule {
+            kind: RuleKind::Process,
+            pattern: proc_pat.clone(),
+            action: RuleAction::Record,
+            project: Some(project.clone().unwrap_or_else(|| "default".to_owned())),
+            service: Some(service.clone().unwrap_or_else(|| proc_pat.clone())),
+        });
+    }
+    for rf in file.rules {
+        let kind = RuleKind::parse(&rf.kind).ok_or(ConfigError::Record {
+            name: "rules.kind",
+            value: rf.kind,
+        })?;
+        let action = RuleAction::parse(&rf.action).ok_or(ConfigError::Record {
+            name: "rules.action",
+            value: rf.action,
+        })?;
+        let pat = rf.pattern.trim().to_owned();
+        if pat.is_empty() || pat.len() > 256 || pat.chars().any(char::is_control) {
             return Err(ConfigError::Record {
-                name: "preset",
-                value: other.to_owned(),
+                name: "rules.pattern",
+                value: pat,
             });
         }
+        let r_proj = name("record.rules.project", rf.project)?;
+        let r_svc = name("record.rules.service", rf.service)?;
+        rules.push(SelectionRule {
+            kind,
+            pattern: pat,
+            action,
+            project: r_proj,
+            service: r_svc,
+        });
+    }
+
+    let preset = match env.get("MICROSCOPE_RECORD_PRESET").or(file.preset) {
+        None => Preset::Production,
+        Some(raw) => parse_preset_str(&raw, "preset")?,
     };
-
-    let time_unit = match env
-        .get("MICROSCOPE_RECORD_TIME_UNIT")
-        .or(file.time_unit)
-        .as_deref()
-    {
-        None | Some("1us" | "us") => TimeUnit::Us,
-        Some("1ns" | "ns") => TimeUnit::Ns,
-        Some("1ms" | "ms") => TimeUnit::Ms,
-        Some(other) => {
-            return Err(ConfigError::Record {
-                name: "time_unit",
-                value: other.to_owned(),
-            });
-        }
+    let time_unit = match env.get("MICROSCOPE_RECORD_TIME_UNIT").or(file.time_unit) {
+        None => TimeUnit::Ms,
+        Some(raw) => parse_time_unit_str(&raw, "time_unit")?,
     };
 
     let chunk_ms = parse_u64_range(
@@ -325,15 +549,28 @@ fn load_record(
     )?)
     .unwrap_or(DEFAULT_SPOOL_MIB);
 
+    let runtime_dirs = file.runtime_dirs.unwrap_or_else(default_runtime_dirs);
+    let pod_annotations_dir = env
+        .get("MICROSCOPE_POD_ANNOTATIONS_DIR")
+        .map(PathBuf::from)
+        .or(file.pod_annotations_dir);
+
+    let default_process = process.unwrap_or_default();
+    let default_service = service.unwrap_or_else(|| default_process.clone());
+    let default_project = project.unwrap_or_else(|| "default".to_owned());
+
     Ok(Some(RecordConfig {
-        process,
-        service,
-        project,
+        process: default_process,
+        service: default_service,
+        project: default_project,
         preset,
         time_unit,
         chunk_ms,
         post_ms,
         spool_mib,
+        rules,
+        runtime_dirs,
+        pod_annotations_dir,
     }))
 }
 

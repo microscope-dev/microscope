@@ -892,6 +892,29 @@ pub fn re_sanitize_sections_verbatim(
                     break;
                 }
             }
+        } else if sec.kind == SectionKind::Dimensions {
+            let subset: Vec<RawSection<'_>> = raw_sections
+                .iter()
+                .copied()
+                .filter(|s| matches!(s.kind, SectionKind::Strings | SectionKind::Dimensions))
+                .collect();
+            if let Ok(decoded_dims) = decode_tables(&subset) {
+                let mut probe = Tally::default();
+                for dim in &decoded_dims.dimensions {
+                    let Some(class) = dimension_field_class(&dim.name) else {
+                        continue;
+                    };
+                    let changed = match sanitizer.text(class, &dim.value, &mut probe) {
+                        Outcome::Kept => false,
+                        Outcome::Replaced(out) => out != dim.value,
+                        Outcome::DropField | Outcome::DropRecord => true,
+                    };
+                    if changed {
+                        needs_rewrite = true;
+                        break;
+                    }
+                }
+            }
         } else if sec.kind == SectionKind::SyscallBlobs {
             let reader =
                 SectionReader::open_budgeted(sec.bytes, SectionKind::SyscallBlobs, &budget)?;
