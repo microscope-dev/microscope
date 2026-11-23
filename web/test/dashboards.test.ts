@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import { account } from "../src/account";
 import {
   activeView,
+  buildCurlCommand,
+  buildQueryCommand,
   clearActiveView,
   computeLagMs,
   dashboardsApi,
@@ -345,5 +347,72 @@ describe("dashboards URL and formatting helpers", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("buildQueryCommand", () => {
+  it("preserves selection and all compare modes alongside curl", () => {
+    const scope: ViewScope = {
+      org_id: 3,
+      project_ids: [11],
+      filters: [{ dimension: "service.name", value: "checkout" }],
+      time_range: { kind: "relative", duration_secs: 3600 },
+      refresh: "m1",
+      compare: { kind: "shift", offset_secs: 86_400 },
+      selection: { kind: "function", name: "handle_payment" },
+    };
+
+    const cmd = buildQueryCommand(
+      { kind: "over-time", groupBy: "service.version" },
+      scope,
+      42,
+      "http://localhost:4000",
+    );
+    expect(cmd).toContain("--group-by service.version");
+    expect(cmd).toContain("--session 42 --exact-scope");
+    expect(cmd).toContain("--filter service.name=checkout");
+    expect(cmd).toContain("--compare shift:1d");
+    expect(cmd).toContain("--select-function handle_payment");
+
+    const curl = buildCurlCommand(
+      { kind: "over-time", groupBy: "service.version" },
+      scope,
+      42,
+      "http://localhost:4000",
+    );
+    expect(curl).toContain('"kind":"shift"');
+    expect(curl).toContain('"name":"handle_payment"');
+  });
+
+  it("encodes rest_of_group, custom compare, zone, and syscall selections", () => {
+    const restScope: ViewScope = {
+      org_id: 1,
+      project_ids: [],
+      filters: [],
+      time_range: { kind: "relative", duration_secs: 900 },
+      refresh: "off",
+      compare: { kind: "rest_of_group" },
+      selection: { kind: "zone", name: "db.query" },
+    };
+    const restCmd = buildQueryCommand({ kind: "by-machine" }, restScope, null);
+    expect(restCmd).toContain("--compare rest-of-group");
+    expect(restCmd).toContain("--select-zone db.query");
+
+    const syscallScope: ViewScope = {
+      org_id: 1,
+      project_ids: [],
+      filters: [],
+      time_range: { kind: "relative", duration_secs: 900 },
+      refresh: "off",
+      compare: {
+        kind: "custom",
+        filters: [{ dimension: "service.version", value: "v1" }],
+        time_range: null,
+      },
+      selection: { kind: "syscall", abi: 0, number: 1, name: "write" },
+    };
+    const syscallCmd = buildQueryCommand({ kind: "flame" }, syscallScope, null);
+    expect(syscallCmd).toContain("--select-syscall 0:1:write");
+    expect(syscallCmd).toContain("--compare 'custom:");
   });
 });

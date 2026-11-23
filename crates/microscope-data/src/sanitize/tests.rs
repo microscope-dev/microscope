@@ -409,3 +409,164 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn diagnostic_setting_keys_respect_module_path_policy() {
+    use crate::capture::builder::CaptureBuilder;
+    use crate::capture::file::{read as read_capture, write as write_capture};
+
+    let secret_path = "/home/alice/secret-checkout/bin/app";
+    let mut builder = CaptureBuilder::new();
+    builder.setting("program", secret_path);
+    builder.setting(
+        &format!("debug information {secret_path}"),
+        "incomplete: missing locals",
+    );
+    builder.setting(
+        &format!("image cache {secret_path}"),
+        &format!("cannot write in {secret_path}.cache"),
+    );
+    builder.module(secret_path, None, [1; 16], 4096);
+    let capture = builder.finish();
+
+    let rule = Rule::new(&RuleSpec {
+        name: "hash-module-paths".into(),
+        fields: vec!["module.path".into()],
+        pattern: "/home/alice/[^ ]+".into(),
+        action: Action::Hash,
+    })
+    .unwrap();
+    let sanitizer = Sanitizer::new(&Builtin::DEFAULT, vec![rule], HashKey::new(b"k1"));
+
+    let cleaned = sanitize_capture(capture, &sanitizer);
+    let mut bytes = Vec::new();
+    write_capture(&cleaned.capture, &mut bytes).unwrap();
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(
+        !text.contains("secret-checkout"),
+        "raw module path leaked into capture bytes"
+    );
+
+    let reloaded = read_capture(&bytes).unwrap().capture;
+    assert!(
+        reloaded.settings.iter().any(|s| reloaded
+            .string(s.key.get())
+            .starts_with("debug information [hash:")),
+        "expected hashed debug information key"
+    );
+    assert!(
+        reloaded.settings.iter().any(|s| reloaded
+            .string(s.key.get())
+            .starts_with("image cache [hash:")),
+        "expected hashed image cache key"
+    );
+}
+
+#[test]
+fn repeated_sanitization_is_idempotent_across_actions() {
+    use crate::capture::builder::CaptureBuilder;
+    use crate::capture::records::MarkerKind;
+
+    let mut builder = CaptureBuilder::new();
+    builder.setting("program", "/home/alice/private/app");
+    builder.setting(
+        "arguments 0",
+        r#"["/home/alice/private/app","--token","ghp_1234567890abcdef1234567890abcdef1234","--cust","cust_999888"]"#,
+    );
+    builder.setting(
+        "command 0",
+        "/home/alice/private/app --token ghp_1234567890abcdef1234567890abcdef1234 --cust cust_999888",
+    );
+    builder.module("/home/alice/private/app", None, [2; 16], 4096);
+    builder.marker(100, MarkerKind::Message, "héllöwörldabcd");
+    builder.marker(200, MarkerKind::Message, "résumé_secret_1234");
+    builder.marker(300, MarkerKind::Message, "card=123456789012");
+    builder.marker(400, MarkerKind::Message, "reference=1234567890-12");
+    let raw = builder.finish();
+
+    let rules = vec![
+        Rule::new(&RuleSpec {
+            name: "hash-all-module-paths".into(),
+            fields: vec!["module.path".into()],
+            pattern: ".+".into(),
+            action: Action::Hash,
+        })
+        .unwrap(),
+        Rule::new(&RuleSpec {
+            name: "hash-cust".into(),
+            fields: vec!["process.args".into()],
+            pattern: "cust_[0-9]+".into(),
+            action: Action::Hash,
+        })
+        .unwrap(),
+        Rule::new(&RuleSpec {
+            name: "mask-unicode-marker".into(),
+            fields: vec!["marker.text".into()],
+            pattern: "héllöwörldabcd|résumé_secret_\\d+|\\*{8,}[A-Za-z0-9]{4}".into(),
+            action: Action::Mask,
+        })
+        .unwrap(),
+        Rule::new(&RuleSpec {
+            name: "mask-formatted-ref".into(),
+            fields: vec!["marker.text".into()],
+            pattern: r"\d{10}-\d{2}".into(),
+            action: Action::Mask,
+        })
+        .unwrap(),
+        Rule::new(&RuleSpec {
+            name: "mask-card-digits".into(),
+            fields: vec!["marker.text".into()],
+            pattern: r"\d{2,}".into(),
+            action: Action::Mask,
+        })
+        .unwrap(),
+    ];
+    let sanitizer = Sanitizer::new(&Builtin::DEFAULT, rules, HashKey::new(b"org-key"));
+
+    let pass1 = sanitize_capture(raw, &sanitizer);
+    assert!(pass1.total_fired() > 0);
+    assert_eq!(
+        pass1.capture.string(pass1.capture.markers[0].text.get()),
+        "**********abcd"
+    );
+    assert_eq!(
+        pass1.capture.string(pass1.capture.markers[1].text.get()),
+        "**************1234"
+    );
+    assert_eq!(
+        pass1.capture.string(pass1.capture.markers[2].text.get()),
+        "card=********9012"
+    );
+    assert_eq!(
+        pass1.capture.string(pass1.capture.markers[3].text.get()),
+        "reference=*********0-12"
+    );
+    let pass2 = sanitize_capture(pass1.capture.clone(), &sanitizer);
+    assert_eq!(pass2.total_fired(), 0, "second pass should not re-fire");
+    assert_eq!(pass1.capture, pass2.capture);
+
+    let mut smuggle_tally = Tally::default();
+    assert_eq!(
+        sanitizer.text(
+            FieldClass::MarkerText,
+            "card=********123456789012",
+            &mut smuggle_tally,
+        ),
+        Outcome::Replaced("card=****************9012".into())
+    );
+
+    let mut tally = Tally::default();
+    let mixed = sanitizer.text(
+        FieldClass::ModulePath,
+        "/home/alice/[hash:0123456789abcdef]/extra",
+        &mut tally,
+    );
+    match mixed {
+        Outcome::Replaced(out) => {
+            assert!(!out.contains("/home/alice/"));
+            assert!(!out.contains("/extra"));
+            assert!(out.contains("[hash:0123456789abcdef]"));
+        }
+        other => panic!("expected mixed raw+hashed string to still sanitize raw parts: {other:?}"),
+    }
+}

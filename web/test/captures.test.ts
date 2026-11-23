@@ -69,7 +69,7 @@ describe("copy query command builders", () => {
       "http://127.0.0.1:3000",
     );
     expect(flame).toBe(
-      "microscope query flame --invert --server http://127.0.0.1:3000 --session 12 --org 9 --project 3 --filter service.name=checkout --filter 'host.name=prod box 1' --last 6h --compare previous-version",
+      "microscope query flame --invert --server http://127.0.0.1:3000 --session 12 --exact-scope --org 9 --project 3 --filter service.name=checkout --filter 'host.name=prod box 1' --last 6h --compare previous-version",
     );
 
     const overTime = buildQueryCommand(

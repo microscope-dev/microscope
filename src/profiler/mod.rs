@@ -312,18 +312,30 @@ pub type SourceFrame<'a> = (&'a str, &'a str, u32);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Profile {
-    capture: Capture,
+    capture: std::sync::Arc<Capture>,
 }
 
 impl Profile {
     #[must_use]
-    pub const fn capture(&self) -> &Capture {
+    pub(crate) fn from_capture(capture: Capture) -> Self {
+        Self {
+            capture: std::sync::Arc::new(capture),
+        }
+    }
+
+    #[must_use]
+    pub fn capture(&self) -> &Capture {
         &self.capture
     }
 
     #[must_use]
+    pub fn shared_capture(&self) -> std::sync::Arc<Capture> {
+        std::sync::Arc::clone(&self.capture)
+    }
+
+    #[must_use]
     pub fn into_capture(self) -> Capture {
-        self.capture
+        std::sync::Arc::unwrap_or_clone(self.capture)
     }
 }
 
@@ -514,9 +526,7 @@ impl Profile {
             builder.sample(thread, 0, *weight, stack, NONE);
         }
 
-        Self {
-            capture: builder.finish(),
-        }
+        Self::from_capture(builder.finish())
     }
 
     #[must_use]
@@ -528,9 +538,7 @@ impl Profile {
         let read =
             file::read(bytes).map_err(|error| ProfileFileError::Invalid(error.to_string()))?;
         Ok(ReadProfile {
-            profile: Self {
-                capture: read.capture,
-            },
+            profile: Self::from_capture(read.capture),
             truncated: read.truncated,
             chunks: read.chunks,
         })
@@ -548,7 +556,7 @@ impl Profile {
     }
 
     #[must_use]
-    pub const fn samples(&self) -> usize {
+    pub fn samples(&self) -> usize {
         self.capture.samples.len()
     }
 

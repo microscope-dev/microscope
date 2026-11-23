@@ -17,11 +17,16 @@ pub use syscalls::end_text;
 pub type SourceLines<'a> = &'a dyn Fn(&str, u64, u64) -> Result<Vec<String>, String>;
 pub type BaseLookup<'a> = &'a dyn Fn(&str) -> Option<Arc<CaptureView>>;
 
+pub const HOSTED_MAX_TIMELINE_LANES: usize = 2_048;
+pub const HOSTED_MAX_TIMELINE_CELLS: usize = 524_288;
+
 #[derive(Clone, Copy, Default)]
 pub struct AnswerOptions<'a> {
     pub live: bool,
     pub base: Option<BaseLookup<'a>>,
     pub source_lines: Option<SourceLines<'a>>,
+    pub max_timeline_lanes: Option<usize>,
+    pub max_timeline_cells: Option<usize>,
 }
 
 impl AnswerOptions<'_> {
@@ -31,6 +36,8 @@ impl AnswerOptions<'_> {
             live: false,
             base: None,
             source_lines: None,
+            max_timeline_lanes: Some(HOSTED_MAX_TIMELINE_LANES),
+            max_timeline_cells: Some(HOSTED_MAX_TIMELINE_CELLS),
         }
     }
 }
@@ -127,7 +134,7 @@ impl CaptureView {
                 let _span = crate::span!("web profile timeline");
                 let query: protocol::ProfileTimelineQuery = decode(params)?;
                 Ok((
-                    profile::to_value(&profile::timeline(self, &query)?),
+                    profile::to_value(&profile::timeline(self, &query, opts)?),
                     Vec::new(),
                 ))
             }

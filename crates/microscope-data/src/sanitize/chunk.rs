@@ -187,10 +187,35 @@ fn setting_field_class(key: &str) -> Option<FieldClass> {
     {
         return Some(FieldClass::ProcessArgs);
     }
+    if key.starts_with("debug information ") || key.starts_with("image cache ") {
+        return Some(FieldClass::ModulePath);
+    }
     match key {
         "program" | "executable" => Some(FieldClass::ModulePath),
         _ => None,
     }
+}
+
+fn sanitize_setting_key(
+    strings: &mut StringsBuilder,
+    key_str: &str,
+    sanitizer: &Sanitizer,
+    tally: &mut Tally,
+) -> Option<u32> {
+    for prefix in ["debug information ", "image cache "] {
+        if let Some(path) = key_str.strip_prefix(prefix) {
+            return match sanitizer.text(FieldClass::ModulePath, path, tally) {
+                Outcome::Kept => Some(strings.push(key_str).map_or(NONE, |StrId(i)| i)),
+                Outcome::Replaced(changed) => {
+                    let rewritten =
+                        format!("{prefix}{}", changed.split('\0').next().unwrap_or_default());
+                    Some(strings.push(&rewritten).map_or(NONE, |StrId(i)| i))
+                }
+                Outcome::DropField | Outcome::DropRecord => None,
+            };
+        }
+    }
+    Some(strings.push(key_str).map_or(NONE, |StrId(i)| i))
 }
 
 fn dimension_field_class(name: &str) -> Option<FieldClass> {
@@ -328,9 +353,13 @@ pub fn sanitize_chunk(
     let settings = old
         .settings
         .iter()
-        .map(|s| {
+        .filter_map(|s| {
             let key_str = old.string(s.key.get());
-            let key = copy(&mut strings, s.key.get());
+            let key = if s.key.get() == NONE {
+                NONE
+            } else {
+                sanitize_setting_key(&mut strings, key_str, sanitizer, &mut tally)?
+            };
             let value = if let Some(scope) = arg_setting_suffix(key_str, "arguments")
                 .or_else(|| arg_setting_suffix(key_str, "argv"))
                 && let Some(&(cached, _)) = sanitized_args_by_scope.get(&scope)
@@ -368,22 +397,25 @@ pub fn sanitize_chunk(
                         .0
                     }
                     class => {
-                        sanitize_string_id(
+                        let (val, drop_record) = sanitize_string_id(
                             &old,
                             &mut strings,
                             s.value.get(),
                             class,
                             sanitizer,
                             &mut tally,
-                        )
-                        .0
+                        );
+                        if drop_record {
+                            return None;
+                        }
+                        val
                     }
                 }
             };
-            crate::capture::records::Setting {
+            Some(crate::capture::records::Setting {
                 key: key.into(),
                 value: value.into(),
-            }
+            })
         })
         .collect();
 

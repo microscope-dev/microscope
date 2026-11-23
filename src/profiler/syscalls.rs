@@ -60,12 +60,8 @@ const fn end(status: i64) -> ProcessEnd {
 }
 
 impl Profile {
-    pub(crate) const fn from_capture(capture: crate::capture::Capture) -> Self {
-        Self { capture }
-    }
-
     #[must_use]
-    pub const fn has_syscalls(&self) -> bool {
+    pub fn has_syscalls(&self) -> bool {
         let capture = &self.capture;
         !capture.syscalls.is_empty()
             || !capture.syscall_notes.is_empty()

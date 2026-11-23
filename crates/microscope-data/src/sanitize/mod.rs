@@ -381,13 +381,37 @@ impl Sanitizer {
             }
 
             spans = merged(spans);
+            if matches!(rule.action, Action::Redact | Action::Hash | Action::Mask) {
+                let protected = sanitized_token_ranges(&current);
+                if !protected.is_empty() {
+                    spans = subtract_ranges(spans, &protected);
+                }
+                if rule.action == Action::Mask {
+                    let masked_ranges = masked_token_ranges(&current);
+                    if !masked_ranges.is_empty() {
+                        spans = subtract_ranges(spans, &masked_ranges);
+                    }
+                }
+                if spans.is_empty() {
+                    continue;
+                }
+            }
 
-            tally.fired(index, class, spans.len() as u64);
             match rule.action {
-                Action::DropRecord => return Outcome::DropRecord,
-                Action::DropField => return Outcome::DropField,
+                Action::DropRecord => {
+                    tally.fired(index, class, spans.len() as u64);
+                    return Outcome::DropRecord;
+                }
+                Action::DropField => {
+                    tally.fired(index, class, spans.len() as u64);
+                    return Outcome::DropField;
+                }
                 Action::Redact | Action::Hash | Action::Mask => {
-                    current = Cow::Owned(self.replaced(&current, &spans, rule.action));
+                    let replaced = self.replaced(&current, &spans, rule.action);
+                    if replaced != current.as_ref() {
+                        tally.fired(index, class, spans.len() as u64);
+                        current = Cow::Owned(replaced);
+                    }
                 }
             }
         }
@@ -442,11 +466,16 @@ impl Sanitizer {
                 if redact_next {
                     redact_next = false;
                     *was_handled = true;
-                    if !arg.is_empty() {
-                        tally.fired(index, FieldClass::ProcessArgs, 1);
+                    if !arg.is_empty() && !is_sanitized_token(arg.as_bytes()) {
                         match rule.action {
-                            Action::DropRecord => return Outcome::DropRecord,
-                            Action::DropField => return Outcome::DropField,
+                            Action::DropRecord => {
+                                tally.fired(index, FieldClass::ProcessArgs, 1);
+                                return Outcome::DropRecord;
+                            }
+                            Action::DropField => {
+                                tally.fired(index, FieldClass::ProcessArgs, 1);
+                                return Outcome::DropField;
+                            }
                             Action::Redact | Action::Hash | Action::Mask => {
                                 let span = 0..arg.len();
                                 let replaced = self.replaced(
@@ -454,10 +483,13 @@ impl Sanitizer {
                                     std::slice::from_ref(&span),
                                     rule.action,
                                 );
-                                *arg = String::from_utf8(replaced).unwrap_or_else(|error| {
-                                    String::from_utf8_lossy(error.as_bytes()).into_owned()
-                                });
-                                modified = true;
+                                if replaced != arg.as_bytes() {
+                                    tally.fired(index, FieldClass::ProcessArgs, 1);
+                                    *arg = String::from_utf8(replaced).unwrap_or_else(|error| {
+                                        String::from_utf8_lossy(error.as_bytes()).into_owned()
+                                    });
+                                    modified = true;
+                                }
                             }
                         }
                     }
@@ -471,20 +503,33 @@ impl Sanitizer {
                     }
                     builtin::SecretFlagArg::Value(span) => {
                         *was_handled = true;
-                        tally.fired(index, FieldClass::ProcessArgs, 1);
-                        match rule.action {
-                            Action::DropRecord => return Outcome::DropRecord,
-                            Action::DropField => return Outcome::DropField,
-                            Action::Redact | Action::Hash | Action::Mask => {
-                                let replaced = self.replaced(
-                                    arg.as_bytes(),
-                                    std::slice::from_ref(&span),
-                                    rule.action,
-                                );
-                                *arg = String::from_utf8(replaced).unwrap_or_else(|error| {
-                                    String::from_utf8_lossy(error.as_bytes()).into_owned()
-                                });
-                                modified = true;
+                        let val_bytes = arg.as_bytes().get(span.clone()).unwrap_or_default();
+                        if !is_sanitized_token(val_bytes) {
+                            match rule.action {
+                                Action::DropRecord => {
+                                    tally.fired(index, FieldClass::ProcessArgs, 1);
+                                    return Outcome::DropRecord;
+                                }
+                                Action::DropField => {
+                                    tally.fired(index, FieldClass::ProcessArgs, 1);
+                                    return Outcome::DropField;
+                                }
+                                Action::Redact | Action::Hash | Action::Mask => {
+                                    let replaced = self.replaced(
+                                        arg.as_bytes(),
+                                        std::slice::from_ref(&span),
+                                        rule.action,
+                                    );
+                                    if replaced != arg.as_bytes() {
+                                        tally.fired(index, FieldClass::ProcessArgs, 1);
+                                        *arg =
+                                            String::from_utf8(replaced).unwrap_or_else(|error| {
+                                                String::from_utf8_lossy(error.as_bytes())
+                                                    .into_owned()
+                                            });
+                                        modified = true;
+                                    }
+                                }
                             }
                         }
                     }
@@ -511,17 +556,40 @@ impl Sanitizer {
                 if spans.is_empty() {
                     continue;
                 }
-                let spans = merged(spans);
-                tally.fired(index, FieldClass::ProcessArgs, spans.len() as u64);
+                let mut spans = merged(spans);
+                if matches!(rule.action, Action::Redact | Action::Hash | Action::Mask) {
+                    let protected = sanitized_token_ranges(arg.as_bytes());
+                    if !protected.is_empty() {
+                        spans = subtract_ranges(spans, &protected);
+                    }
+                    if rule.action == Action::Mask {
+                        let masked_ranges = masked_token_ranges(arg.as_bytes());
+                        if !masked_ranges.is_empty() {
+                            spans = subtract_ranges(spans, &masked_ranges);
+                        }
+                    }
+                    if spans.is_empty() {
+                        continue;
+                    }
+                }
                 match rule.action {
-                    Action::DropRecord => return Outcome::DropRecord,
-                    Action::DropField => return Outcome::DropField,
+                    Action::DropRecord => {
+                        tally.fired(index, FieldClass::ProcessArgs, spans.len() as u64);
+                        return Outcome::DropRecord;
+                    }
+                    Action::DropField => {
+                        tally.fired(index, FieldClass::ProcessArgs, spans.len() as u64);
+                        return Outcome::DropField;
+                    }
                     Action::Redact | Action::Hash | Action::Mask => {
                         let replaced = self.replaced(arg.as_bytes(), &spans, rule.action);
-                        *arg = String::from_utf8(replaced).unwrap_or_else(|error| {
-                            String::from_utf8_lossy(error.as_bytes()).into_owned()
-                        });
-                        modified = true;
+                        if replaced != arg.as_bytes() {
+                            tally.fired(index, FieldClass::ProcessArgs, spans.len() as u64);
+                            *arg = String::from_utf8(replaced).unwrap_or_else(|error| {
+                                String::from_utf8_lossy(error.as_bytes()).into_owned()
+                            });
+                            modified = true;
+                        }
                     }
                 }
             }
@@ -574,21 +642,143 @@ fn merged(mut spans: Vec<std::ops::Range<usize>>) -> Vec<std::ops::Range<usize>>
     out
 }
 
+const HASH_TOKEN_PREFIX: &[u8] = b"[hash:";
+const HASH_TOKEN_LEN: usize = 6 + 16 + 1;
+
+fn is_hash_token_at(bytes: &[u8], start: usize) -> bool {
+    let Some(slice) = bytes.get(start..start + HASH_TOKEN_LEN) else {
+        return false;
+    };
+    slice.starts_with(HASH_TOKEN_PREFIX)
+        && slice.last() == Some(&b']')
+        && slice
+            .get(6..22)
+            .is_some_and(|hex| hex.iter().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
+}
+
+fn is_sanitized_token(bytes: &[u8]) -> bool {
+    bytes == REDACTED || (bytes.len() == HASH_TOKEN_LEN && is_hash_token_at(bytes, 0))
+}
+
+fn sanitized_token_ranges(bytes: &[u8]) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes.get(i) == Some(&b'[') {
+            if bytes.get(i..i + REDACTED.len()) == Some(REDACTED) {
+                out.push(i..i + REDACTED.len());
+                i += REDACTED.len();
+                continue;
+            }
+            if is_hash_token_at(bytes, i) {
+                out.push(i..i + HASH_TOKEN_LEN);
+                i += HASH_TOKEN_LEN;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+fn subtract_ranges(
+    spans: Vec<std::ops::Range<usize>>,
+    excluded: &[std::ops::Range<usize>],
+) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::with_capacity(spans.len());
+    for span in spans {
+        let mut cur = span.start;
+        for ex in excluded {
+            if ex.end <= cur {
+                continue;
+            }
+            if ex.start >= span.end {
+                break;
+            }
+            if ex.start > cur {
+                out.push(cur..ex.start);
+            }
+            cur = cur.max(ex.end);
+            if cur >= span.end {
+                break;
+            }
+        }
+        if cur < span.end {
+            out.push(cur..span.end);
+        }
+    }
+    out
+}
+
 const MASK_SHOWS: usize = 4;
 
 const MASK_SHOWS_FROM: usize = 12;
 
+const fn is_masked_token_boundary(ch: char) -> bool {
+    ch.is_whitespace()
+        || matches!(
+            ch,
+            '\0' | ',' | ';' | '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | '&'
+        )
+}
+
+fn masked_token_ranges(bytes: &[u8]) -> Vec<std::ops::Range<usize>> {
+    let min_stars = MASK_SHOWS_FROM - MASK_SHOWS;
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes.get(i) != Some(&b'*') {
+            i += 1;
+            continue;
+        }
+        let star_start = i;
+        while bytes.get(i) == Some(&b'*') {
+            i += 1;
+        }
+        let star_end = i;
+        if star_end - star_start < min_stars {
+            continue;
+        }
+        let Some(tail) = bytes
+            .get(star_end..)
+            .and_then(|s| std::str::from_utf8(s).ok())
+        else {
+            continue;
+        };
+        let mut suffix_bytes = 0;
+        let mut suffix_chars = 0;
+        for (offset, ch) in tail.char_indices() {
+            if is_masked_token_boundary(ch) {
+                break;
+            }
+            suffix_chars += 1;
+            suffix_bytes = offset + ch.len_utf8();
+            if suffix_chars > MASK_SHOWS {
+                break;
+            }
+        }
+        if (1..=MASK_SHOWS).contains(&suffix_chars) {
+            out.push(star_start..star_end + suffix_bytes);
+            i = star_end + suffix_bytes;
+        }
+    }
+    out
+}
+
 fn masked(secret: &[u8], out: &mut Vec<u8>) {
-    let shown = if secret.len() >= MASK_SHOWS_FROM {
+    let text = String::from_utf8_lossy(secret);
+    let chars: Vec<char> = text.chars().collect();
+    let shown = if chars.len() >= MASK_SHOWS_FROM {
         MASK_SHOWS
     } else {
         0
     };
-
-    let (hidden, kept) = secret.split_at(secret.len() - shown);
-    let hidden = String::from_utf8_lossy(hidden).chars().count();
+    let hidden = chars.len() - shown;
     out.extend(std::iter::repeat_n(b'*', hidden));
-    out.extend_from_slice(kept);
+    for ch in chars.iter().skip(hidden) {
+        let mut buf = [0_u8; 4];
+        out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+    }
 }
 
 #[cfg(test)]

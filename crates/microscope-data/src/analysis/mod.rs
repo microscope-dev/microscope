@@ -7,11 +7,11 @@ mod tests;
 pub mod zones;
 
 pub use diff::{DiffCost, DiffTree, Side, diff_costs, diff_trees};
-pub use kernel::{KernelLane, kernel_lanes};
+pub use kernel::{KernelLane, kernel_active_threads, kernel_lanes};
 pub use keys::{Granularity, KeyKind, Keys};
 pub use query::{
     CallTree, Cost, Costs, Lanes, Look, OffCpuLane, Query, Source, Transform, ZoneScope, aggregate,
-    density, functions, off_cpu, syscalls,
+    density, density_lanes, functions, off_cpu, off_cpu_lanes, syscalls,
 };
 
 pub use zones::{

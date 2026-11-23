@@ -1435,7 +1435,7 @@ export function buildQueryCommand(
     parts.push("--server", serverOrigin);
   }
   if (sessionId !== null) {
-    parts.push("--session", String(sessionId));
+    parts.push("--session", String(sessionId), "--exact-scope");
   }
   if (scope.org_id !== null && scope.org_id !== undefined) {
     parts.push("--org", String(scope.org_id));
@@ -1456,8 +1456,40 @@ export function buildQueryCommand(
       String(scope.time_range.end_time),
     );
   }
-  if (scope.compare?.kind === "previous_version") {
-    parts.push("--compare", "previous-version");
+  if (scope.compare) {
+    if (scope.compare.kind === "previous_version") {
+      parts.push("--compare", "previous-version");
+    } else if (scope.compare.kind === "rest_of_group") {
+      parts.push("--compare", "rest-of-group");
+    } else if (scope.compare.kind === "shift") {
+      parts.push("--compare", `shift:${formatDurationFlag(scope.compare.offset_secs)}`);
+    } else if (scope.compare.kind === "custom") {
+      parts.push(
+        "--compare",
+        `custom:${JSON.stringify({
+          filters: scope.compare.filters,
+          time_range: scope.compare.time_range ?? null,
+        })}`,
+      );
+    }
+  }
+  if (scope.selection) {
+    if (scope.selection.kind === "function") {
+      parts.push("--select-function", scope.selection.name);
+    } else if (scope.selection.kind === "zone") {
+      parts.push("--select-zone", scope.selection.name);
+    } else if (scope.selection.kind === "syscall") {
+      const sel = scope.selection;
+      const syscallSpec =
+        sel.abi !== null && sel.abi !== undefined && sel.number !== null && sel.number !== undefined
+          ? sel.name
+            ? `${sel.abi}:${sel.number}:${sel.name}`
+            : `${sel.abi}:${sel.number}`
+          : (sel.name ?? "");
+      if (syscallSpec) {
+        parts.push("--select-syscall", syscallSpec);
+      }
+    }
   }
 
   return parts.map((arg) => quoteShell(arg)).join(" ");

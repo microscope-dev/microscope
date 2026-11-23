@@ -314,7 +314,9 @@ function SessionDetail(props: {
   return (
     <div class="dash-session-detail">
       <div class="dash-detail-head">
-        <h3>{props.session.name || `Session #${props.session.id}`}</h3>
+        <h3>
+          {props.session.name || props.session.capture?.name || `Session #${props.session.id}`}
+        </h3>
         <div class="actions">
           <button type="button" class="button" onClick={() => props.onOpen(props.session.id)}>
             Open
@@ -518,7 +520,7 @@ function OpenDashboardsWindow() {
       ? list
       : list.filter(
           (s) =>
-            (s.name ?? `Session #${s.id}`).toLowerCase().includes(term) ||
+            (s.name ?? s.capture?.name ?? `Session #${s.id}`).toLowerCase().includes(term) ||
             s.ownerUsername.toLowerCase().includes(term) ||
             s.notes.toLowerCase().includes(term),
         );
@@ -691,7 +693,7 @@ function OpenDashboardsWindow() {
                           class="dash-recent-row"
                           onClick={() => openSession(s.id)}
                         >
-                          <span>{s.name || `Session #${s.id}`}</span>
+                          <span>{s.name || s.capture?.name || `Session #${s.id}`}</span>
                           <span class="muted">{ago(s.lastOpenedAt, nowSec)}</span>
                         </button>
                       )}
@@ -730,7 +732,7 @@ function OpenDashboardsWindow() {
                           onDblClick={() => openSession(s.id)}
                         >
                           <div class="dash-card-head">
-                            <strong>{s.name || `Session #${s.id}`}</strong>
+                            <strong>{s.name || s.capture?.name || `Session #${s.id}`}</strong>
                             <Show when={s.captureId !== null && s.captureId !== undefined}>
                               <span class="scope-badge">capture</span>
                             </Show>

@@ -1035,7 +1035,7 @@ pub fn off_cpu(capture: &Capture, query: &Query, buckets: usize) -> Vec<OffCpuLa
         start + i64::try_from(slice as u128 * span / count).unwrap_or(i64::MAX - start)
     };
 
-    let mut lanes = Vec::new();
+    let mut lanes: std::collections::BTreeMap<u32, OffCpuLane> = std::collections::BTreeMap::new();
     for range in &capture.off_cpu_ranges {
         let thread = range.thread.get();
         if query
@@ -1046,13 +1046,6 @@ pub fn off_cpu(capture: &Capture, query: &Query, buckets: usize) -> Vec<OffCpuLa
             continue;
         }
 
-        let mut lane = OffCpuLane {
-            thread,
-            blocked: vec![0; buckets],
-            preempted: vec![0; buckets],
-        };
-
-        let mut any = false;
         for interval in capture.thread_off_cpu(range) {
             let left = interval.time.get();
             let back = left.saturating_add_unsigned(interval.duration.get());
@@ -1061,6 +1054,11 @@ pub fn off_cpu(capture: &Capture, query: &Query, buckets: usize) -> Vec<OffCpuLa
                 continue;
             }
 
+            let lane = lanes.entry(thread).or_insert_with(|| OffCpuLane {
+                thread,
+                blocked: vec![0; buckets],
+                preempted: vec![0; buckets],
+            });
             let totals = if interval.preempted == 0 {
                 &mut lane.blocked
             } else {
@@ -1079,16 +1077,10 @@ pub fn off_cpu(capture: &Capture, query: &Query, buckets: usize) -> Vec<OffCpuLa
                 let overlap = to.min(edge(slice + 1)) - from.max(edge(slice));
                 *total += u64::try_from(overlap).unwrap_or(0);
             }
-
-            any = true;
-        }
-
-        if any {
-            lanes.push(lane);
         }
     }
 
-    lanes
+    lanes.into_values().collect()
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1097,6 +1089,83 @@ pub enum Lanes {
     Threads,
 
     Tasks,
+}
+
+#[must_use]
+pub fn off_cpu_lanes(capture: &Capture, query: &Query) -> Vec<u32> {
+    let Some((start, end)) = query.range.filter(|(start, end)| end > start) else {
+        return Vec::new();
+    };
+    let mut active = Vec::new();
+    for range in &capture.off_cpu_ranges {
+        let thread = range.thread.get();
+        if query
+            .threads
+            .as_ref()
+            .is_some_and(|threads| !threads.contains(&thread))
+        {
+            continue;
+        }
+        let any = capture.thread_off_cpu(range).iter().any(|interval| {
+            let left = interval.time.get();
+            let back = left.saturating_add_unsigned(interval.duration.get());
+            left.max(start) < back.min(end)
+        });
+        if any {
+            active.push(thread);
+        }
+    }
+    active
+}
+
+#[must_use]
+pub fn density_lanes(capture: &Capture, keys: &Keys<'_>, query: &Query, lanes: Lanes) -> Vec<u32> {
+    let Some((start, end)) = query.range.filter(|(start, end)| end > start) else {
+        return Vec::new();
+    };
+    let _ = (start, end);
+    let by_task = lanes == Lanes::Tasks || query.source == Source::Waits;
+    let mut paths = Paths::new(capture, keys, query);
+    let mut kept: HashMap<(u32, u32, u32), bool> = HashMap::default();
+    let count = if by_task {
+        capture.tasks.len() + 1
+    } else {
+        capture.threads.len()
+    };
+    let mut seen = vec![false; count];
+    each(capture, keys, query, |selected| {
+        let task = if query.by_task { selected.task } else { NONE };
+        let keep = *kept
+            .entry((selected.stack, task, selected.label))
+            .or_insert_with(|| {
+                paths
+                    .of(selected.stack, task, selected.label, NONE)
+                    .is_some()
+            });
+        if !keep {
+            return;
+        }
+        let lane = match (by_task, selected.task) {
+            (true, NONE) => capture.tasks.len(),
+            (true, task) => task as usize,
+            (false, _) => selected.thread as usize,
+        };
+        if let Some(slot) = seen.get_mut(lane) {
+            *slot = true;
+        }
+    });
+    seen.into_iter()
+        .enumerate()
+        .filter_map(|(lane, active)| {
+            if !active {
+                return None;
+            }
+            Some(match (by_task, lane == capture.tasks.len()) {
+                (true, true) => NONE,
+                _ => index(lane),
+            })
+        })
+        .collect()
 }
 
 pub fn density(

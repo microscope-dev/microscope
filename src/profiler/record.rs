@@ -3187,9 +3187,7 @@ mod tests {
         for record in records {
             let mut processor = Processor::new(DebugFileSearch::default(), 64);
             processor.process(record);
-            let profile = super::super::Profile {
-                capture: processor.finish(),
-            };
+            let profile = super::super::Profile::from_capture(processor.finish());
             assert_eq!(profile.command(0), Some(expected.as_str()));
             assert_eq!(
                 profile.command_identity(0),
@@ -3217,9 +3215,7 @@ mod tests {
             exec: true,
             time: 2_000,
         });
-        let profile = super::super::Profile {
-            capture: processor.finish(),
-        };
+        let profile = super::super::Profile::from_capture(processor.finish());
         assert_eq!(profile.command(process), None);
         assert_eq!(profile.inspect().processes[process as usize].command, None);
         let read = super::super::Profile::from_bytes(&profile.to_bytes().unwrap())
@@ -3242,9 +3238,7 @@ mod tests {
             exec: false,
             time: 1_000,
         });
-        let worker_only = super::super::Profile {
-            capture: processor.snapshot(),
-        };
+        let worker_only = super::super::Profile::from_capture(processor.snapshot());
         assert_eq!(worker_only.command_identity(0), None);
 
         processor.process(decode::Record::Comm {
@@ -3254,9 +3248,7 @@ mod tests {
             exec: false,
             time: 2_000,
         });
-        let profile = super::super::Profile {
-            capture: processor.finish(),
-        };
+        let profile = super::super::Profile::from_capture(processor.finish());
         let read = super::super::Profile::from_bytes(&profile.to_bytes().unwrap())
             .unwrap()
             .profile;
@@ -3287,9 +3279,7 @@ mod tests {
             ptid: parent.leader(),
             time: 2_000,
         });
-        let profile = super::super::Profile {
-            capture: processor.finish(),
-        };
+        let profile = super::super::Profile::from_capture(processor.finish());
         assert_eq!(profile.command(1), None);
         assert_eq!(
             profile.command_identity(1),
@@ -3318,17 +3308,13 @@ mod tests {
             bytes.extend_from_slice(&word.to_le_bytes());
         }
         processor.process(decode::next(&bytes).unwrap().unwrap().0);
-        let profile = super::super::Profile {
-            capture: processor.snapshot(),
-        };
+        let profile = super::super::Profile::from_capture(processor.snapshot());
         assert!(profile.command(0).is_some());
         assert_ne!(profile.command(0), Some("earlier argv"));
 
         processor.builder.setting("command 0", "later argv");
         processor.process(decode::next(&bytes).unwrap().unwrap().0);
-        let profile = super::super::Profile {
-            capture: processor.finish(),
-        };
+        let profile = super::super::Profile::from_capture(processor.finish());
         assert_eq!(profile.command(0), Some("later argv"));
     }
 
@@ -3345,9 +3331,7 @@ mod tests {
             .join()
             .expect("the thread");
 
-        let profile = super::super::Profile {
-            capture: processor.finish(),
-        };
+        let profile = super::super::Profile::from_capture(processor.finish());
         let (used, _) = profile.recorder_cpu();
         assert!(used >= 140_000_000, "{used} ns");
     }
@@ -3438,9 +3422,7 @@ mod tests {
                 ..Snapshot::default()
             },
         );
-        let profile = super::super::Profile {
-            capture: processor.finish(),
-        };
+        let profile = super::super::Profile::from_capture(processor.finish());
         let profile = super::super::Profile::from_bytes(&profile.to_bytes().unwrap())
             .unwrap()
             .profile;
@@ -3482,9 +3464,7 @@ mod tests {
                 ..Snapshot::default()
             },
         );
-        let profile = super::super::Profile {
-            capture: processor.finish(),
-        };
+        let profile = super::super::Profile::from_capture(processor.finish());
         let profile = super::super::Profile::from_bytes(&profile.to_bytes().unwrap())
             .unwrap()
             .profile;
@@ -3558,9 +3538,7 @@ mod tests {
         }
 
         processor.exited(exited);
-        let profile = super::super::Profile {
-            capture: processor.finish(),
-        };
+        let profile = super::super::Profile::from_capture(processor.finish());
 
         let intervals: Vec<_> = profile
             .off_cpu()
@@ -3887,9 +3865,7 @@ mod tests {
         let later = super::super::session::monotonic() + 1_000_000_000;
         processor.ingest(&sample(start + 0x28, later), None);
 
-        let profile = super::super::Profile {
-            capture: processor.finish(),
-        };
+        let profile = super::super::Profile::from_capture(processor.finish());
         let leaves: Vec<Option<String>> = profile
             .stacks()
             .into_iter()

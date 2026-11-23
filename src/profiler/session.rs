@@ -198,7 +198,7 @@ pub fn record_watched(
         capture = syscalls.merge(&capture).map_err(RecordError::Syscalls)?;
     }
 
-    let profile = Profile { capture };
+    let profile = Profile::from_capture(capture);
     if let Some(calls) = breakpoint {
         profile.check_bias(&program, calls.bias)?;
     }
@@ -314,7 +314,7 @@ pub fn record_attached(
     }
 
     Ok(Attachment {
-        profile: Profile { capture },
+        profile: Profile::from_capture(capture),
         exited: !stopped,
     })
 }
@@ -471,7 +471,7 @@ fn record_attached_many_mode(
     }
 
     Ok(Attachment {
-        profile: Profile { capture },
+        profile: Profile::from_capture(capture),
         exited: !stopped,
     })
 }
@@ -907,12 +907,10 @@ fn drive(
     let watched = watch.every != Duration::MAX;
     let live = |processor: &mut record::Processor| {
         let capture = processor.snapshot();
-        Profile {
-            capture: match syscalls {
-                Some(trace) if watched => trace.live(&capture),
-                _ => capture,
-            },
-        }
+        Profile::from_capture(match syscalls {
+            Some(trace) if watched => trace.live(&capture),
+            _ => capture,
+        })
     };
     if started {
         (watch.publish)(live(processor));
@@ -1133,7 +1131,7 @@ fn save_when_due(
     }
 
     let capture = syscalls.map_or_else(|| capture.clone(), |trace| trace.cut(&capture));
-    (save.to)(Profile { capture });
+    (save.to)(Profile::from_capture(capture));
 }
 
 fn snapshotters(pid: u32, options: &RecordOptions) -> Vec<Snapshots> {

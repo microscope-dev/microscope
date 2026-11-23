@@ -92,7 +92,7 @@ impl Profile {
         })?;
 
         Ok(ReadProfile {
-            profile: Self { capture },
+            profile: Self::from_capture(capture),
             truncated,
             chunks,
         })
@@ -115,9 +115,7 @@ mod tests {
         let frame = builder.frame(FrameKind::Native, NONE, 0x10, 0);
         let stack = builder.stack(&[frame]);
         builder.sample(thread, 1, u64::MAX / 2 + 1, stack, NONE);
-        let half = Profile {
-            capture: builder.finish(),
-        };
+        let half = Profile::from_capture(builder.finish());
 
         for _ in 0..2 {
             half.write_segment(&directory, Duration::from_secs(3600))

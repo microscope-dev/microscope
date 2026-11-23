@@ -82,7 +82,7 @@ impl Profile {
         }
 
         builder.setting("symbols", "recorded");
-        self.capture = builder.finish();
+        self.capture = std::sync::Arc::new(builder.finish());
         found
     }
 }
@@ -170,9 +170,7 @@ mod tests {
             .collect();
         let stack = builder.stack(&frames);
         builder.sample(thread, 0, 1, stack, NONE);
-        let mut profile = Profile {
-            capture: builder.finish(),
-        };
+        let mut profile = Profile::from_capture(builder.finish());
 
         let found: Vec<_> = profile
             .symbolize(&crate::DebugFileOptions::default())

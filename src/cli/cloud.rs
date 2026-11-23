@@ -117,6 +117,8 @@ struct InitRequest<'a> {
 struct InitResponse {
     upload_id: i64,
     upload_url: String,
+    #[serde(default, rename = "uploadHeaders")]
+    headers: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Serialize)]
@@ -434,9 +436,13 @@ pub fn upload_capture(
     } else {
         init.upload_url
     };
-    let mut put_resp = uploader
+    let mut put_req = uploader
         .put(&put_url)
-        .header("content-type", "application/octet-stream")
+        .header("content-type", "application/octet-stream");
+    for (k, v) in &init.headers {
+        put_req = put_req.header(k.as_str(), v.as_str());
+    }
+    let mut put_resp = put_req
         .send(&encoded[..])
         .context("could not upload capture bytes")?;
     let put_status = put_resp.status().as_u16();

@@ -538,6 +538,43 @@ fn off_cpu_time_falls_in_each_slice_it_overlaps() {
 }
 
 #[test]
+fn off_cpu_merges_duplicate_ranges_for_the_same_thread() {
+    let mut builder = CaptureBuilder::new();
+    let t = builder.thread(Pid::new(1), Tid::new(1), 0);
+    builder.off_cpu(t, 0, 10, false, 0);
+    builder.off_cpu(t, 20, 10, true, 0);
+    let mut capture = builder.finish();
+    assert_eq!(capture.off_cpu_ranges.len(), 1);
+    assert_eq!(capture.off_cpu.len(), 2);
+    capture.off_cpu_ranges = vec![
+        crate::capture::records::ThreadRange {
+            thread: t.into(),
+            start: 0.into(),
+            count: 1.into(),
+        },
+        crate::capture::records::ThreadRange {
+            thread: t.into(),
+            start: 1.into(),
+            count: 1.into(),
+        },
+    ];
+
+    let query = Query {
+        range: Some((0, 40)),
+        ..Query::default()
+    };
+    let lanes = off_cpu(&capture, &query, 4);
+    assert_eq!(
+        lanes,
+        [OffCpuLane {
+            thread: t,
+            blocked: vec![10, 0, 0, 0],
+            preempted: vec![0, 0, 10, 0],
+        }]
+    );
+}
+
+#[test]
 fn the_analysis_stays_pure() {
     const FORBIDDEN: [&str; 11] = [
         "crate::backend",

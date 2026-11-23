@@ -13,6 +13,54 @@ pub struct KernelLane {
     pub long: Vec<(u32, i64, i64)>,
 }
 
+#[must_use]
+pub fn kernel_active_threads(
+    capture: &Capture,
+    keys: &Keys<'_>,
+    query: &Query,
+    buckets: usize,
+) -> Vec<u32> {
+    let Some((start, end)) = query
+        .range
+        .filter(|(start, end)| end > start && buckets > 0)
+    else {
+        return Vec::new();
+    };
+
+    let kept = syscalls(
+        capture,
+        keys,
+        &Query {
+            range: None,
+            ..query.clone()
+        },
+    );
+    let width = (end - start) / i64::try_from(buckets).unwrap_or(i64::MAX);
+    let mut active = std::collections::BTreeSet::new();
+    for (row, call) in capture.syscalls.iter().enumerate() {
+        if !kept.get(row).copied().unwrap_or(false) {
+            continue;
+        }
+        let (entered, exited) = (call.entered.get(), call.exited.get());
+        let returned = if exited == UNSEEN { entered } else { exited };
+        let until = if exited == UNSEEN && call.outcome == CallOutcome::Unfinished as u8 {
+            end
+        } else {
+            exited
+        };
+        let (from, to) = (entered.max(start), until.min(end));
+        if (start..end).contains(&returned)
+            || (entered != UNSEEN
+                && until != UNSEEN
+                && until - entered >= width.max(1)
+                && from < to)
+        {
+            active.insert(call.thread.get());
+        }
+    }
+    active.into_iter().collect()
+}
+
 pub fn kernel_lanes(
     capture: &Capture,
     keys: &Keys<'_>,

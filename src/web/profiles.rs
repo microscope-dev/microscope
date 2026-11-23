@@ -142,7 +142,7 @@ impl Profiles {
         file: Option<view_protocol::ProfileFile>,
     ) {
         let view = Arc::new(CaptureView::new(
-            Arc::new(profile.capture().clone()),
+            profile.shared_capture(),
             info.id.clone(),
             info.name.clone(),
             file,
@@ -456,6 +456,7 @@ impl Profiles {
             live: entry.info.recording,
             base: Some(&base_lookup),
             source_lines: Some(&source_lines),
+            ..AnswerOptions::default()
         };
         entry.view.answer(method, params, opts).map_err(from_view)
     }
@@ -778,5 +779,26 @@ mod tests {
                 .unwrap_or_else(PoisonError::into_inner)
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn publish_shares_capture_without_cloning() {
+        let profiles = Profiles::new(PathBuf::from("/"));
+        let profile = Profile::of_stacks("nanoseconds", &[(&[("main", "main.rs", 1)], 10)]);
+        profiles.publish(
+            ProfileInfo {
+                id: "p1".into(),
+                name: "p1.usprof".into(),
+                recording: false,
+                revision: 0,
+                ended: None,
+            },
+            profile,
+            None,
+        );
+        let Ok(entry) = profiles.entry("p1") else {
+            panic!("published profile");
+        };
+        assert!(std::ptr::eq(entry.profile.capture(), entry.view.capture()));
     }
 }

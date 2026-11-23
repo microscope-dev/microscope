@@ -172,9 +172,7 @@ mod tests {
             }
             "snapshot then back" => {
                 processor.process(switch(OTHER, false, false, 7_000));
-                snapshot = Some(Profile {
-                    capture: processor.snapshot(),
-                });
+                snapshot = Some(Profile::from_capture(processor.snapshot()));
                 processor.process(switch(THREAD, false, false, 8_000));
             }
             "end" => {}
@@ -182,9 +180,7 @@ mod tests {
         }
         processor.process(switch(OTHER, false, false, 9_000));
 
-        let finished = Profile {
-            capture: processor.finish(),
-        };
+        let finished = Profile::from_capture(processor.finish());
         let snapshot = snapshot.map_or_else(String::new, |snapshot| {
             format!("snapshot: {} | ", intervals(&snapshot))
         });

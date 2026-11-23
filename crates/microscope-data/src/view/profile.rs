@@ -1,12 +1,13 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use serde_json::{Value, json};
 
 use crate::analysis::{
     ChosenZones, DiffCost, Granularity, KeyKind, Keys, Lanes, Look, Query, Side, Source, Transform,
-    ZoneBlock, ZoneScope, diff_costs, diff_trees, kernel_lanes, off_cpu, plot_series, sites_named,
-    zone_blocks, zone_stats as analyze_zone_stats,
+    ZoneBlock, ZoneScope, density_lanes, diff_costs, diff_trees, kernel_active_threads,
+    kernel_lanes, off_cpu, off_cpu_lanes, plot_series, sites_named, zone_blocks,
+    zone_stats as analyze_zone_stats,
 };
 use crate::capture::Capture;
 use crate::capture::records::{AccountKind, FrameKind, GapReason, MarkerKind, NONE, Truncation};
@@ -20,7 +21,7 @@ use super::protocol::{
     ProfileZoneScope, ProfileZoneSite, ProfileZoneStats, ProfileZoneStatsQuery, ProfileZones,
     ProfileZonesQuery, TransformOp,
 };
-use super::{BaseLookup, CaptureView, SourceLines, ViewError, inspect, syscalls};
+use super::{AnswerOptions, BaseLookup, CaptureView, SourceLines, ViewError, inspect, syscalls};
 
 const MOST_BUCKETS: u32 = 4096;
 const MOST_MARKS: usize = 4096;
@@ -610,9 +611,28 @@ pub(super) fn functions(
     })
 }
 
+fn count_active_timeline_lanes(
+    capture: &Capture,
+    keys: &Keys<'_>,
+    resolved: &Query,
+    buckets: usize,
+    by_task: bool,
+    of: Lanes,
+) -> usize {
+    let mut active: BTreeSet<u32> = density_lanes(capture, keys, resolved, of)
+        .into_iter()
+        .collect();
+    if !by_task {
+        active.extend(off_cpu_lanes(capture, resolved));
+        active.extend(kernel_active_threads(capture, keys, resolved, buckets));
+    }
+    active.len()
+}
+
 pub(super) fn timeline(
     view: &CaptureView,
     timeline: &ProfileTimelineQuery,
+    opts: AnswerOptions<'_>,
 ) -> Result<ProfileTimeline, ViewError> {
     let capture = &view.capture;
     let keys = Keys::new(capture, granularity(timeline.query.granularity));
@@ -622,13 +642,30 @@ pub(super) fn timeline(
         .range
         .unwrap_or_else(|| (start, end.saturating_add(1)));
     resolved.range = Some(range);
-    let buckets = timeline.buckets.clamp(1, MOST_BUCKETS) as usize;
+    let mut buckets = timeline.buckets.clamp(1, MOST_BUCKETS) as usize;
     let by_task = timeline.task_lanes || timeline.query.source == ProfileSource::Waits;
     let of = if by_task {
         Lanes::Tasks
     } else {
         Lanes::Threads
     };
+
+    if opts.max_timeline_lanes.is_some() || opts.max_timeline_cells.is_some() {
+        let active_lanes =
+            count_active_timeline_lanes(capture, &keys, &resolved, buckets, by_task, of);
+        if let Some(max_lanes) = opts.max_timeline_lanes
+            && active_lanes > max_lanes
+        {
+            return Err(ViewError::Invalid(format!(
+                "timeline has {active_lanes} active lanes, exceeding hosted limit of {max_lanes}"
+            )));
+        }
+        if let Some(max_cells) = opts.max_timeline_cells
+            && let Some(per_lane) = max_cells.checked_div(active_lanes)
+        {
+            buckets = buckets.min(per_lane.max(1));
+        }
+    }
 
     let lane = |id: u32, weights| ProfileLane {
         thread: (!by_task).then_some(id),

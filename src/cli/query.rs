@@ -1,9 +1,11 @@
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result, bail};
 use clap::{Args, Subcommand};
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::auth::http_agent;
@@ -104,7 +106,7 @@ pub struct QueryScopeArgs {
     #[arg(short = 'p', long = "project", value_name = "PROJECT")]
     pub projects: Vec<String>,
 
-    /// Filter expression: DIM=VAL to include or DIM!=VAL to exclude. May be repeated.
+    /// Filter expression: DIM=VAL to include. May be repeated.
     #[arg(short = 'f', long = "filter", value_name = "DIM=VAL")]
     pub filters: Vec<String>,
 
@@ -124,9 +126,25 @@ pub struct QueryScopeArgs {
     #[arg(long, value_name = "SESSION_ID")]
     pub session: Option<i64>,
 
-    /// Compare mode: previous-period or previous-version.
+    /// Use only the explicit CLI scope flags instead of merging the saved session's scope (keeps --session for pinned data).
+    #[arg(long)]
+    pub exact_scope: bool,
+
+    /// Compare mode: previous-period, previous-version, rest-of-group, shift:<duration>, or custom:<json>.
     #[arg(long, value_name = "MODE")]
     pub compare: Option<String>,
+
+    /// Scope query to a selected function name.
+    #[arg(long, value_name = "NAME", conflicts_with_all = ["select_syscall", "select_zone"])]
+    pub select_function: Option<String>,
+
+    /// Scope query to a selected syscall (NAME, ABI:NUMBER, or ABI:NUMBER:NAME).
+    #[arg(long, value_name = "SPEC", conflicts_with_all = ["select_function", "select_zone"])]
+    pub select_syscall: Option<String>,
+
+    /// Scope query to a selected zone name.
+    #[arg(long, value_name = "NAME", conflicts_with_all = ["select_function", "select_syscall"])]
+    pub select_zone: Option<String>,
 
     /// Flush live agents before querying.
     #[arg(long)]
@@ -288,7 +306,9 @@ fn build_scope(
     token: &str,
     args: &QueryScopeArgs,
 ) -> Result<Value> {
-    let mut base_scope = if let Some(session_id) = args.session {
+    let mut base_scope = if let Some(session_id) = args.session
+        && !args.exact_scope
+    {
         let sess = get_json_authed(agent, server, token, &format!("/api/sessions/{session_id}"))?;
         if sess.get("locked").and_then(Value::as_bool) == Some(true) {
             bail!("session {session_id} is locked; you lack project read access");
@@ -310,6 +330,15 @@ fn build_scope(
         base_scope.insert("project_ids".into(), json!(project_ids));
     }
 
+    apply_scope_args(&mut base_scope, args, unix_now_ns())?;
+    Ok(Value::Object(base_scope))
+}
+
+fn apply_scope_args(
+    base_scope: &mut serde_json::Map<String, Value>,
+    args: &QueryScopeArgs,
+    now_ns: i64,
+) -> Result<()> {
     if !args.filters.is_empty() {
         let mut parsed = Vec::with_capacity(args.filters.len());
         for raw in &args.filters {
@@ -319,7 +348,6 @@ fn build_scope(
     }
 
     if args.from.is_some() || args.to.is_some() {
-        let now_ns = unix_now_ns();
         let end_time = match args.to.as_deref() {
             Some(raw) => parse_timestamp_ns(raw)?,
             None => now_ns,
@@ -359,17 +387,176 @@ fn build_scope(
     }
 
     if let Some(compare) = args.compare.as_deref() {
-        let compare_val = match compare {
-            "previous-period" | "previous_period" => json!({ "kind": "previous_period" }),
-            "previous-version" | "previous_version" => json!({ "kind": "previous_version" }),
-            other => bail!(
-                "unsupported --compare value {other:?}; use previous-period or previous-version"
-            ),
-        };
+        let compare_val = parse_compare_for_scope(compare, base_scope, now_ns)?;
         base_scope.insert("compare".into(), compare_val);
     }
 
-    Ok(Value::Object(base_scope))
+    if let Some(name) = args.select_function.as_deref() {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            bail!("--select-function cannot be empty");
+        }
+        base_scope.insert(
+            "selection".into(),
+            json!({ "kind": "function", "name": trimmed }),
+        );
+    } else if let Some(name) = args.select_zone.as_deref() {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            bail!("--select-zone cannot be empty");
+        }
+        base_scope.insert(
+            "selection".into(),
+            json!({ "kind": "zone", "name": trimmed }),
+        );
+    } else if let Some(spec) = args.select_syscall.as_deref() {
+        base_scope.insert("selection".into(), parse_syscall_selection(spec)?);
+    }
+
+    Ok(())
+}
+
+const MAX_SHIFT_SECS: i64 = 366 * 86_400;
+const RELATIVE_END_BUFFER_SECS: i64 = 60;
+
+fn previous_period_compare(
+    scope: &mut serde_json::Map<String, Value>,
+    now_ns: i64,
+) -> Result<Value> {
+    let Some(range) = scope.get("time_range").and_then(Value::as_object) else {
+        return Ok(json!({ "kind": "shift", "offset_secs": 3600 + RELATIVE_END_BUFFER_SECS }));
+    };
+    match range.get("kind").and_then(Value::as_str) {
+        Some("absolute") => {
+            let start = range.get("start_time").and_then(Value::as_i64).unwrap_or(0);
+            let end = range.get("end_time").and_then(Value::as_i64).unwrap_or(0);
+            let span = end.saturating_sub(start).max(1);
+            Ok(json!({
+                "kind": "custom",
+                "filters": [],
+                "time_range": {
+                    "kind": "absolute",
+                    "start_time": start.saturating_sub(span),
+                    "end_time": start,
+                }
+            }))
+        }
+        Some("relative") => {
+            let duration_secs = range
+                .get("duration_secs")
+                .and_then(Value::as_i64)
+                .unwrap_or(3600);
+            if !(60..=MAX_SHIFT_SECS).contains(&duration_secs) {
+                bail!("relative duration must be between 60 seconds and 366 days");
+            }
+            let shifted = duration_secs.saturating_add(RELATIVE_END_BUFFER_SECS);
+            if shifted <= MAX_SHIFT_SECS {
+                Ok(json!({
+                    "kind": "shift",
+                    "offset_secs": shifted,
+                }))
+            } else {
+                let span = duration_secs.saturating_mul(1_000_000_000).max(1);
+                let start = now_ns.saturating_sub(span);
+                scope.insert(
+                    "time_range".into(),
+                    json!({
+                        "kind": "absolute",
+                        "start_time": start,
+                        "end_time": now_ns,
+                    }),
+                );
+                Ok(json!({
+                    "kind": "custom",
+                    "filters": [],
+                    "time_range": {
+                        "kind": "absolute",
+                        "start_time": start.saturating_sub(span),
+                        "end_time": start,
+                    }
+                }))
+            }
+        }
+        _ => Ok(json!({ "kind": "shift", "offset_secs": 3600 + RELATIVE_END_BUFFER_SECS })),
+    }
+}
+
+fn parse_compare_for_scope(
+    raw: &str,
+    scope: &mut serde_json::Map<String, Value>,
+    now_ns: i64,
+) -> Result<Value> {
+    let trimmed = raw.trim();
+    if matches!(trimmed, "previous-period" | "previous_period") {
+        return previous_period_compare(scope, now_ns);
+    }
+    parse_compare(trimmed, 3600 + RELATIVE_END_BUFFER_SECS)
+}
+
+pub fn parse_compare(raw: &str, window_secs: i64) -> Result<Value> {
+    let trimmed = raw.trim();
+    if let Some(rest) = trimmed.strip_prefix("shift:") {
+        let offset_secs = parse_duration_secs(rest)?;
+        if !(60..=366 * 86_400).contains(&offset_secs) {
+            bail!("shift compare offset must be between 60s and 366d");
+        }
+        return Ok(json!({
+            "kind": "shift",
+            "offset_secs": offset_secs,
+        }));
+    }
+    if let Some(rest) = trimmed.strip_prefix("custom:") {
+        let parsed: Value = serde_json::from_str(rest).context("invalid custom compare JSON")?;
+        let Some(obj) = parsed.as_object() else {
+            bail!("custom compare must be a JSON object");
+        };
+        let filters = obj
+            .get("filters")
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new()));
+        let time_range = obj.get("time_range").cloned().unwrap_or(Value::Null);
+        return Ok(json!({
+            "kind": "custom",
+            "filters": filters,
+            "time_range": time_range,
+        }));
+    }
+    match trimmed {
+        "previous-period" | "previous_period" => Ok(json!({
+            "kind": "shift",
+            "offset_secs": window_secs.clamp(60, 366 * 86_400),
+        })),
+        "previous-version" | "previous_version" => Ok(json!({ "kind": "previous_version" })),
+        "rest-of-group" | "rest_of_group" => Ok(json!({ "kind": "rest_of_group" })),
+        other => bail!(
+            "unsupported --compare value {other:?}; use previous-period, previous-version, rest-of-group, shift:<duration>, or custom:<json>"
+        ),
+    }
+}
+
+pub fn parse_syscall_selection(raw: &str) -> Result<Value> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        bail!("--select-syscall cannot be empty");
+    }
+    let parts: Vec<&str> = trimmed.splitn(3, ':').collect();
+    if let [abi_str, num_str, rest @ ..] = parts.as_slice()
+        && let (Ok(abi), Ok(number)) = (abi_str.parse::<u8>(), num_str.parse::<u32>())
+    {
+        let name = rest.first().map(|s| s.trim()).filter(|s| !s.is_empty());
+        return Ok(json!({
+            "kind": "syscall",
+            "abi": abi,
+            "number": number,
+            "name": name,
+        }));
+    }
+    Ok(json!({
+        "kind": "syscall",
+        "abi": null,
+        "number": null,
+        "name": trimmed,
+    }))
 }
 
 fn resolve_project_ids(
@@ -454,31 +641,21 @@ pub fn parse_timestamp_ns(raw: &str) -> Result<i64> {
 }
 
 pub fn parse_filter(raw: &str) -> Result<Value> {
-    if let Some((dim, val)) = raw.split_once("!=") {
-        let dim = dim.trim();
-        let val = val.trim();
-        if dim.is_empty() || val.is_empty() {
-            bail!("invalid filter {raw:?}; expected DIM!=VAL");
-        }
-        return Ok(json!({
-            "dimension": dim,
-            "value": val,
-            "exclude": true,
-        }));
+    let Some((lhs, val)) = raw.split_once('=') else {
+        bail!("invalid filter {raw:?}; expected DIM=VAL");
+    };
+    if lhs.ends_with('!') {
+        bail!("exclusion filter {raw:?} is not supported by the server; use DIM=VAL");
     }
-    if let Some((dim, val)) = raw.split_once('=') {
-        let dim = dim.trim();
-        let val = val.trim();
-        if dim.is_empty() || val.is_empty() {
-            bail!("invalid filter {raw:?}; expected DIM=VAL");
-        }
-        return Ok(json!({
-            "dimension": dim,
-            "value": val,
-            "exclude": false,
-        }));
+    let dim = lhs.trim();
+    let val = val.trim();
+    if dim.is_empty() || val.is_empty() {
+        bail!("invalid filter {raw:?}; expected DIM=VAL");
     }
-    bail!("invalid filter {raw:?}; expected DIM=VAL or DIM!=VAL")
+    Ok(json!({
+        "dimension": dim,
+        "value": val,
+    }))
 }
 
 fn unix_now_ns() -> i64 {
@@ -603,94 +780,209 @@ fn print_flame(resp: &Value, tree: bool, limit: usize, min_percent: f64) {
     }
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OverTimeSeriesResp {
+    label: String,
+    #[serde(default)]
+    values: Vec<f64>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OverTimeResp {
+    #[serde(default)]
+    locked: bool,
+    #[serde(default)]
+    unit: String,
+    #[serde(default)]
+    group_by: String,
+    #[serde(default)]
+    series: Vec<OverTimeSeriesResp>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MachineRowResp {
+    hostname: String,
+    #[serde(default)]
+    environment: String,
+    #[serde(default)]
+    overall: f64,
+    #[serde(default)]
+    distance_from_median: f64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ByMachineResp {
+    #[serde(default)]
+    locked: bool,
+    #[serde(default)]
+    unit: String,
+    #[serde(default)]
+    median: f64,
+    #[serde(default)]
+    machines: Vec<MachineRowResp>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BreakdownRowResp {
+    value: String,
+    #[serde(default)]
+    total: f64,
+    #[serde(default)]
+    share: f64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BreakdownResp {
+    #[serde(default)]
+    locked: bool,
+    #[serde(default)]
+    dimension: String,
+    #[serde(default)]
+    unit: String,
+    #[serde(default)]
+    total: f64,
+    #[serde(default)]
+    rows: Vec<BreakdownRowResp>,
+}
+
 fn print_over_time(resp: &Value) {
-    let group_by = resp
-        .get("group_by")
-        .and_then(Value::as_str)
-        .unwrap_or("all");
-    let series = resp
-        .get("series")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    if series.is_empty() {
-        println!("No time-series data in scope.");
-        return;
+    print!("{}", format_over_time(resp));
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "bucket counts are small integers converted for average calculation"
+)]
+fn format_over_time(resp: &Value) -> String {
+    let Ok(parsed) = serde_json::from_value::<OverTimeResp>(resp.clone()) else {
+        return "Unexpected over-time response.\n".to_owned();
+    };
+    if parsed.locked {
+        return "Scope is locked (missing read permission on one or more projects).\n".to_owned();
     }
-    println!("Grouped by {group_by} ({} series):", series.len());
-    println!("{:<32}  {:>12}  {:>12}", "Series", "Total", "Peak");
-    for s in series {
-        let label = s.get("label").and_then(Value::as_str).unwrap_or("(other)");
-        let values = s
-            .get("values")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let sum: f64 = values.iter().filter_map(Value::as_f64).sum();
-        let peak: f64 = values
-            .iter()
-            .filter_map(Value::as_f64)
-            .fold(0.0_f64, f64::max);
-        println!(
-            "{label:<32}  {:>12}  {:>12}",
-            format_ns(sum),
-            format_ns(peak)
+    if parsed.series.is_empty() {
+        return "No time-series data in scope.\n".to_owned();
+    }
+    let mut out = String::new();
+    let group_by = if parsed.group_by.is_empty() {
+        "all"
+    } else {
+        parsed.group_by.as_str()
+    };
+    let is_ns = matches!(parsed.unit.as_str(), "nanoseconds" | "ns");
+    let _ = writeln!(
+        out,
+        "Grouped by {group_by} ({} series, unit: {}):",
+        parsed.series.len(),
+        if parsed.unit.is_empty() {
+            "raw"
+        } else {
+            parsed.unit.as_str()
+        }
+    );
+    let summary_col = if is_ns { "Total" } else { "Avg" };
+    let _ = writeln!(out, "{:<32}  {:>14}  {:>14}", "Series", summary_col, "Peak");
+    for s in parsed.series {
+        let count = s.values.len();
+        let sum: f64 = s.values.iter().copied().sum();
+        let summary_val = if is_ns || count == 0 {
+            sum
+        } else {
+            sum / count as f64
+        };
+        let peak: f64 = s.values.iter().copied().fold(0.0_f64, f64::max);
+        let _ = writeln!(
+            out,
+            "{:<32}  {:>14}  {:>14}",
+            s.label,
+            format_metric(summary_val, &parsed.unit),
+            format_metric(peak, &parsed.unit),
         );
     }
+    out
 }
 
 fn print_by_machine(resp: &Value, limit: usize) {
-    let machines = resp
-        .get("machines")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    if machines.is_empty() {
-        println!("No machines in scope.");
-        return;
+    print!("{}", format_by_machine(resp, limit));
+}
+
+fn format_by_machine(resp: &Value, limit: usize) -> String {
+    let Ok(parsed) = serde_json::from_value::<ByMachineResp>(resp.clone()) else {
+        return "Unexpected by-machine response.\n".to_owned();
+    };
+    if parsed.locked {
+        return "Scope is locked (missing read permission on one or more projects).\n".to_owned();
     }
-    println!(
-        "{:<28}  {:<12}  {:>12}  {:>8}",
-        "Hostname", "Environment", "CPU", "Ratio"
+    if parsed.machines.is_empty() {
+        return "No machines in scope.\n".to_owned();
+    }
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "Median: {}",
+        format_metric(parsed.median, &parsed.unit)
     );
-    for m in machines.into_iter().take(limit) {
-        let host = m.get("hostname").and_then(Value::as_str).unwrap_or("?");
-        let env = m.get("environment").and_then(Value::as_str).unwrap_or("");
-        let total = m.get("total").and_then(Value::as_f64).unwrap_or(0.0);
-        let ratio = m.get("ratio").and_then(Value::as_f64).unwrap_or(0.0);
-        println!(
-            "{host:<28}  {env:<12}  {:>12}  {ratio:>7.2}x",
-            format_ns(total)
+    let _ = writeln!(
+        out,
+        "{:<28}  {:<12}  {:>14}  {:>14}",
+        "Hostname", "Environment", "Overall", "Dist/Median"
+    );
+    for m in parsed.machines.into_iter().take(limit) {
+        let _ = writeln!(
+            out,
+            "{:<28}  {:<12}  {:>14}  {:>14}",
+            m.hostname,
+            m.environment,
+            format_metric(m.overall, &parsed.unit),
+            format_metric(m.distance_from_median, &parsed.unit),
         );
     }
+    out
 }
 
 fn print_breakdown(resp: &Value, limit: usize) {
-    let dim = resp
-        .get("dimension")
-        .and_then(Value::as_str)
-        .unwrap_or("dimension");
-    let total = resp.get("total").and_then(Value::as_f64).unwrap_or(0.0);
-    let rows = resp
-        .get("rows")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    if rows.is_empty() {
-        println!("No breakdown data for {dim}.");
-        return;
+    print!("{}", format_breakdown(resp, limit));
+}
+
+fn format_breakdown(resp: &Value, limit: usize) -> String {
+    let Ok(parsed) = serde_json::from_value::<BreakdownResp>(resp.clone()) else {
+        return "Unexpected breakdown response.\n".to_owned();
+    };
+    if parsed.locked {
+        return "Scope is locked (missing read permission on one or more projects).\n".to_owned();
     }
-    println!("{:>7}  {:>12}  {dim}", "Share%", "CPU");
-    for row in rows.into_iter().take(limit) {
-        let value = row.get("value").and_then(Value::as_str).unwrap_or("(none)");
-        let cpu = row.get("total").and_then(Value::as_f64).unwrap_or(0.0);
-        let pct = if total > 0.0 {
-            cpu * 100.0 / total
+    let dim = if parsed.dimension.is_empty() {
+        "dimension"
+    } else {
+        parsed.dimension.as_str()
+    };
+    if parsed.rows.is_empty() {
+        return format!("No breakdown data for {dim}.\n");
+    }
+    let mut out = String::new();
+    let _ = writeln!(out, "{:>7}  {:>14}  {dim}", "Share%", "Value");
+    for row in parsed.rows.into_iter().take(limit) {
+        let pct = if row.share > 0.0 {
+            row.share * 100.0
+        } else if parsed.total > 0.0 {
+            row.total * 100.0 / parsed.total
         } else {
             0.0
         };
-        println!("{pct:>6.2}%  {:>12}  {value}", format_ns(cpu));
+        let _ = writeln!(
+            out,
+            "{pct:>6.2}%  {:>14}  {}",
+            format_metric(row.total, &parsed.unit),
+            row.value,
+        );
     }
+    out
 }
 
 fn print_dimensions(resp: &Value) {
@@ -727,6 +1019,16 @@ fn print_dimensions(resp: &Value) {
     }
 }
 
+fn format_metric(val: f64, unit: &str) -> String {
+    match unit {
+        "nanoseconds" | "ns" => format_ns(val),
+        "percent" | "%" => format!("{val:.2}%"),
+        "cores" => format!("{val:.3} cores"),
+        "" => format!("{val:.2}"),
+        other => format!("{val:.2} {other}"),
+    }
+}
+
 fn format_ns(ns: f64) -> String {
     if ns >= 1e9 {
         format!("{:.2}s", ns / 1e9)
@@ -743,8 +1045,30 @@ fn format_ns(ns: f64) -> String {
 mod tests {
     use super::*;
 
+    fn empty_scope_args() -> QueryScopeArgs {
+        QueryScopeArgs {
+            server: None,
+            token: None,
+            ca_file: None,
+            org: None,
+            projects: Vec::new(),
+            filters: Vec::new(),
+            last: None,
+            from: None,
+            to: None,
+            session: None,
+            exact_scope: false,
+            compare: None,
+            select_function: None,
+            select_syscall: None,
+            select_zone: None,
+            fresh: false,
+            json: false,
+        }
+    }
+
     #[test]
-    fn parses_durations_and_filters() {
+    fn parses_durations_filters_compare_and_selection() {
         assert_eq!(parse_duration_secs("30s").unwrap(), 30);
         assert_eq!(parse_duration_secs("15m").unwrap(), 900);
         assert_eq!(parse_duration_secs("2h").unwrap(), 7200);
@@ -752,13 +1076,164 @@ mod tests {
         assert!(parse_duration_secs("0h").is_err());
 
         let inc = parse_filter("service.name=checkout").unwrap();
-        assert_eq!(inc["dimension"], "service.name");
-        assert_eq!(inc["value"], "checkout");
-        assert_eq!(inc["exclude"], false);
+        assert_eq!(
+            inc,
+            json!({ "dimension": "service.name", "value": "checkout" })
+        );
+        assert!(inc.get("exclude").is_none());
+        let val_with_bang = parse_filter("service.name=a!=b").unwrap();
+        assert_eq!(
+            val_with_bang,
+            json!({ "dimension": "service.name", "value": "a!=b" })
+        );
+        assert!(parse_filter("host.name!=canary-1").is_err());
 
-        let exc = parse_filter("host.name!=canary-1").unwrap();
-        assert_eq!(exc["dimension"], "host.name");
-        assert_eq!(exc["value"], "canary-1");
-        assert_eq!(exc["exclude"], true);
+        let mut args = empty_scope_args();
+        args.last = Some("2h".into());
+        args.filters = vec!["service.name=checkout".into()];
+        args.compare = Some("previous-period".into());
+        args.select_function = Some("process_request".into());
+        let mut scope = serde_json::Map::new();
+        apply_scope_args(&mut scope, &args, 1_000_000_000_000).unwrap();
+        assert_eq!(
+            scope["compare"],
+            json!({ "kind": "shift", "offset_secs": 7260 })
+        );
+        assert_eq!(
+            scope["selection"],
+            json!({ "kind": "function", "name": "process_request" })
+        );
+    }
+
+    #[test]
+    fn previous_period_compare_handles_short_and_boundary_ranges() {
+        let mut short_abs = empty_scope_args();
+        short_abs.from = Some("1000".into());
+        short_abs.to = Some("1030".into());
+        short_abs.compare = Some("previous-period".into());
+        let mut short_scope = serde_json::Map::new();
+        apply_scope_args(&mut short_scope, &short_abs, 2_000_000_000_000).unwrap();
+        assert_eq!(
+            short_scope["compare"],
+            json!({
+                "kind": "custom",
+                "filters": [],
+                "time_range": {
+                    "kind": "absolute",
+                    "start_time": 970_000_000_000_i64,
+                    "end_time": 1_000_000_000_000_i64,
+                }
+            })
+        );
+
+        let mut max_rel = empty_scope_args();
+        max_rel.last = Some("366d".into());
+        max_rel.compare = Some("previous-period".into());
+        let mut max_scope = serde_json::Map::new();
+        let now_ns = 2_000_000_000_000_000_000_i64;
+        apply_scope_args(&mut max_scope, &max_rel, now_ns).unwrap();
+        let dur_ns = 366_i64 * 86_400 * 1_000_000_000;
+        let start = now_ns - dur_ns;
+        assert_eq!(
+            max_scope["time_range"],
+            json!({
+                "kind": "absolute",
+                "start_time": start,
+                "end_time": now_ns,
+            })
+        );
+        assert_eq!(
+            max_scope["compare"],
+            json!({
+                "kind": "custom",
+                "filters": [],
+                "time_range": {
+                    "kind": "absolute",
+                    "start_time": start - dur_ns,
+                    "end_time": start,
+                }
+            })
+        );
+
+        let mut over_max = empty_scope_args();
+        over_max.last = Some("367d".into());
+        over_max.compare = Some("previous-period".into());
+        assert!(apply_scope_args(&mut serde_json::Map::new(), &over_max, now_ns).is_err());
+
+        let mut under_min = empty_scope_args();
+        under_min.last = Some("30s".into());
+        under_min.compare = Some("previous-period".into());
+        assert!(apply_scope_args(&mut serde_json::Map::new(), &under_min, now_ns).is_err());
+
+        assert_eq!(
+            parse_compare("rest-of-group", 3600).unwrap(),
+            json!({ "kind": "rest_of_group" })
+        );
+        assert_eq!(
+            parse_compare("shift:30m", 3600).unwrap(),
+            json!({ "kind": "shift", "offset_secs": 1800 })
+        );
+        assert_eq!(
+            parse_syscall_selection("0:1:write").unwrap(),
+            json!({ "kind": "syscall", "abi": 0, "number": 1, "name": "write" })
+        );
+        assert_eq!(
+            parse_syscall_selection("futex").unwrap(),
+            json!({ "kind": "syscall", "abi": null, "number": null, "name": "futex" })
+        );
+    }
+
+    #[test]
+    fn formats_services_by_machine_and_over_time_responses() {
+        let by_machine = json!({
+            "timestampsNs": [1000, 2000],
+            "bucketNs": 60_000_000_000_i64,
+            "unit": "percent",
+            "median": 12.5,
+            "machines": [{
+                "machineId": 7,
+                "hostname": "co-us1-c19",
+                "environment": "prod",
+                "overall": 42.25,
+                "distanceFromMedian": 29.75,
+                "values": [40.0, 44.5]
+            }],
+            "blocks": 1,
+            "prunedBlocks": 0,
+            "cacheHits": 0,
+            "locked": false
+        });
+        let rendered_machine = format_by_machine(&by_machine, 10);
+        assert!(
+            rendered_machine.contains("co-us1-c19"),
+            "{rendered_machine}"
+        );
+        assert!(rendered_machine.contains("42.25%"), "{rendered_machine}");
+        assert!(rendered_machine.contains("29.75%"), "{rendered_machine}");
+        assert!(!rendered_machine.contains("0ns"), "{rendered_machine}");
+
+        let over_time = json!({
+            "timestampsNs": [1000, 2000],
+            "bucketNs": 60_000_000_000_i64,
+            "unit": "cores",
+            "groupBy": "service.version",
+            "series": [{
+                "label": "v2.4.1",
+                "values": [1.5, 2.5]
+            }],
+            "deploys": [],
+            "blocks": 1,
+            "prunedBlocks": 0,
+            "cacheHits": 0,
+            "locked": false
+        });
+        let rendered_ot = format_over_time(&over_time);
+        assert!(
+            rendered_ot.contains("Grouped by service.version"),
+            "{rendered_ot}"
+        );
+        assert!(rendered_ot.contains("2.000 cores"), "{rendered_ot}");
+        assert!(rendered_ot.contains("2.500 cores"), "{rendered_ot}");
+        assert!(!rendered_ot.contains("ns"), "{rendered_ot}");
     }
 }

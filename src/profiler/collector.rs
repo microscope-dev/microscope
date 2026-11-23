@@ -897,9 +897,7 @@ mod tests {
                 bytes[12..16].copy_from_slice(&abi::RING_RETIRED.to_le_bytes());
                 collector.read_ring(&mut processor, 0, address);
 
-                let profile = crate::profiler::Profile {
-                    capture: processor.finish(),
-                };
+                let profile = crate::profiler::Profile::from_capture(processor.finish());
                 let profile = crate::profiler::Profile::from_bytes(&profile.to_bytes().unwrap())
                     .unwrap()
                     .profile;
@@ -1292,9 +1290,7 @@ os.execv(sys.argv[1], [sys.argv[1], 'records'])",
     }
 
     fn problems(processor: Processor) -> Vec<String> {
-        let profile = crate::profiler::Profile {
-            capture: processor.finish(),
-        };
+        let profile = crate::profiler::Profile::from_capture(processor.finish());
         profile
             .probe_problems()
             .into_iter()

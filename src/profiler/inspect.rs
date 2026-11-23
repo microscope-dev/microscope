@@ -278,10 +278,7 @@ mod tests {
         builder.setting(&arguments_setting(0), &encode_cmdline(b"rg\0-e\0a b\0"));
         builder.setting(&command_setting(1), "old style");
         builder.setting(&arguments_setting(1), "not json");
-        let inspection = Profile {
-            capture: builder.finish(),
-        }
-        .inspect();
+        let inspection = Profile::from_capture(builder.finish()).inspect();
 
         let first = InspectedCommand {
             arguments: Some(vec!["rg".into(), "-e".into(), "a b".into()]),
@@ -302,10 +299,7 @@ mod tests {
     fn a_trace_without_processes_uses_the_program_it_ran() {
         let mut builder = CaptureBuilder::new();
         builder.setting(ARGUMENTS, r#"["/bin/true","x y"]"#);
-        let inspection = Profile {
-            capture: builder.finish(),
-        }
-        .inspect();
+        let inspection = Profile::from_capture(builder.finish()).inspect();
 
         assert_eq!(
             inspection.command,
@@ -339,10 +333,7 @@ mod tests {
         ] {
             builder.sample(thread, time, 1, stack, NONE);
         }
-        let inspection = Profile {
-            capture: builder.finish(),
-        }
-        .inspect();
+        let inspection = Profile::from_capture(builder.finish()).inspect();
 
         assert_eq!(inspection.depths, vec![1, 1, 1, 2]);
         assert_eq!(inspection.distinct_stacks, 4);
@@ -379,10 +370,7 @@ mod tests {
         for time in [1000, 1009, 1010, 1300, 1589, 1590, 1599] {
             builder.sample(thread, time, 1, NONE, NONE);
         }
-        let inspection = Profile {
-            capture: builder.finish(),
-        }
-        .inspect();
+        let inspection = Profile::from_capture(builder.finish()).inspect();
 
         let mut expected = vec![0; TIME_BINS];
         expected[0] = 2;
@@ -396,10 +384,7 @@ mod tests {
 
     #[test]
     fn empty_profiles_have_no_time_slices() {
-        let empty = Profile {
-            capture: CaptureBuilder::new().finish(),
-        }
-        .inspect();
+        let empty = Profile::from_capture(CaptureBuilder::new().finish()).inspect();
         assert!(empty.over_time.is_empty());
         assert!(empty.depths.is_empty());
         assert_eq!(empty.command, None);

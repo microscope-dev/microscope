@@ -140,3 +140,126 @@ fn sanitize_capture_scrubs_secrets_and_counts_firings() {
     assert!(!args.contains("ghp_1234567890abcdef1234567890abcdef1234"));
     assert!(args.contains("[redacted]"));
 }
+
+#[test]
+fn hosted_timeline_bounds_lanes_and_cells() {
+    let mut builder = CaptureBuilder::new();
+    builder.setting("start", "0");
+    builder.setting("end", "10000");
+    builder.setting("weight", "nanoseconds");
+    let frame = builder.frame(FrameKind::Native, NONE, 0x1000, 0);
+    let stack = builder.stack(&[frame]);
+    for i in 1..=300_u32 {
+        let t = builder.thread(Pid::new(1), Tid::new(i), 0);
+        builder.sample(t, i64::from(i), 100, stack, NONE);
+    }
+    let view = CaptureView::new(
+        Arc::new(builder.finish()),
+        "capture:many".into(),
+        "many.usprof".into(),
+        None,
+    );
+
+    let (clamped, _) = view
+        .answer(
+            "profileTimeline",
+            json!({ "profile": "capture:many", "buckets": 4096 }),
+            AnswerOptions::hosted(),
+        )
+        .unwrap();
+    let lanes = clamped["lanes"].as_array().unwrap();
+    assert_eq!(lanes.len(), 300);
+    let bucket_len = lanes[0]["weights"].as_array().unwrap().len();
+    assert!(
+        bucket_len * lanes.len() <= crate::view::HOSTED_MAX_TIMELINE_CELLS,
+        "expected cells bounded by hosted budget, got {} * {}",
+        lanes.len(),
+        bucket_len
+    );
+
+    let strict = AnswerOptions {
+        max_timeline_lanes: Some(100),
+        max_timeline_cells: Some(1000),
+        ..AnswerOptions::hosted()
+    };
+    let err = view
+        .answer(
+            "profileTimeline",
+            json!({ "profile": "capture:many", "buckets": 4096 }),
+            strict,
+        )
+        .unwrap_err();
+    assert!(matches!(err, crate::view::ViewError::Invalid(_)), "{err:?}");
+
+    let (narrow, _) = view
+        .answer(
+            "profileTimeline",
+            json!({ "profile": "capture:many", "buckets": 128, "threads": [0] }),
+            strict,
+        )
+        .unwrap();
+    assert_eq!(narrow["lanes"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn hosted_timeline_focus_transform_excludes_filtered_lanes() {
+    let mut focus_builder = CaptureBuilder::new();
+    focus_builder.setting("start", "0");
+    focus_builder.setting("end", "1000");
+    focus_builder.setting("weight", "nanoseconds");
+    let f1 = focus_builder.frame(FrameKind::Native, NONE, 0x1000, 0);
+    focus_builder.symbolize(
+        f1,
+        NONE,
+        &[LineInput {
+            function: "alpha",
+            file: None,
+            line: 0,
+            column: 0,
+            declared: None,
+            role: 0,
+        }],
+    );
+    let f2 = focus_builder.frame(FrameKind::Native, NONE, 0x2000, 0);
+    focus_builder.symbolize(
+        f2,
+        NONE,
+        &[LineInput {
+            function: "beta",
+            file: None,
+            line: 0,
+            column: 0,
+            declared: None,
+            role: 0,
+        }],
+    );
+    let s1 = focus_builder.stack(&[f1]);
+    let s2 = focus_builder.stack(&[f2]);
+    let t1 = focus_builder.thread(Pid::new(1), Tid::new(1), 0);
+    let t2 = focus_builder.thread(Pid::new(1), Tid::new(2), 0);
+    focus_builder.sample(t1, 100, 10, s1, NONE);
+    focus_builder.sample(t2, 200, 10, s2, NONE);
+    let focus_view = CaptureView::new(
+        Arc::new(focus_builder.finish()),
+        "capture:focus".into(),
+        "focus.usprof".into(),
+        None,
+    );
+    let one_lane = AnswerOptions {
+        max_timeline_lanes: Some(1),
+        max_timeline_cells: Some(64),
+        ..AnswerOptions::hosted()
+    };
+    let (focused, _) = focus_view
+        .answer(
+            "profileTimeline",
+            json!({
+                "profile": "capture:focus",
+                "buckets": 32,
+                "transforms": [{ "op": "focus", "name": "alpha" }]
+            }),
+            one_lane,
+        )
+        .unwrap();
+    assert_eq!(focused["lanes"].as_array().unwrap().len(), 1);
+}
