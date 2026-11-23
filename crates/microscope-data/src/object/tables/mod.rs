@@ -9,7 +9,9 @@ pub use decode::{
     decode_flame_bundle, decode_flame_tables, decode_flame_tables_budgeted, decode_tables,
     decode_tables_budgeted,
 };
-pub use encode_core::{encode_event_bundle, encode_tables};
+pub use encode_core::{
+    SharedStringIndex, encode_event_bundle, encode_event_bundle_with_index, encode_tables,
+};
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -294,6 +296,13 @@ impl StringDecodeMap {
 
     pub fn decode_refs(&self, codes: &[u64]) -> Result<Vec<u32>, ObjectError> {
         codes.iter().map(|&c| self.decode_ref(c)).collect()
+    }
+
+    pub fn decode_refs_u32(&self, codes: &[u32]) -> Result<Vec<u32>, ObjectError> {
+        codes
+            .iter()
+            .map(|&c| self.decode_ref(u64::from(c)))
+            .collect()
     }
 }
 
@@ -639,8 +648,8 @@ fn read_string_col(
     count: usize,
     strings: &StringDecodeMap,
 ) -> Result<Vec<u32>, ObjectError> {
-    let codes = page.column(group, col)?.decode_u64(count, page.budget())?;
-    strings.decode_refs(&codes)
+    let codes = page.column(group, col)?.decode_u32(count, page.budget())?;
+    strings.decode_refs_u32(&codes)
 }
 
 fn read_time_col(
@@ -688,26 +697,32 @@ fn read_relative_time_col(
 type InternedStrings = (Vec<u8>, Vec<u32>, Vec<(u32, u32)>, Vec<u32>);
 
 fn intern_extra_strings(data: &ChunkData) -> InternedStrings {
-    let mut pool = data.capture.strings.clone();
-    let mut index: HashMap<String, u32> = HashMap::default();
+    let base_pool = &data.capture.strings;
+    let mut existing_index: HashMap<&str, u32> = HashMap::default();
     let mut at = 0_usize;
-    while at < pool.len() {
-        let Some(rel) = memchr::memchr(0, &pool[at..]) else {
+    while at < base_pool.len() {
+        let Some(rel) = memchr::memchr(0, &base_pool[at..]) else {
             break;
         };
-        if let Ok(text) = std::str::from_utf8(&pool[at..at + rel])
+        if let Ok(text) = std::str::from_utf8(&base_pool[at..at + rel])
             && let Ok(off) = u32::try_from(at)
         {
-            index.entry(text.to_owned()).or_insert(off);
+            existing_index.entry(text).or_insert(off);
         }
         at += rel + 1;
     }
+
+    let mut pool = base_pool.clone();
+    let mut extra_index: HashMap<String, u32> = HashMap::default();
 
     let mut push = |text: &str| -> u32 {
         if text.is_empty() || text.as_bytes().contains(&0) {
             return NONE;
         }
-        if let Some(&existing) = index.get(text) {
+        if let Some(&existing) = existing_index.get(text) {
+            return existing;
+        }
+        if let Some(&existing) = extra_index.get(text) {
             return existing;
         }
         let Ok(offset) = u32::try_from(pool.len()) else {
@@ -723,7 +738,7 @@ fn intern_extra_strings(data: &ChunkData) -> InternedStrings {
         }
         pool.extend_from_slice(text.as_bytes());
         pool.push(0);
-        index.insert(text.to_owned(), offset);
+        extra_index.insert(text.to_owned(), offset);
         offset
     };
 

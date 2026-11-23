@@ -277,7 +277,7 @@ pub(super) fn decode_syscall_blobs(
                         "note blob data column must use Bytes coding".into(),
                     ));
                 }
-                let data = data_col.data.clone();
+                let data = data_col.data.to_vec();
                 note_blobs = Some((lengths, data));
                 groups.push(None);
                 continue;
@@ -304,10 +304,10 @@ pub(super) fn decode_syscall_blobs(
                             ));
                         }
                         r.charge(m.saturating_mul(stride))?;
-                        decode_words(&data_col.data, m, stride)?
+                        decode_words(data_col.data, m, stride)?
                     }
                 }
-                Coding::Bytes => data_col.data.clone(),
+                Coding::Bytes => data_col.data.to_vec(),
                 _ => {
                     return Err(ObjectError::Layout(
                         "unexpected coding for syscall blob bytes".into(),
@@ -499,7 +499,7 @@ pub(super) fn decode_syscall_stats(
             "syscall_stats histogram column must use SparseHistogram40 coding".into(),
         ));
     }
-    let hists = decode_sparse_histograms(&hist_col.data, n, Some(budget))?;
+    let hists = decode_sparse_histograms(hist_col.data, n, Some(budget))?;
 
     let mut next_errno = 0_u32;
     Ok((0..n)

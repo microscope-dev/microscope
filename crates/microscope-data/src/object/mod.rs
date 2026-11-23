@@ -18,12 +18,12 @@ pub use filter::{
     filter_key_process_name,
 };
 pub use tables::{
-    ChunkData, ChunkRow, DimensionRow, FlameBundle, SanitizerCountRow, SharedSymbols,
-    StringDecodeMap, StringEncodeMap, TABLE_VERSION, decode_event_bundle,
+    ChunkData, ChunkRow, DimensionRow, FlameBundle, SanitizerCountRow, SharedStringIndex,
+    SharedSymbols, StringDecodeMap, StringEncodeMap, TABLE_VERSION, decode_event_bundle,
     decode_event_bundle_budgeted, decode_flame_bundle, decode_flame_tables,
     decode_flame_tables_budgeted, decode_tables, decode_tables_budgeted, encode_event_bundle,
-    encode_tables, merge_chunks, round_capture_times, shift_capture_times,
-    verify_chunk_decode_budget,
+    encode_event_bundle_with_index, encode_tables, merge_chunks, round_capture_times,
+    shift_capture_times, verify_chunk_decode_budget,
 };
 
 pub const OBJECT_MAGIC: [u8; 8] = *b"USCOPEOB";

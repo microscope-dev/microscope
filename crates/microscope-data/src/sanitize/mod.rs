@@ -123,6 +123,11 @@ impl Fields {
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
+
+    #[must_use]
+    pub const fn intersects(self, other: Self) -> bool {
+        (self.0 & other.0) != 0
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -437,6 +442,113 @@ impl Sanitizer {
 
     pub fn bytes(&self, class: FieldClass, value: &[u8], tally: &mut Tally) -> Outcome<Vec<u8>> {
         self.bytes_inner(class, value, tally, false)
+    }
+
+    #[must_use]
+    pub fn would_change_bytes(&self, fields: Fields, value: &[u8]) -> bool {
+        self.would_change_bytes_with_rules(fields, value, &self.rules)
+    }
+
+    fn would_change_bytes_with_rules(&self, fields: Fields, value: &[u8], rules: &[Rule]) -> bool {
+        for rule in rules {
+            if !rule.fields.intersects(fields) {
+                continue;
+            }
+            let mut spans = Vec::new();
+            rule.found(value, &mut |found| {
+                if !found.is_empty() {
+                    spans.push(found);
+                }
+            });
+            if spans.is_empty() {
+                continue;
+            }
+            spans = merged(spans);
+            if matches!(rule.action, Action::Redact | Action::Hash | Action::Mask) {
+                let protected = sanitized_token_ranges(value);
+                if !protected.is_empty() {
+                    spans = subtract_ranges(spans, &protected);
+                }
+                if rule.action == Action::Mask {
+                    let masked_ranges = masked_token_ranges(value);
+                    if !masked_ranges.is_empty() {
+                        spans = subtract_ranges(spans, &masked_ranges);
+                    }
+                }
+                if spans.is_empty() {
+                    continue;
+                }
+                if self.replaced(value, &spans, rule.action) != value {
+                    return true;
+                }
+            } else {
+                return true;
+            }
+        }
+        false
+    }
+
+    #[must_use]
+    pub fn active_rules_for_pool(&self, pool: &[u8]) -> Vec<usize> {
+        let mut active = Vec::new();
+        for (idx, rule) in self.rules.iter().enumerate() {
+            let may_match = match &rule.matcher {
+                Matcher::Builtin(builtin) => builtin.pool_may_match(pool),
+                Matcher::Pattern(_) => true,
+            };
+            if may_match {
+                active.push(idx);
+            }
+        }
+        active
+    }
+
+    #[must_use]
+    pub fn would_change_bytes_active(
+        &self,
+        fields: Fields,
+        value: &[u8],
+        active_indices: &[usize],
+    ) -> bool {
+        for &idx in active_indices {
+            let Some(rule) = self.rules.get(idx) else {
+                continue;
+            };
+            if !rule.fields.intersects(fields) {
+                continue;
+            }
+            let mut spans = Vec::new();
+            rule.found(value, &mut |found| {
+                if !found.is_empty() {
+                    spans.push(found);
+                }
+            });
+            if spans.is_empty() {
+                continue;
+            }
+            spans = merged(spans);
+            if matches!(rule.action, Action::Redact | Action::Hash | Action::Mask) {
+                let protected = sanitized_token_ranges(value);
+                if !protected.is_empty() {
+                    spans = subtract_ranges(spans, &protected);
+                }
+                if rule.action == Action::Mask {
+                    let masked_ranges = masked_token_ranges(value);
+                    if !masked_ranges.is_empty() {
+                        spans = subtract_ranges(spans, &masked_ranges);
+                    }
+                }
+                if spans.is_empty() {
+                    continue;
+                }
+                if self.replaced(value, &spans, rule.action) != value {
+                    return true;
+                }
+            } else {
+                return true;
+            }
+        }
+        false
     }
 
     fn bytes_inner(

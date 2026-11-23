@@ -931,84 +931,90 @@ pub fn re_sanitize_sections_verbatim(
                     "string pool is not NUL-terminated UTF-8".into(),
                 ));
             }
-            let mut probe = Tally::default();
-            for raw_str in pool.split(|&b| b == 0) {
-                if raw_str.is_empty() {
-                    continue;
-                }
-                let Ok(text) = std::str::from_utf8(raw_str) else {
-                    return Err(ObjectError::Capture(
-                        "string pool is not valid UTF-8".into(),
-                    ));
-                };
-                if text.trim_start().starts_with('[')
-                    && let Ok(args) = serde_json::from_str::<Vec<String>>(text)
-                {
-                    let changed = match sanitizer.args(&args, &mut probe) {
-                        Outcome::Kept => false,
-                        Outcome::Replaced(out) => out != args,
-                        Outcome::DropField | Outcome::DropRecord => true,
-                    };
-                    if changed {
+            let active_rules = sanitizer.active_rules_for_pool(pool);
+            let has_bracket = memchr::memchr(b'[', pool).is_some();
+            if !active_rules.is_empty() || has_bracket {
+                let mut probe = Tally::default();
+                for raw_str in pool.split(|&b| b == 0) {
+                    if raw_str.is_empty() {
+                        continue;
+                    }
+                    if has_bracket
+                        && raw_str.iter().find(|&&b| !b.is_ascii_whitespace()) == Some(&b'[')
+                        && let Ok(text) = std::str::from_utf8(raw_str)
+                        && let Ok(args) = serde_json::from_str::<Vec<String>>(text)
+                    {
+                        let changed = match sanitizer.args(&args, &mut probe) {
+                            Outcome::Kept => false,
+                            Outcome::Replaced(out) => out != args,
+                            Outcome::DropField | Outcome::DropRecord => true,
+                        };
+                        if changed {
+                            needs_rewrite = true;
+                            break;
+                        }
+                    }
+                    if active_rules.is_empty() {
+                        continue;
+                    }
+                    if let Some(path) = raw_str
+                        .strip_prefix(b"debug information ")
+                        .or_else(|| raw_str.strip_prefix(b"image cache "))
+                        && sanitizer.would_change_bytes_active(
+                            super::Fields::of(&[FieldClass::ModulePath]),
+                            path,
+                            &active_rules,
+                        )
+                    {
                         needs_rewrite = true;
                         break;
                     }
-                }
-                if let Some(path) = text
-                    .strip_prefix("debug information ")
-                    .or_else(|| text.strip_prefix("image cache "))
-                {
-                    let changed = match sanitizer.text(FieldClass::ModulePath, path, &mut probe) {
-                        Outcome::Kept => false,
-                        Outcome::Replaced(out) => out != path,
-                        Outcome::DropField | Outcome::DropRecord => true,
-                    };
-                    if changed {
+                    if sanitizer.would_change_bytes_active(
+                        super::Fields::ALL,
+                        raw_str,
+                        &active_rules,
+                    ) {
                         needs_rewrite = true;
                         break;
                     }
-                }
-                for class in FieldClass::ALL {
-                    let changed = match sanitizer.text(class, text, &mut probe) {
-                        Outcome::Kept => false,
-                        Outcome::Replaced(out) => out != text,
-                        Outcome::DropField | Outcome::DropRecord => true,
-                    };
-                    if changed {
-                        needs_rewrite = true;
-                        break;
-                    }
-                }
-                if needs_rewrite {
-                    break;
                 }
             }
         } else if sec.kind == SectionKind::Dimensions {
-            let subset: Vec<RawSection<'_>> = raw_sections
-                .iter()
-                .copied()
-                .filter(|s| matches!(s.kind, SectionKind::Strings | SectionKind::Dimensions))
-                .collect();
-            let decoded_dims = decode_tables(&subset)?;
-            let mut probe = Tally::default();
-            for dim in &decoded_dims.dimensions {
-                let Some(class) = dimension_field_class(&dim.name) else {
-                    continue;
-                };
-                let changed = match sanitizer.text(class, &dim.value, &mut probe) {
-                    Outcome::Kept => false,
-                    Outcome::Replaced(out) => out != dim.value,
-                    Outcome::DropField | Outcome::DropRecord => true,
-                };
-                if changed {
-                    needs_rewrite = true;
-                    break;
+            if seen_kinds.contains(&SectionKind::Strings) {
+                let reader =
+                    SectionReader::open_budgeted(sec.bytes, SectionKind::Dimensions, &budget)?;
+                if reader.version != crate::object::TABLE_VERSION {
+                    return Err(ObjectError::UnknownValue {
+                        what: "table section version",
+                        value: u64::from(reader.version),
+                    });
+                }
+            } else {
+                let subset: Vec<RawSection<'_>> = raw_sections
+                    .iter()
+                    .copied()
+                    .filter(|s| matches!(s.kind, SectionKind::Strings | SectionKind::Dimensions))
+                    .collect();
+                let decoded_dims = decode_tables(&subset)?;
+                let mut probe = Tally::default();
+                for dim in &decoded_dims.dimensions {
+                    let Some(class) = dimension_field_class(&dim.name) else {
+                        continue;
+                    };
+                    let changed = match sanitizer.text(class, &dim.value, &mut probe) {
+                        Outcome::Kept => false,
+                        Outcome::Replaced(out) => out != dim.value,
+                        Outcome::DropField | Outcome::DropRecord => true,
+                    };
+                    if changed {
+                        needs_rewrite = true;
+                        break;
+                    }
                 }
             }
         } else if sec.kind == SectionKind::SyscallBlobs {
             let reader =
                 SectionReader::open_budgeted(sec.bytes, SectionKind::SyscallBlobs, &budget)?;
-            let mut probe = Tally::default();
             'blob_pages: for page_idx in 0..reader.page_count() {
                 let page = reader.read_page(page_idx)?;
                 let before = budget.remaining();
@@ -1036,7 +1042,7 @@ pub fn re_sanitize_sections_verbatim(
                     let data_col = page.column(g, data_col_id)?;
                     let decoded_words;
                     let data: &[u8] = match data_col.coding {
-                        crate::object::Coding::Bytes => &data_col.data,
+                        crate::object::Coding::Bytes => data_col.data,
                         crate::object::Coding::Words if entry.argument != NOTE_BLOBS_ARGUMENT => {
                             let stride = usize::try_from(lengths.first().copied().unwrap_or(0))
                                 .map_err(|_| ObjectError::Limit("blob length overflow"))?;
@@ -1047,7 +1053,7 @@ pub fn re_sanitize_sections_verbatim(
                             }
                             budget.take(m.saturating_mul(stride))?;
                             decoded_words =
-                                crate::object::codec::decode_words(&data_col.data, m, stride)?;
+                                crate::object::codec::decode_words(data_col.data, m, stride)?;
                             &decoded_words
                         }
                         _ => {
@@ -1068,16 +1074,10 @@ pub fn re_sanitize_sections_verbatim(
                         if slice.is_empty() {
                             continue;
                         }
-                        for &class in classes {
-                            let changed = match sanitizer.bytes(class, slice, &mut probe) {
-                                Outcome::Kept => false,
-                                Outcome::Replaced(out) => out != slice,
-                                Outcome::DropField | Outcome::DropRecord => true,
-                            };
-                            if changed {
-                                needs_rewrite = true;
-                                break 'blob_pages;
-                            }
+                        let blob_fields = super::Fields::of(classes);
+                        if sanitizer.would_change_bytes(blob_fields, slice) {
+                            needs_rewrite = true;
+                            break 'blob_pages;
                         }
                     }
                     if off != data.len() {

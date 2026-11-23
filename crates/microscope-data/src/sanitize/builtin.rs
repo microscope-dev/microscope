@@ -3,7 +3,7 @@ use std::ops::Range;
 use std::str::FromStr;
 use std::sync::LazyLock;
 
-use regex::bytes::Regex;
+use regex::bytes::{Regex, RegexSet};
 
 use super::{Action, FieldClass, Fields, RuleError, span};
 
@@ -96,7 +96,102 @@ impl Builtin {
         }
     }
 
+    #[inline]
+    fn fast_prefilter(self, value: &[u8]) -> bool {
+        match self {
+            Self::SecretFlags => {
+                value.len() >= 8
+                    && value
+                        .iter()
+                        .any(|&b| b == b'=' || b == 0 || b.is_ascii_whitespace())
+            }
+            Self::UrlPasswords => {
+                value.len() >= 8
+                    && memchr::memchr(b'@', value).is_some()
+                    && memchr::memchr(b':', value).is_some()
+            }
+            Self::Tokens => value.len() >= 14,
+            Self::Cards => {
+                if value.len() < 13 {
+                    return false;
+                }
+                let mut digits = 0_usize;
+                for &b in value {
+                    if b.is_ascii_digit() {
+                        digits += 1;
+                        if digits >= 13 {
+                            return true;
+                        }
+                    }
+                }
+                false
+            }
+            Self::Emails => {
+                value.len() >= 6
+                    && memchr::memchr(b'@', value).is_some()
+                    && memchr::memchr(b'.', value).is_some()
+            }
+            Self::IpAddresses => value.len() >= 2 && memchr::memchr2(b'.', b':', value).is_some(),
+            Self::HomeDirectories => value.len() >= 7 && memchr::memchr(b'/', value).is_some(),
+            Self::SqlLiterals => value.iter().any(|&b| b == b'\'' || b.is_ascii_digit()),
+        }
+    }
+
+    pub(super) fn pool_may_match(self, pool: &[u8]) -> bool {
+        match self {
+            Self::SecretFlags => {
+                pool.len() >= 8 && pool.iter().any(|&b| b == b'=' || b.is_ascii_whitespace())
+            }
+            Self::UrlPasswords => {
+                pool.len() >= 8
+                    && memchr::memchr(b'@', pool).is_some()
+                    && memchr::memchr(b':', pool).is_some()
+            }
+            Self::Tokens => pool.len() >= 14 && token_set().is_match(pool),
+            Self::Cards => {
+                let mut run = 0_usize;
+                for &b in pool {
+                    if b == 0 {
+                        run = 0;
+                    } else if b.is_ascii_digit() {
+                        run += 1;
+                        if run >= 13 {
+                            return true;
+                        }
+                    }
+                }
+                false
+            }
+            Self::Emails => {
+                pool.len() >= 6
+                    && memchr::memchr(b'@', pool).is_some()
+                    && memchr::memchr(b'.', pool).is_some()
+            }
+            Self::IpAddresses => pool.len() >= 2 && memchr::memchr2(b'.', b':', pool).is_some(),
+            Self::HomeDirectories => pool.len() >= 7 && memchr::memchr(b'/', pool).is_some(),
+            Self::SqlLiterals => pool.iter().any(|&b| b == b'\'' || b.is_ascii_digit()),
+        }
+    }
+
     pub(super) fn found(self, value: &[u8], each: &mut impl FnMut(Range<usize>)) {
+        if !self.fast_prefilter(value) {
+            return;
+        }
+        if self == Self::Tokens {
+            let matches = token_set().matches(value);
+            if !matches.matched_any() {
+                return;
+            }
+            let pats = patterns(self);
+            for idx in &matches {
+                if let Some(pattern) = pats.get(idx) {
+                    for captures in pattern.captures_iter(value) {
+                        each(span(&captures));
+                    }
+                }
+            }
+            return;
+        }
         for pattern in patterns(self) {
             for captures in pattern.captures_iter(value) {
                 let found = span(&captures);
@@ -162,6 +257,23 @@ fn compile(patterns: &[&str]) -> Vec<Regex> {
         .collect()
 }
 
+const TOKEN_PATTERNS: [&str; 7] = [
+    r"(?-u)\b(?:AKIA|ASIA)[0-9A-Z]{16}\b",
+    r"(?i-u)aws_secret_access_key[\s\x00]*[=:][\s\x00]*(?<value>[A-Za-z0-9/+=]{40})",
+    r"(?-u)\b(?:gh[pousr]_[A-Za-z0-9]{36,255}|github_pat_[A-Za-z0-9_]{22,255})\b",
+    r"(?-u)\bxox[abposr]-[A-Za-z0-9-]{10,}",
+    r"(?-u)\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",
+    r"(?s-u)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\z)",
+    r"(?i-u)\b(?:bearer|basic)[\s\x00]+(?<value>[A-Za-z0-9._~+/=-]{8,})",
+];
+
+fn token_set() -> &'static RegexSet {
+    static SET: LazyLock<RegexSet> = LazyLock::new(|| {
+        RegexSet::new(TOKEN_PATTERNS).unwrap_or_else(|error| panic!("token regex set: {error}"))
+    });
+    &SET
+}
+
 fn patterns(builtin: Builtin) -> &'static [Regex] {
     static SECRET_FLAGS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         compile(&[
@@ -172,17 +284,7 @@ fn patterns(builtin: Builtin) -> &'static [Regex] {
     static URL_PASSWORDS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         compile(&[r"(?i-u)[a-z][a-z0-9+.-]*://[^/\s\x00:@]*:(?<value>[^/\s\x00@]+)@"])
     });
-    static TOKENS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
-        compile(&[
-            r"(?-u)\b(?:AKIA|ASIA)[0-9A-Z]{16}\b",
-            r"(?i-u)aws_secret_access_key[\s\x00]*[=:][\s\x00]*(?<value>[A-Za-z0-9/+=]{40})",
-            r"(?-u)\b(?:gh[pousr]_[A-Za-z0-9]{36,255}|github_pat_[A-Za-z0-9_]{22,255})\b",
-            r"(?-u)\bxox[abposr]-[A-Za-z0-9-]{10,}",
-            r"(?-u)\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",
-            r"(?s-u)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\z)",
-            r"(?i-u)\b(?:bearer|basic)[\s\x00]+(?<value>[A-Za-z0-9._~+/=-]{8,})",
-        ])
-    });
+    static TOKENS: LazyLock<Vec<Regex>> = LazyLock::new(|| compile(&TOKEN_PATTERNS));
     static CARDS: LazyLock<Vec<Regex>> =
         LazyLock::new(|| compile(&[r"(?-u)\b\d(?:[ -]?\d){12,18}\b"]));
     static EMAILS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
@@ -212,22 +314,25 @@ fn patterns(builtin: Builtin) -> &'static [Regex] {
 }
 
 fn luhn(found: &[u8]) -> bool {
-    let digits: Vec<u32> = (found.iter())
-        .filter(|byte| byte.is_ascii_digit())
-        .map(|&byte| u32::from(byte - b'0'))
-        .collect();
-    if !(13..=19).contains(&digits.len()) {
-        return false;
+    let mut count = 0_u32;
+    let mut sum = 0_u32;
+    for &byte in found.iter().rev() {
+        if !byte.is_ascii_digit() {
+            continue;
+        }
+        let digit = u32::from(byte - b'0');
+        sum += if count.is_multiple_of(2) {
+            digit
+        } else {
+            let doubled = digit * 2;
+            if doubled > 9 { doubled - 9 } else { doubled }
+        };
+        count += 1;
+        if count > 19 {
+            return false;
+        }
     }
-
-    let sum: u32 = (digits.iter().rev().enumerate())
-        .map(|(position, &digit)| match (position % 2, digit * 2) {
-            (0, _) => digit,
-            (_, doubled) if doubled > 9 => doubled - 9,
-            (_, doubled) => doubled,
-        })
-        .sum();
-    sum.is_multiple_of(10)
+    (13..=19).contains(&count) && sum.is_multiple_of(10)
 }
 
 fn ip_in_context(value: &[u8], range: &Range<usize>) -> bool {

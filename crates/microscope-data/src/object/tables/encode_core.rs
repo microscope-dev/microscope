@@ -11,20 +11,14 @@ use super::{
 use crate::capture::Capture;
 use crate::capture::records::{FrameKind, ThreadRange};
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "encodes per-machine event bundle referencing shared Tier A symbols"
-)]
-pub fn encode_event_bundle(
-    data: &ChunkData,
-    shared_strings: &[u8],
-    shared_process_ids: &[u32],
-    time_unit: TimeUnit,
-    zstd_level: i32,
-    key: u64,
-) -> Result<Vec<EncodedSection>, ObjectError> {
-    let shared_text_to_id = {
-        let mut map = foldhash::HashMap::default();
+#[derive(Debug)]
+pub struct SharedStringIndex<'a> {
+    text_to_id: foldhash::HashMap<&'a str, u32>,
+}
+
+impl<'a> SharedStringIndex<'a> {
+    pub fn build(shared_strings: &'a [u8]) -> Result<Self, ObjectError> {
+        let mut text_to_id = foldhash::HashMap::default();
         let mut id = 0_u32;
         let mut at = 0_usize;
         while at < shared_strings.len() {
@@ -33,14 +27,48 @@ pub fn encode_event_bundle(
             })?;
             let text = std::str::from_utf8(&shared_strings[at..at + rel])
                 .map_err(|_| ObjectError::Capture("shared string pool invalid UTF-8".into()))?;
-            map.entry(text).or_insert(id);
+            text_to_id.entry(text).or_insert(id);
             id = id
                 .checked_add(1)
                 .ok_or(ObjectError::Limit("string count exceeds u32"))?;
             at += rel + 1;
         }
-        map
-    };
+        Ok(Self { text_to_id })
+    }
+}
+
+pub fn encode_event_bundle(
+    data: &ChunkData,
+    shared_strings: &[u8],
+    shared_process_ids: &[u32],
+    time_unit: TimeUnit,
+    zstd_level: i32,
+    key: u64,
+) -> Result<Vec<EncodedSection>, ObjectError> {
+    let shared_index = SharedStringIndex::build(shared_strings)?;
+    encode_event_bundle_with_index(
+        data,
+        &shared_index,
+        shared_process_ids,
+        time_unit,
+        zstd_level,
+        key,
+    )
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "encodes per-machine event bundle referencing shared Tier A symbols"
+)]
+pub fn encode_event_bundle_with_index(
+    data: &ChunkData,
+    shared_index: &SharedStringIndex<'_>,
+    shared_process_ids: &[u32],
+    time_unit: TimeUnit,
+    zstd_level: i32,
+    key: u64,
+) -> Result<Vec<EncodedSection>, ObjectError> {
+    let shared_text_to_id = &shared_index.text_to_id;
 
     let mut local_to_shared_id = foldhash::HashMap::default();
     let mut at = 0_usize;

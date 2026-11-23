@@ -432,13 +432,21 @@ proptest! {
             cursor = end;
         }
 
+        let mut string_data = String::new();
+        let mut string_offsets = Vec::with_capacity(strings.len() + 1);
+        string_offsets.push(0_u32);
+        for s in &strings {
+            string_data.push_str(s);
+            string_offsets.push(u32::try_from(string_data.len()).unwrap());
+        }
         let index = SymbolIndex {
             build_id: BuildId::parse("0123456789abcdef").unwrap(),
             arch: "x86_64".to_owned(),
             has_dwarf: true,
             has_symtab: true,
             has_gopclntab: false,
-            strings,
+            string_data,
+            string_offsets,
             files,
             functions,
             inlines,

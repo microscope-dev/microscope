@@ -14,6 +14,7 @@ pub const fn zigzag_decode(value: u64) -> i64 {
     ((value >> 1).cast_signed()) ^ (-((value & 1).cast_signed()))
 }
 
+#[inline]
 pub fn write_varint(mut value: u64, out: &mut Vec<u8>) {
     loop {
         let byte = (value & 0x7f) as u8;
@@ -26,30 +27,65 @@ pub fn write_varint(mut value: u64, out: &mut Vec<u8>) {
     }
 }
 
-pub fn read_varint(bytes: &[u8], at: &mut usize) -> Result<u64, ObjectError> {
+#[cold]
+#[inline(never)]
+fn read_varint_slow(bytes: &[u8], at: &mut usize) -> Result<u64, ObjectError> {
+    let mut pos = *at;
     let mut value = 0_u64;
     let mut shift = 0_u32;
     for _ in 0..10 {
-        let byte = *bytes.get(*at).ok_or(ObjectError::Truncated)?;
-        *at += 1;
+        let byte = *bytes.get(pos).ok_or(ObjectError::Truncated)?;
+        pos += 1;
         if shift == 63 && byte > 1 {
             return Err(ObjectError::Layout("varint overflow".into()));
         }
         value |= u64::from(byte & 0x7f) << shift;
-        if byte & 0x80 == 0 {
+        if byte < 0x80 {
+            *at = pos;
             return Ok(value);
         }
         shift += 7;
     }
-
     Err(ObjectError::Layout("varint exceeds 10 bytes".into()))
+}
+
+#[inline]
+pub fn read_varint(bytes: &[u8], at: &mut usize) -> Result<u64, ObjectError> {
+    let pos = *at;
+    let Some(&b0) = bytes.get(pos) else {
+        return Err(ObjectError::Truncated);
+    };
+    if b0 < 0x80 {
+        *at = pos + 1;
+        return Ok(u64::from(b0));
+    }
+    let Some(&b1) = bytes.get(pos + 1) else {
+        return Err(ObjectError::Truncated);
+    };
+    if b1 < 0x80 {
+        *at = pos + 2;
+        return Ok(u64::from(b0 & 0x7f) | (u64::from(b1) << 7));
+    }
+    read_varint_slow(bytes, at)
 }
 
 #[must_use]
 pub fn encode_varints(values: &[u64]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(values.len());
+    let mut out = Vec::with_capacity(values.len().saturating_add(values.len() >> 2));
     for &value in values {
         write_varint(value, &mut out);
+    }
+    out
+}
+
+#[must_use]
+pub fn encode_varints_delta(values: &[u64]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(values.len().saturating_add(values.len() >> 2));
+    let mut prev = 0_u64;
+    for &value in values {
+        let delta = value.wrapping_sub(prev).cast_signed();
+        write_varint(zigzag_encode(delta), &mut out);
+        prev = value;
     }
     out
 }
@@ -347,12 +383,17 @@ pub fn encode_binned_2b(values: &[u64]) -> (Vec<u8>, Vec<u8>) {
             let mask = (1_u64 << rem) - 1;
             acc |= u128::from(v & mask) << bits;
             bits += rem;
-            while bits >= 8 {
-                mantissa.push((acc & 0xff) as u8);
-                acc >>= 8;
-                bits -= 8;
+            if bits >= 64 {
+                mantissa.extend_from_slice(&(acc as u64).to_le_bytes());
+                acc >>= 64;
+                bits -= 64;
             }
         }
+    }
+    while bits >= 8 {
+        mantissa.push((acc & 0xff) as u8);
+        acc >>= 8;
+        bits -= 8;
     }
     if bits > 0 {
         mantissa.push((acc & 0xff) as u8);
@@ -397,11 +438,25 @@ pub fn decode_binned_2b(
         let low = if rem == 0 {
             0_u64
         } else {
-            while bits < rem {
-                let byte = *mantissa.get(at).ok_or(ObjectError::Truncated)?;
-                at += 1;
-                acc |= u128::from(byte) << bits;
-                bits += 8;
+            if bits < rem {
+                if let Some(chunk) = mantissa.get(at..at + 8)
+                    && bits <= 64
+                {
+                    let word = u64::from_le_bytes([
+                        chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6],
+                        chunk[7],
+                    ]);
+                    acc |= u128::from(word) << bits;
+                    bits += 64;
+                    at += 8;
+                } else {
+                    while bits < rem {
+                        let byte = *mantissa.get(at).ok_or(ObjectError::Truncated)?;
+                        at += 1;
+                        acc |= u128::from(byte) << bits;
+                        bits += 8;
+                    }
+                }
             }
             let mask = (1_u64 << rem) - 1;
             let val = (acc as u64) & mask;
@@ -411,6 +466,24 @@ pub fn decode_binned_2b(
         };
         let high = (4_u64 | top2) << rem;
         out.push(high | low);
+    }
+
+    let extra_bytes = (bits / 8) as usize;
+    if extra_bytes > 0 {
+        let kept_bits = bits - (extra_bytes as u32) * 8;
+        if (acc >> kept_bits) != 0 {
+            return Err(ObjectError::Layout(
+                "trailing bytes or non-zero padding in binned-2b mantissa".into(),
+            ));
+        }
+        let rem_mask = if kept_bits == 0 {
+            0
+        } else {
+            (1_u128 << kept_bits) - 1
+        };
+        acc &= rem_mask;
+        bits = kept_bits;
+        at = at.saturating_sub(extra_bytes);
     }
 
     if at != mantissa.len() || (bits > 0 && acc != 0) {
@@ -425,13 +498,16 @@ pub fn decode_binned_2b(
 #[must_use]
 pub fn forest_to_dfs(parents: &[u32]) -> (Vec<u32>, Vec<u32>, Vec<usize>) {
     let n = parents.len();
-    let mut children: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut first_child = vec![NONE; n];
+    let mut next_sibling = vec![NONE; n];
     let mut roots = Vec::new();
     for (i, &p) in parents.iter().enumerate() {
         if p == NONE || (p as usize) >= n || (p as usize) == i {
             roots.push(i);
-        } else if let Some(slot) = children.get_mut(p as usize) {
-            slot.push(i);
+        } else {
+            let p_idx = p as usize;
+            next_sibling[i] = first_child[p_idx];
+            first_child[p_idx] = u32::try_from(i).unwrap_or(NONE);
         }
     }
 
@@ -439,28 +515,29 @@ pub fn forest_to_dfs(parents: &[u32]) -> (Vec<u32>, Vec<u32>, Vec<usize>) {
     let mut dfs_parents = Vec::with_capacity(n);
     let mut old_to_dfs = vec![NONE; n];
     let mut dfs_to_old = Vec::with_capacity(n);
+    let mut stack: Vec<(usize, u32)> = Vec::new();
 
     let mut visit_root = |start: usize| {
-        let mut stack = vec![(start, NONE)];
+        if visited.get(start).copied().unwrap_or(true) {
+            return;
+        }
+        stack.push((start, NONE));
         while let Some((old, new_parent)) = stack.pop() {
-            if visited.get(old).copied().unwrap_or(true) {
+            if visited[old] {
                 continue;
             }
-            if let Some(v) = visited.get_mut(old) {
-                *v = true;
-            }
+            visited[old] = true;
             let new_id = u32::try_from(dfs_parents.len()).unwrap_or(NONE);
-            if let Some(slot) = old_to_dfs.get_mut(old) {
-                *slot = new_id;
-            }
+            old_to_dfs[old] = new_id;
             dfs_parents.push(new_parent);
             dfs_to_old.push(old);
-            if let Some(kids) = children.get(old) {
-                for &child in kids.iter().rev() {
-                    if !visited.get(child).copied().unwrap_or(true) {
-                        stack.push((child, new_id));
-                    }
+            let mut child = first_child[old];
+            while child != NONE {
+                let c_idx = child as usize;
+                if !visited[c_idx] {
+                    stack.push((c_idx, new_id));
                 }
+                child = next_sibling[c_idx];
             }
         }
     };
@@ -535,37 +612,56 @@ pub fn decode_bp_tree_budgeted(
     }
 
     let mut parents = Vec::with_capacity(count);
-    let mut stack: Vec<u32> = Vec::new();
-    for bit_pos in 0..total_bits {
-        let byte = bytes.get(bit_pos >> 3).copied().unwrap_or(0);
-        let is_open = (byte >> (bit_pos & 7)) & 1 != 0;
-        if is_open {
-            if parents.len() >= count {
-                return Err(ObjectError::Layout("bp tree has too many open bits".into()));
+    let mut stack: Vec<u32> = Vec::with_capacity(64);
+    let full_bytes = total_bits >> 3;
+    for &byte in &bytes[..full_bytes] {
+        let mut b = byte;
+        for _ in 0..8 {
+            if (b & 1) != 0 {
+                if parents.len() >= count {
+                    return Err(ObjectError::Layout("bp tree has too many open bits".into()));
+                }
+                let parent = stack.last().copied().unwrap_or(NONE);
+                let id = u32::try_from(parents.len()).unwrap_or(NONE);
+                parents.push(parent);
+                stack.push(id);
+            } else if stack.pop().is_none() {
+                return Err(ObjectError::Layout(
+                    "bp tree has unmatched close bit".into(),
+                ));
             }
-            let parent = stack.last().copied().unwrap_or(NONE);
-            let id = u32::try_from(parents.len()).unwrap_or(NONE);
-            parents.push(parent);
-            stack.push(id);
-        } else if stack.pop().is_none() {
+            b >>= 1;
+        }
+    }
+    let rem = total_bits & 7;
+    if rem != 0 {
+        let last = bytes[full_bytes];
+        if (last >> rem) != 0 {
             return Err(ObjectError::Layout(
-                "bp tree has unmatched close bit".into(),
+                "non-zero trailing padding bits in bp tree".into(),
             ));
+        }
+        let mut b = last;
+        for _ in 0..rem {
+            if (b & 1) != 0 {
+                if parents.len() >= count {
+                    return Err(ObjectError::Layout("bp tree has too many open bits".into()));
+                }
+                let parent = stack.last().copied().unwrap_or(NONE);
+                let id = u32::try_from(parents.len()).unwrap_or(NONE);
+                parents.push(parent);
+                stack.push(id);
+            } else if stack.pop().is_none() {
+                return Err(ObjectError::Layout(
+                    "bp tree has unmatched close bit".into(),
+                ));
+            }
+            b >>= 1;
         }
     }
 
     if !stack.is_empty() || parents.len() != count {
         return Err(ObjectError::Layout("bp tree is unbalanced".into()));
-    }
-
-    let rem = total_bits & 7;
-    if rem != 0
-        && let Some(&last) = bytes.last()
-        && (last >> rem) != 0
-    {
-        return Err(ObjectError::Layout(
-            "non-zero trailing padding bits in bp tree".into(),
-        ));
     }
 
     Ok(parents)

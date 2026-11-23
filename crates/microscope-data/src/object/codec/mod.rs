@@ -1,5 +1,8 @@
+use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::ops::Range;
+
+use foldhash::HashMap;
 
 use zerocopy::little_endian::{I64, U16, U32};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
@@ -121,8 +124,21 @@ pub fn compress_stream(raw: &[u8], zstd_level: i32) -> Result<(Codec, Vec<u8>), 
         return Ok((Codec::Raw, raw.to_vec()));
     }
 
-    let compressed = zstd::bulk::compress(raw, zstd_level)
-        .map_err(|error| ObjectError::Compression(error.to_string()))?;
+    let compressed = ZSTD_CCTX.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        let needs_new = borrow.as_ref().is_none_or(|(lvl, _)| *lvl != zstd_level);
+        if needs_new {
+            let c = zstd::bulk::Compressor::new(zstd_level)
+                .map_err(|error| ObjectError::Compression(error.to_string()))?;
+            *borrow = Some((zstd_level, c));
+        }
+        let Some((_, compressor)) = borrow.as_mut() else {
+            return Err(ObjectError::Compression("missing zstd compressor".into()));
+        };
+        compressor
+            .compress(raw)
+            .map_err(|error| ObjectError::Compression(error.to_string()))
+    })?;
     if compressed.len() < raw.len() {
         Ok((Codec::Zstd, compressed))
     } else {
@@ -168,14 +184,15 @@ impl DecodeBudget {
 
 thread_local! {
     static ZSTD_DCTX: RefCell<Option<zstd::bulk::Decompressor<'static>>> = const { RefCell::new(None) };
+    static ZSTD_CCTX: RefCell<Option<(i32, zstd::bulk::Compressor<'static>)>> = const { RefCell::new(None) };
 }
 
-pub fn decompress_exact_budgeted(
+fn decompress_cow_budgeted<'a>(
     codec: Codec,
-    stored: &[u8],
+    stored: &'a [u8],
     expected_len: usize,
     budget: &DecodeBudget,
-) -> Result<Vec<u8>, ObjectError> {
+) -> Result<Cow<'a, [u8]>, ObjectError> {
     if expected_len > MAX_PAGE_RAW_BYTES {
         return Err(ObjectError::Limit(
             "decompressed frame exceeds maximum size",
@@ -190,7 +207,7 @@ pub fn decompress_exact_budgeted(
                     "raw frame length disagrees with uncompressed_len".into(),
                 ));
             }
-            Ok(stored.to_vec())
+            Ok(Cow::Borrowed(stored))
         }
         Codec::Zstd => {
             let out = ZSTD_DCTX.with(|cell| {
@@ -211,9 +228,18 @@ pub fn decompress_exact_budgeted(
                     "zstd frame length disagrees with uncompressed_len".into(),
                 ));
             }
-            Ok(out)
+            Ok(Cow::Owned(out))
         }
     }
+}
+
+pub fn decompress_exact_budgeted(
+    codec: Codec,
+    stored: &[u8],
+    expected_len: usize,
+    budget: &DecodeBudget,
+) -> Result<Vec<u8>, ObjectError> {
+    decompress_cow_budgeted(codec, stored, expected_len, budget).map(Cow::into_owned)
 }
 
 struct PendingColumn {
@@ -365,6 +391,39 @@ impl SectionWriter {
         Ok(())
     }
 
+    pub fn add_column_owned(
+        &mut self,
+        group: u16,
+        column: u8,
+        coding: Coding,
+        key: u8,
+        payload: Vec<u8>,
+    ) -> Result<(), ObjectError> {
+        let frame = self
+            .current_frames
+            .last_mut()
+            .ok_or_else(|| ObjectError::Layout("missing frame".into()))?;
+        if frame.columns.len() >= MAX_COLUMNS {
+            return Err(ObjectError::Limit("too many columns"));
+        }
+        if coding == Coding::Constant {
+            let bytes: [u8; 8] = payload.as_slice().try_into().map_err(|_| {
+                ObjectError::Layout("constant column requires an 8-byte payload".into())
+            })?;
+            return self.add_constant(group, column, u64::from_le_bytes(bytes));
+        }
+        frame.columns.push(PendingColumn {
+            group,
+            col_id: column,
+            coding,
+            key_col: key,
+            constant_val: 0,
+            payload,
+            bypass: Vec::new(),
+        });
+        Ok(())
+    }
+
     pub fn add_binned_2b(
         &mut self,
         group: u16,
@@ -404,11 +463,11 @@ impl SectionWriter {
             return self.add_constant(group, column, first);
         }
         if delta {
-            let encoded = encode_varints(&delta_encode_u64(values));
-            self.add_column(group, column, Coding::VarintDelta, NO_KEY_COLUMN, &encoded)
+            let encoded = encode_varints_delta(values);
+            self.add_column_owned(group, column, Coding::VarintDelta, NO_KEY_COLUMN, encoded)
         } else {
             let encoded = encode_varints(values);
-            self.add_column(group, column, Coding::VarintPlain, NO_KEY_COLUMN, &encoded)
+            self.add_column_owned(group, column, Coding::VarintPlain, NO_KEY_COLUMN, encoded)
         }
     }
 
@@ -419,7 +478,7 @@ impl SectionWriter {
         values: &[u64],
     ) -> Result<(), ObjectError> {
         let (coding, bytes) = pick_best_u64_coding(values);
-        self.add_column(group, column, coding, NO_KEY_COLUMN, &bytes)
+        self.add_column_owned(group, column, coding, NO_KEY_COLUMN, bytes)
     }
 
     pub fn finish_page(
@@ -650,16 +709,16 @@ fn encode_page_frames(
     Ok((out, total_uncompressed_u32))
 }
 
-#[derive(Debug, Clone)]
-pub struct DecodedColumn {
+#[derive(Debug, Clone, Copy)]
+pub struct DecodedColumn<'a> {
     pub coding: Coding,
     pub key_col: u8,
     pub constant_val: u64,
-    pub data: Vec<u8>,
-    pub bypass: Vec<u8>,
+    pub data: &'a [u8],
+    pub bypass: &'a [u8],
 }
 
-impl DecodedColumn {
+impl DecodedColumn<'_> {
     pub fn decode_u64(
         &self,
         count: usize,
@@ -674,16 +733,16 @@ impl DecodedColumn {
         match self.coding {
             Coding::Constant => Ok(vec![self.constant_val; count]),
             Coding::VarintPlain | Coding::VarintDeltaByKey | Coding::VarintRelative => {
-                decode_varints(&self.data, count)
+                decode_varints(self.data, count)
             }
             Coding::VarintDelta => {
-                let mut ints = decode_varints(&self.data, count)?;
+                let mut ints = decode_varints(self.data, count)?;
                 delta_decode_u64_in_place(&mut ints);
                 Ok(ints)
             }
-            Coding::DictVarint => decode_dict_u64_budgeted(&self.data, count, budget),
-            Coding::Binned2b => decode_binned_2b(&self.data, &self.bypass, count),
-            Coding::NonZeroBitmap => decode_nonzero_u64(&self.data, count),
+            Coding::DictVarint => decode_dict_u64_budgeted(self.data, count, budget),
+            Coding::Binned2b => decode_binned_2b(self.data, self.bypass, count),
+            Coding::NonZeroBitmap => decode_nonzero_u64(self.data, count),
             _ => Err(ObjectError::Layout(format!(
                 "unexpected coding {:?} for u64 column",
                 self.coding
@@ -707,10 +766,10 @@ impl DecodedColumn {
             Coding::VarintPlain
             | Coding::VarintDelta
             | Coding::VarintDeltaByKey
-            | Coding::VarintRelative => decode_varints(&self.data, count),
-            Coding::DictVarint => decode_dict_u64_budgeted(&self.data, count, budget),
-            Coding::Binned2b => decode_binned_2b(&self.data, &self.bypass, count),
-            Coding::NonZeroBitmap => decode_nonzero_u64(&self.data, count),
+            | Coding::VarintRelative => decode_varints(self.data, count),
+            Coding::DictVarint => decode_dict_u64_budgeted(self.data, count, budget),
+            Coding::Binned2b => decode_binned_2b(self.data, self.bypass, count),
+            Coding::NonZeroBitmap => decode_nonzero_u64(self.data, count),
             _ => Err(ObjectError::Layout(format!(
                 "unexpected coding {:?} for raw u64 column",
                 self.coding
@@ -742,7 +801,7 @@ impl DecodedColumn {
                 let mut out = Vec::with_capacity(count);
                 let mut at = 0;
                 for _ in 0..count {
-                    let v = read_varint(&self.data, &mut at)?;
+                    let v = read_varint(self.data, &mut at)?;
                     out.push(
                         u32::try_from(v)
                             .map_err(|_| ObjectError::Layout("column value exceeds u32".into()))?,
@@ -763,7 +822,7 @@ impl DecodedColumn {
                 let mut at = 0;
                 let mut prev = 0_u64;
                 for _ in 0..count {
-                    let raw = read_varint(&self.data, &mut at)?;
+                    let raw = read_varint(self.data, &mut at)?;
                     let v = prev.wrapping_add(zigzag_decode(raw).cast_unsigned());
                     prev = v;
                     out.push(
@@ -814,7 +873,7 @@ impl DecodedColumn {
                 let mut out = Vec::with_capacity(count);
                 let mut at = 0;
                 for _ in 0..count {
-                    let v = read_varint(&self.data, &mut at)?;
+                    let v = read_varint(self.data, &mut at)?;
                     out.push(
                         u8::try_from(v)
                             .map_err(|_| ObjectError::Layout("column value exceeds u8".into()))?,
@@ -835,7 +894,7 @@ impl DecodedColumn {
                 let mut at = 0;
                 let mut prev = 0_u64;
                 for _ in 0..count {
-                    let raw = read_varint(&self.data, &mut at)?;
+                    let raw = read_varint(self.data, &mut at)?;
                     let v = prev.wrapping_add(zigzag_decode(raw).cast_unsigned());
                     prev = v;
                     out.push(
@@ -863,24 +922,128 @@ impl DecodedColumn {
     }
 }
 
-#[derive(Debug)]
-pub struct PageReader<'b> {
-    pub rows: u32,
-    pub groups: Vec<GroupEntry>,
-    columns: BTreeMap<(u16, u8), DecodedColumn>,
-    budget: Option<&'b DecodeBudget>,
+#[derive(Debug, Clone)]
+struct ColumnSlot {
+    frame_idx: usize,
+    coding: Coding,
+    key_col: u8,
+    constant_val: u64,
+    data_range: Range<usize>,
+    bypass_range: Range<usize>,
 }
 
-impl<'b> PageReader<'b> {
-    pub fn column(&self, group: u16, col_id: u8) -> Result<&DecodedColumn, ObjectError> {
-        self.columns.get(&(group, col_id)).ok_or_else(|| {
-            ObjectError::Layout(format!("missing column ({group}, {col_id}) in page"))
-        })
+#[derive(Debug)]
+enum ColumnMap {
+    Small(Vec<(u16, u8, ColumnSlot)>),
+    Large(HashMap<(u16, u8), ColumnSlot>),
+}
+
+impl ColumnMap {
+    const SMALL_LIMIT: usize = 32;
+
+    const fn new() -> Self {
+        Self::Small(Vec::new())
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Small(v) => v.len(),
+            Self::Large(m) => m.len(),
+        }
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        match self {
+            Self::Small(v) => {
+                if v.len().saturating_add(additional) > Self::SMALL_LIMIT {
+                    let mut map = HashMap::with_capacity_and_hasher(
+                        v.len().saturating_add(additional),
+                        foldhash::fast::RandomState::default(),
+                    );
+                    for (g, c, s) in v.drain(..) {
+                        map.insert((g, c), s);
+                    }
+                    *self = Self::Large(map);
+                } else {
+                    v.reserve(additional);
+                }
+            }
+            Self::Large(m) => m.reserve(additional),
+        }
+    }
+
+    fn get(&self, group: u16, col_id: u8) -> Option<&ColumnSlot> {
+        match self {
+            Self::Small(v) => v
+                .iter()
+                .find(|(g, c, _)| *g == group && *c == col_id)
+                .map(|(_, _, s)| s),
+            Self::Large(m) => m.get(&(group, col_id)),
+        }
+    }
+
+    fn insert(&mut self, group: u16, col_id: u8, slot: ColumnSlot) -> bool {
+        match self {
+            Self::Small(v) => {
+                if v.iter().any(|(g, c, _)| *g == group && *c == col_id) {
+                    return true;
+                }
+                if v.len() >= Self::SMALL_LIMIT {
+                    let mut map = HashMap::with_capacity_and_hasher(
+                        v.len() + 1,
+                        foldhash::fast::RandomState::default(),
+                    );
+                    for (g, c, s) in v.drain(..) {
+                        map.insert((g, c), s);
+                    }
+                    let dup = map.insert((group, col_id), slot).is_some();
+                    *self = Self::Large(map);
+                    dup
+                } else {
+                    v.push((group, col_id, slot));
+                    false
+                }
+            }
+            Self::Large(m) => m.insert((group, col_id), slot).is_some(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct PageReader<'a> {
+    pub rows: u32,
+    pub groups: Vec<GroupEntry>,
+    raw_frames: Vec<Cow<'a, [u8]>>,
+    bypass_frames: Vec<&'a [u8]>,
+    columns: ColumnMap,
+    budget: Option<&'a DecodeBudget>,
+}
+
+impl<'a> PageReader<'a> {
+    fn materialize(&self, slot: &ColumnSlot) -> DecodedColumn<'_> {
+        DecodedColumn {
+            coding: slot.coding,
+            key_col: slot.key_col,
+            constant_val: slot.constant_val,
+            data: &self.raw_frames[slot.frame_idx][slot.data_range.clone()],
+            bypass: &self.bypass_frames[slot.frame_idx][slot.bypass_range.clone()],
+        }
+    }
+
+    pub fn column(&self, group: u16, col_id: u8) -> Result<DecodedColumn<'_>, ObjectError> {
+        self.columns
+            .get(group, col_id)
+            .map(|slot| self.materialize(slot))
+            .ok_or_else(|| {
+                ObjectError::Layout(format!("missing column ({group}, {col_id}) in page"))
+            })
     }
 
     #[must_use]
-    pub fn optional_column(&self, group: u16, col_id: u8) -> Option<&DecodedColumn> {
-        self.columns.get(&(group, col_id))
+    pub fn optional_column(&self, group: u16, col_id: u8) -> Option<DecodedColumn<'_>> {
+        self.columns
+            .get(group, col_id)
+            .map(|slot| self.materialize(slot))
     }
 
     pub fn charge(&self, bytes: usize) -> Result<(), ObjectError> {
@@ -891,7 +1054,7 @@ impl<'b> PageReader<'b> {
     }
 
     #[must_use]
-    pub const fn budget(&self) -> Option<&'b DecodeBudget> {
+    pub const fn budget(&self) -> Option<&'a DecodeBudget> {
         self.budget
     }
 }
@@ -1095,11 +1258,11 @@ impl<'a, 'b> SectionReader<'a, 'b> {
             .collect()
     }
 
-    pub fn read_page(&self, page_index: usize) -> Result<PageReader<'b>, ObjectError> {
+    pub fn read_page(&self, page_index: usize) -> Result<PageReader<'_>, ObjectError> {
         self.read_page_frames(page_index, usize::MAX)
     }
 
-    pub fn read_single_page(&self) -> Result<PageReader<'b>, ObjectError> {
+    pub fn read_single_page(&self) -> Result<PageReader<'_>, ObjectError> {
         if self.pages.len() != 1 {
             return Err(ObjectError::Layout(format!(
                 "section {:?} expected 1 page, found {}",
@@ -1121,7 +1284,7 @@ impl<'a, 'b> SectionReader<'a, 'b> {
         &self,
         page_index: usize,
         max_frames: usize,
-    ) -> Result<PageReader<'b>, ObjectError> {
+    ) -> Result<PageReader<'_>, ObjectError> {
         let entry = self
             .pages
             .get(page_index)
@@ -1142,8 +1305,10 @@ impl<'a, 'b> SectionReader<'a, 'b> {
         }
 
         let mut groups: Vec<GroupEntry> = Vec::new();
-        let mut columns: BTreeMap<(u16, u8), DecodedColumn> = BTreeMap::new();
         let frames_to_decode = frame_count.min(max_frames);
+        let mut raw_frames: Vec<Cow<'_, [u8]>> = Vec::with_capacity(frames_to_decode);
+        let mut bypass_frames: Vec<&[u8]> = Vec::with_capacity(frames_to_decode);
+        let mut columns = ColumnMap::new();
         let mut total_uncomp = 0_usize;
 
         for frame_idx in 0..frame_count {
@@ -1184,8 +1349,10 @@ impl<'a, 'b> SectionReader<'a, 'b> {
                 return Err(ObjectError::Limit("bypass stream exceeds maximum size"));
             }
             budget.take(bypass_len)?;
-            let raw = decompress_exact_budgeted(codec, stored_bytes, uncomp_len, budget)?;
-            decode_frame_into(&raw, bypass_bytes, &mut groups, &mut columns)?;
+            let raw = decompress_cow_budgeted(codec, stored_bytes, uncomp_len, budget)?;
+            decode_frame_into(frame_idx, &raw, bypass_bytes, &mut groups, &mut columns)?;
+            raw_frames.push(raw);
+            bypass_frames.push(bypass_bytes);
         }
 
         if at != slice.len() {
@@ -1202,6 +1369,8 @@ impl<'a, 'b> SectionReader<'a, 'b> {
         Ok(PageReader {
             rows: entry.rows.get(),
             groups,
+            raw_frames,
+            bypass_frames,
             columns,
             budget: self.budget,
         })
@@ -1225,10 +1394,11 @@ impl<'a, 'b> SectionReader<'a, 'b> {
     reason = "parses page frame header, group table, and column descriptors"
 )]
 fn decode_frame_into(
+    frame_idx: usize,
     raw: &[u8],
     bypass: &[u8],
     groups: &mut Vec<GroupEntry>,
-    columns: &mut BTreeMap<(u16, u8), DecodedColumn>,
+    columns: &mut ColumnMap,
 ) -> Result<(), ObjectError> {
     let mut at = 0_usize;
     let group_count = usize::try_from(read_varint(raw, &mut at)?)
@@ -1254,6 +1424,7 @@ fn decode_frame_into(
     if columns.len().saturating_add(col_count) > MAX_COLUMNS {
         return Err(ObjectError::Limit("too many columns"));
     }
+    columns.reserve(col_count);
 
     let mut specs = Vec::with_capacity(col_count);
     for _ in 0..col_count {
@@ -1313,31 +1484,33 @@ fn decode_frame_into(
         let d_end = at
             .checked_add(data_len)
             .ok_or(ObjectError::Limit("column payload end overflow"))?;
-        let data = raw.get(at..d_end).ok_or(ObjectError::Truncated)?.to_vec();
+        if d_end > raw.len() {
+            return Err(ObjectError::Truncated);
+        }
+        let data_range = at..d_end;
         at = d_end;
 
         let b_end = b_at
             .checked_add(bypass_len)
             .ok_or(ObjectError::Limit("column bypass end overflow"))?;
-        let col_bypass = bypass
-            .get(b_at..b_end)
-            .ok_or(ObjectError::Truncated)?
-            .to_vec();
+        if b_end > bypass.len() {
+            return Err(ObjectError::Truncated);
+        }
+        let bypass_range = b_at..b_end;
         b_at = b_end;
 
-        if columns
-            .insert(
-                (group, col_id),
-                DecodedColumn {
-                    coding,
-                    key_col,
-                    constant_val,
-                    data,
-                    bypass: col_bypass,
-                },
-            )
-            .is_some()
-        {
+        if columns.insert(
+            group,
+            col_id,
+            ColumnSlot {
+                frame_idx,
+                coding,
+                key_col,
+                constant_val,
+                data_range,
+                bypass_range,
+            },
+        ) {
             return Err(ObjectError::Layout(format!(
                 "duplicate column ({group}, {col_id})"
             )));

@@ -404,7 +404,7 @@ fn decode_selected(
                 ));
             }
             budget.take(col.data.len())?;
-            capture.strings.extend_from_slice(&col.data);
+            capture.strings.extend_from_slice(col.data);
         }
     }
 
@@ -578,7 +578,7 @@ fn decode_selected(
                 "stacks topology column must use BpTree coding".into(),
             ));
         }
-        let parents = decode_bp_tree_budgeted(&col0.data, n, Some(budget))?;
+        let parents = decode_bp_tree_budgeted(col0.data, n, Some(budget))?;
         let frames = read_u32_col(&p, WHOLE_SECTION_GROUP, 1, n)?;
         capture.stacks = parents
             .into_iter()

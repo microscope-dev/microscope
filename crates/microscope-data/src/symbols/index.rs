@@ -1,7 +1,12 @@
-use std::collections::BTreeMap;
-use std::io::Read as _;
+use std::cell::RefCell;
 
+use foldhash::HashMap;
 use twox_hash::XxHash3_64;
+
+thread_local! {
+    static SYM_ZSTD_DCTX: RefCell<Option<zstd::bulk::Decompressor<'static>>> = const { RefCell::new(None) };
+    static SYM_ZSTD_CCTX: RefCell<Option<zstd::bulk::Compressor<'static>>> = const { RefCell::new(None) };
+}
 
 use super::{BuildId, ParseBudget, SymbolError};
 
@@ -65,7 +70,8 @@ pub struct SymbolIndex {
     pub(super) has_dwarf: bool,
     pub(super) has_symtab: bool,
     pub(super) has_gopclntab: bool,
-    pub(super) strings: Vec<String>,
+    pub(super) string_data: String,
+    pub(super) string_offsets: Vec<u32>,
     pub(super) files: Vec<u32>,
     pub(super) functions: Vec<SymbolFunction>,
     pub(super) inlines: Vec<InlineFrame>,
@@ -99,7 +105,7 @@ impl SymbolIndex {
     pub fn find_function_address(&self, name: &str) -> Option<u64> {
         for span in &self.symtab_spans {
             if let Some(func) = self.functions.get(span.function as usize)
-                && self.strings.get(func.name as usize).map(String::as_str) == Some(name)
+                && self.string(func.name) == Some(name)
             {
                 return Some(span.start);
             }
@@ -110,7 +116,7 @@ impl SymbolIndex {
             if let Some(inlines) = self.inlines.get(start..end) {
                 for inl in inlines {
                     if let Some(func) = self.functions.get(inl.function as usize)
-                        && self.strings.get(func.name as usize).map(String::as_str) == Some(name)
+                        && self.string(func.name) == Some(name)
                     {
                         return Some(span.start);
                     }
@@ -150,7 +156,15 @@ impl SymbolIndex {
         if id == NO_INDEX {
             return None;
         }
-        self.strings.get(id as usize).map(String::as_str)
+        let idx = id as usize;
+        let &start = self.string_offsets.get(idx)?;
+        let &end = self.string_offsets.get(idx + 1)?;
+        self.string_data.get(start as usize..end as usize)
+    }
+
+    #[must_use]
+    pub const fn string_count(&self) -> usize {
+        self.string_offsets.len().saturating_sub(1)
     }
 
     #[must_use]
@@ -170,9 +184,10 @@ impl SymbolIndex {
     }
 
     #[must_use]
-    pub fn approx_bytes(&self) -> usize {
-        let str_bytes: usize = self.strings.iter().map(|s| s.len() + 24).sum();
-        str_bytes
+    pub const fn approx_bytes(&self) -> usize {
+        self.string_data
+            .len()
+            .saturating_add(self.string_offsets.len() * std::mem::size_of::<u32>())
             .saturating_add(self.files.len() * std::mem::size_of::<u32>())
             .saturating_add(self.functions.len() * std::mem::size_of::<SymbolFunction>())
             .saturating_add(self.inlines.len() * std::mem::size_of::<InlineFrame>())
@@ -289,8 +304,10 @@ impl SymbolIndex {
             | (u8::from(self.has_gopclntab) << 2);
         raw.push(flags);
 
-        write_varuint(&mut raw, self.strings.len() as u64);
-        for s in &self.strings {
+        let str_count = self.string_count();
+        write_varuint(&mut raw, str_count as u64);
+        for pair in self.string_offsets.windows(2) {
+            let s = &self.string_data[pair[0] as usize..pair[1] as usize];
             write_str(&mut raw, s);
         }
 
@@ -343,7 +360,18 @@ impl SymbolIndex {
             prev_sym_start = span.start;
         }
 
-        let compressed = zstd::bulk::compress(&raw, 3).unwrap_or_else(|_| raw.clone());
+        let compressed = SYM_ZSTD_CCTX.with(|cell| {
+            let mut borrow = cell.borrow_mut();
+            let compressor = if let Some(c) = borrow.as_mut() {
+                c
+            } else {
+                let Ok(c) = zstd::bulk::Compressor::new(3) else {
+                    return raw.clone();
+                };
+                borrow.insert(c)
+            };
+            compressor.compress(&raw).unwrap_or_else(|_| raw.clone())
+        });
         let is_compressed = compressed.len() < raw.len();
         let payload = if is_compressed { &compressed } else { &raw };
 
@@ -439,15 +467,19 @@ impl SymbolIndex {
 
         let raw_owned: Vec<u8>;
         let raw: &[u8] = if codec_flags == 1 {
-            let decoder = zstd::stream::read::Decoder::new(payload)
-                .map_err(|e| SymbolError::MalformedIndex(format!("zstd header: {e}")))?;
-            let mut buf = Vec::new();
-            buf.try_reserve(raw_len_usize.min(1024 * 1024))
-                .map_err(|_| SymbolError::BudgetExceeded("symbol index allocation".to_owned()))?;
-            decoder
-                .take(raw_len.saturating_add(1))
-                .read_to_end(&mut buf)
-                .map_err(|e| SymbolError::MalformedIndex(format!("zstd decode: {e}")))?;
+            let buf = SYM_ZSTD_DCTX.with(|cell| -> Result<Vec<u8>, SymbolError> {
+                let mut borrow = cell.borrow_mut();
+                let decompressor = if let Some(d) = borrow.as_mut() {
+                    d
+                } else {
+                    let d = zstd::bulk::Decompressor::new()
+                        .map_err(|e| SymbolError::MalformedIndex(format!("zstd header: {e}")))?;
+                    borrow.insert(d)
+                };
+                decompressor
+                    .decompress(payload, raw_len_usize)
+                    .map_err(|e| SymbolError::MalformedIndex(format!("zstd decode: {e}")))
+            })?;
             if buf.len() != raw_len_usize {
                 return Err(SymbolError::MalformedIndex(
                     "decompressed length mismatch".to_owned(),
@@ -495,26 +527,31 @@ fn decode_body(raw: &[u8], budget: &ParseBudget) -> Result<SymbolIndex, SymbolEr
     let has_gopclntab = (flags & 4) != 0;
 
     let string_count = cur.read_len(budget.max_functions.saturating_mul(4).max(65_536))?;
-    let mut strings = Vec::with_capacity(string_count.min(4096));
+    let mut string_data = String::with_capacity(raw.len().min(budget.max_string_bytes) / 2);
+    let mut string_offsets = Vec::with_capacity(string_count.min(65_536).saturating_add(1));
+    string_offsets.push(0);
     let mut total_str_bytes = 0_usize;
     for _ in 0..string_count {
-        let overhead = size_of::<String>();
+        let overhead = size_of::<u32>();
         let remaining = budget
             .max_string_bytes
             .checked_sub(total_str_bytes.saturating_add(overhead))
             .ok_or_else(|| SymbolError::BudgetExceeded("string table exceeds budget".to_owned()))?;
-        let s = cur.read_str(remaining)?;
+        let s = cur.read_str_slice(remaining)?;
         total_str_bytes = total_str_bytes
             .saturating_add(overhead)
             .saturating_add(s.len());
-        strings.push(s);
+        string_data.push_str(s);
+        let end = u32::try_from(string_data.len())
+            .map_err(|_| SymbolError::BudgetExceeded("string table exceeds u32".to_owned()))?;
+        string_offsets.push(end);
     }
 
     let file_count = cur.read_len(budget.max_files)?;
     let mut files = Vec::with_capacity(file_count.min(4096));
     for _ in 0..file_count {
         let sid = cur.read_u32()?;
-        if sid != NO_INDEX && (sid as usize) >= strings.len() {
+        if sid != NO_INDEX && (sid as usize) >= string_count {
             return Err(SymbolError::MalformedIndex(
                 "file string id out of bounds".to_owned(),
             ));
@@ -528,7 +565,7 @@ fn decode_body(raw: &[u8], budget: &ParseBudget) -> Result<SymbolIndex, SymbolEr
         let name = cur.read_u32()?;
         let file = cur.read_u32()?;
         let decl_line = cur.read_u32()?;
-        if (name as usize) >= strings.len() {
+        if (name as usize) >= string_count {
             return Err(SymbolError::MalformedIndex(
                 "function name out of bounds".to_owned(),
             ));
@@ -689,7 +726,8 @@ fn decode_body(raw: &[u8], budget: &ParseBudget) -> Result<SymbolIndex, SymbolEr
         has_dwarf,
         has_symtab,
         has_gopclntab,
-        strings,
+        string_data,
+        string_offsets,
         files,
         functions,
         inlines,
@@ -700,26 +738,28 @@ fn decode_body(raw: &[u8], budget: &ParseBudget) -> Result<SymbolIndex, SymbolEr
 }
 
 pub(super) struct IndexBuilder {
-    strings: Vec<String>,
-    string_map: BTreeMap<String, u32>,
+    string_data: String,
+    string_offsets: Vec<u32>,
+    string_map: HashMap<String, u32>,
     string_bytes: usize,
     files: Vec<u32>,
-    file_map: BTreeMap<u32, u32>,
+    file_map: HashMap<u32, u32>,
     functions: Vec<SymbolFunction>,
-    function_map: BTreeMap<(u32, u32, u32), u32>,
+    function_map: HashMap<(u32, u32, u32), u32>,
     budget: ParseBudget,
 }
 
 impl IndexBuilder {
-    pub(super) const fn new(budget: ParseBudget) -> Self {
+    pub(super) fn new(budget: ParseBudget) -> Self {
         Self {
-            strings: Vec::new(),
-            string_map: BTreeMap::new(),
+            string_data: String::new(),
+            string_offsets: vec![0],
+            string_map: HashMap::default(),
             string_bytes: 0,
             files: Vec::new(),
-            file_map: BTreeMap::new(),
+            file_map: HashMap::default(),
             functions: Vec::new(),
-            function_map: BTreeMap::new(),
+            function_map: HashMap::default(),
             budget,
         }
     }
@@ -734,11 +774,14 @@ impl IndexBuilder {
                 "symbol string table exceeded budget".to_owned(),
             ));
         }
-        let id = u32::try_from(self.strings.len())
+        let id = u32::try_from(self.string_offsets.len().saturating_sub(1))
             .map_err(|_| SymbolError::BudgetExceeded("too many symbol strings".to_owned()))?;
-        let owned = text.to_owned();
-        self.strings.push(owned.clone());
-        self.string_map.insert(owned, id);
+        self.string_data.push_str(text);
+        let end = u32::try_from(self.string_data.len()).map_err(|_| {
+            SymbolError::BudgetExceeded("symbol string table exceeds u32".to_owned())
+        })?;
+        self.string_offsets.push(end);
+        self.string_map.insert(text.to_owned(), id);
         self.string_bytes = next_bytes;
         Ok(id)
     }
@@ -809,7 +852,8 @@ impl IndexBuilder {
             has_dwarf,
             has_symtab,
             has_gopclntab,
-            strings: self.strings,
+            string_data: self.string_data,
+            string_offsets: self.string_offsets,
             files: self.files,
             functions: self.functions,
             inlines,
@@ -820,6 +864,7 @@ impl IndexBuilder {
     }
 }
 
+#[inline]
 fn write_varuint(out: &mut Vec<u8>, mut value: u64) {
     loop {
         let byte = (value & 0x7f) as u8;
@@ -832,6 +877,7 @@ fn write_varuint(out: &mut Vec<u8>, mut value: u64) {
     }
 }
 
+#[inline]
 fn write_str(out: &mut Vec<u8>, text: &str) {
     write_varuint(out, text.len() as u64);
     out.extend_from_slice(text.as_bytes());
@@ -851,6 +897,7 @@ impl<'a> Cursor<'a> {
         self.pos >= self.data.len()
     }
 
+    #[inline]
     fn read_u8(&mut self) -> Result<u8, SymbolError> {
         let byte = *self
             .data
@@ -860,7 +907,9 @@ impl<'a> Cursor<'a> {
         Ok(byte)
     }
 
-    fn read_varuint(&mut self) -> Result<u64, SymbolError> {
+    #[cold]
+    #[inline(never)]
+    fn read_varuint_slow(&mut self) -> Result<u64, SymbolError> {
         let mut result = 0_u64;
         let mut shift = 0_u32;
         for _ in 0..10 {
@@ -870,7 +919,7 @@ impl<'a> Cursor<'a> {
                 return Err(SymbolError::MalformedIndex("varint overflow".to_owned()));
             }
             result |= low << shift;
-            if (byte & 0x80) == 0 {
+            if byte < 0x80 {
                 return Ok(result);
             }
             shift += 7;
@@ -878,11 +927,33 @@ impl<'a> Cursor<'a> {
         Err(SymbolError::MalformedIndex("varint too long".to_owned()))
     }
 
+    #[inline]
+    fn read_varuint(&mut self) -> Result<u64, SymbolError> {
+        let pos = self.pos;
+        let Some(&b0) = self.data.get(pos) else {
+            return Err(SymbolError::MalformedIndex("unexpected EOF".to_owned()));
+        };
+        if b0 < 0x80 {
+            self.pos = pos + 1;
+            return Ok(u64::from(b0));
+        }
+        let Some(&b1) = self.data.get(pos + 1) else {
+            return Err(SymbolError::MalformedIndex("unexpected EOF".to_owned()));
+        };
+        if b1 < 0x80 {
+            self.pos = pos + 2;
+            return Ok(u64::from(b0 & 0x7f) | (u64::from(b1) << 7));
+        }
+        self.read_varuint_slow()
+    }
+
+    #[inline]
     fn read_u32(&mut self) -> Result<u32, SymbolError> {
         let val = self.read_varuint()?;
         u32::try_from(val).map_err(|_| SymbolError::MalformedIndex("u32 overflow".to_owned()))
     }
 
+    #[inline]
     fn read_len(&mut self, max: usize) -> Result<usize, SymbolError> {
         let val = self.read_varuint()?;
         let len = usize::try_from(val)
@@ -895,7 +966,8 @@ impl<'a> Cursor<'a> {
         Ok(len)
     }
 
-    fn read_str(&mut self, max_len: usize) -> Result<String, SymbolError> {
+    #[inline]
+    fn read_str_slice(&mut self, max_len: usize) -> Result<&'a str, SymbolError> {
         let len = self.read_len(max_len)?;
         let end = self
             .pos
@@ -906,8 +978,11 @@ impl<'a> Cursor<'a> {
             .get(self.pos..end)
             .ok_or_else(|| SymbolError::MalformedIndex("truncated string".to_owned()))?;
         self.pos = end;
-        let text = std::str::from_utf8(slice)
-            .map_err(|_| SymbolError::MalformedIndex("non-UTF-8 string".to_owned()))?;
-        Ok(text.to_owned())
+        std::str::from_utf8(slice)
+            .map_err(|_| SymbolError::MalformedIndex("non-UTF-8 string".to_owned()))
+    }
+
+    fn read_str(&mut self, max_len: usize) -> Result<String, SymbolError> {
+        self.read_str_slice(max_len).map(str::to_owned)
     }
 }
