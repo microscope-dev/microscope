@@ -25,10 +25,19 @@ export function ServicesView(props: {
   const [assignServiceName, setAssignServiceName] = createSignal("");
 
   let seq = 0;
+  let lastOrg: number | null | undefined;
   createEffect(
     () => [props.org, rev()] as const,
     ([org]) => {
       const id = ++seq;
+      if (lastOrg !== undefined && lastOrg !== org) {
+        setData(null);
+        setAssigning(null);
+        setProjectId("");
+        setAssignProjectId("");
+        setAssignServiceName("");
+      }
+      lastOrg = org;
       setLoading(true);
       setErr(null);
       void (async () => {

@@ -5,18 +5,18 @@ mod encode_events;
 mod encode_syscalls;
 
 pub use decode::{
-    FlameBundle, SharedSymbols, decode_event_bundle, decode_flame_bundle, decode_flame_tables,
-    decode_tables, decode_tables_budgeted,
+    FlameBundle, SharedSymbols, decode_event_bundle, decode_event_bundle_budgeted,
+    decode_flame_bundle, decode_flame_tables, decode_flame_tables_budgeted, decode_tables,
+    decode_tables_budgeted,
 };
 pub use encode_core::{encode_event_bundle, encode_tables};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use foldhash::HashMap;
 
 use crate::capture::records::{NONE, UNSEEN};
 use crate::capture::{Capture, CaptureBuilder};
-use crate::image::{StrId, Strings, StringsBuilder};
 use crate::syscalls::specs;
 use crate::syscalls::{Abi, SyscallId};
 
@@ -25,7 +25,7 @@ use super::codec::{
 };
 use super::{MAX_TOTAL_ROWS, ObjectError, TimeUnit};
 
-const TABLE_VERSION: u8 = 2;
+pub const TABLE_VERSION: u8 = 2;
 const NOTE_BLOBS_ARGUMENT: u8 = u8::MAX;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,8 +77,128 @@ impl ChunkData {
             return (start, end);
         }
 
-        self.capture.span()
+        let (cap_start, cap_end) = self.capture.span();
+        (cap_start, cap_end.max(cap_start))
     }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "sums every capture table footprint for fast O(1) decode budget verification"
+)]
+pub fn verify_chunk_decode_budget(
+    data: &ChunkData,
+    sections: &[super::EncodedSection],
+    budget_limit: usize,
+) -> Result<(), ObjectError> {
+    use crate::capture::records::{
+        Account, Frame, Function, Gap, Line, Mapping, Marker, Module, OffCpu, Plot, Process, Range,
+        Sample, Setting, Site, Stack, Syscall, SyscallErrno, SyscallNote, SyscallStat, Task,
+        TaskWait, Thread, ThreadRange, Zone, ZoneRange,
+    };
+
+    let capture = &data.capture;
+    let mut upper = 0_usize;
+    for sec in sections {
+        let reader = super::SectionReader::open(&sec.bytes, sec.kind)?;
+        for page in reader.pages() {
+            upper = upper.saturating_add(page.uncompressed_len.get() as usize);
+        }
+    }
+
+    let add_table = |acc: usize, rows: usize, row_size: usize, u64_cols: usize| -> usize {
+        acc.saturating_add(rows.saturating_mul(row_size.saturating_add(u64_cols * 8)))
+    };
+
+    upper = upper
+        .saturating_add(capture.strings.len().saturating_mul(3))
+        .saturating_add(capture.syscall_blobs.len().saturating_mul(3));
+    upper = add_table(upper, capture.settings.len(), size_of::<Setting>(), 10);
+    upper = add_table(upper, capture.modules.len(), size_of::<Module>(), 10);
+    upper = add_table(upper, capture.processes.len(), size_of::<Process>(), 10);
+    upper = add_table(upper, capture.threads.len(), size_of::<Thread>(), 10);
+    upper = add_table(upper, capture.mappings.len(), size_of::<Mapping>(), 12);
+    upper = add_table(upper, capture.frames.len(), size_of::<Frame>(), 10);
+    upper = add_table(upper, capture.stacks.len(), size_of::<Stack>(), 10);
+    upper = add_table(
+        upper,
+        capture.sample_ranges.len(),
+        size_of::<ThreadRange>(),
+        10,
+    );
+    upper = add_table(upper, capture.samples.len(), size_of::<Sample>(), 10);
+    upper = add_table(upper, capture.frame_symbols.len(), size_of::<Range>(), 10);
+    upper = add_table(upper, capture.lines.len(), size_of::<Line>(), 10);
+    upper = add_table(upper, capture.functions.len(), size_of::<Function>(), 10);
+    upper = add_table(upper, capture.accounting.len(), size_of::<Account>(), 10);
+    upper = add_table(
+        upper,
+        capture.off_cpu_ranges.len(),
+        size_of::<ThreadRange>(),
+        10,
+    );
+    upper = add_table(upper, capture.off_cpu.len(), size_of::<OffCpu>(), 10);
+    upper = add_table(upper, capture.sites.len(), size_of::<Site>(), 10);
+    upper = add_table(upper, capture.zones.len(), size_of::<Zone>(), 10);
+    upper = add_table(upper, capture.zone_ranges.len(), size_of::<ZoneRange>(), 10);
+    upper = add_table(upper, capture.plots.len(), size_of::<Plot>(), 10);
+    upper = add_table(upper, capture.markers.len(), size_of::<Marker>(), 10);
+    upper = add_table(upper, capture.tasks.len(), size_of::<Task>(), 12);
+    upper = add_table(upper, capture.task_waits.len(), size_of::<TaskWait>(), 10);
+    upper = add_table(upper, capture.gaps.len(), size_of::<Gap>(), 10);
+    upper = add_table(upper, capture.syscalls.len(), size_of::<Syscall>(), 28);
+    upper = add_table(
+        upper,
+        capture.syscall_notes.len(),
+        size_of::<SyscallNote>(),
+        16,
+    );
+    upper = add_table(
+        upper,
+        capture.syscall_stats.len(),
+        size_of::<SyscallStat>() + crate::syscalls::stats::BUCKETS * 8,
+        16,
+    );
+    upper = add_table(
+        upper,
+        capture.syscall_errnos.len(),
+        size_of::<SyscallErrno>(),
+        10,
+    );
+    upper = add_table(upper, data.chunks.len(), size_of::<ChunkRow>(), 10);
+    upper = add_table(upper, data.dimensions.len(), size_of::<DimensionRow>(), 6);
+    upper = add_table(
+        upper,
+        data.sanitizer_counts.len(),
+        size_of::<SanitizerCountRow>(),
+        6,
+    );
+    for row in &data.chunks {
+        upper = upper.saturating_add(row.rules.len());
+    }
+    for row in &data.dimensions {
+        upper = upper
+            .saturating_add(row.name.len())
+            .saturating_add(row.value.len());
+    }
+    for row in &data.sanitizer_counts {
+        upper = upper.saturating_add(row.rule.len());
+    }
+
+    if upper > budget_limit {
+        let raw: Vec<super::RawSection<'_>> = sections
+            .iter()
+            .map(|s| super::RawSection {
+                kind: s.kind,
+                rows: s.rows,
+                key: s.key,
+                checksum: 0,
+                bytes: &s.bytes,
+            })
+            .collect();
+        let _ = decode_tables_budgeted(&raw, budget_limit)?;
+    }
+    Ok(())
 }
 
 pub struct StringEncodeMap {
@@ -371,6 +491,7 @@ pub fn merge_chunks(chunks: &[ChunkData]) -> Result<ChunkData, ObjectError> {
     let mut builder = CaptureBuilder::new();
     let mut merged_chunks = Vec::new();
     let mut merged_dims = Vec::new();
+    let mut seen_dims: BTreeSet<(u32, String, String)> = BTreeSet::new();
     let mut counts: BTreeMap<(String, u16), u64> = BTreeMap::new();
 
     for chunk in chunks {
@@ -382,17 +503,17 @@ pub fn merge_chunks(chunks: &[ChunkData]) -> Result<ChunkData, ObjectError> {
             } else {
                 remap.process(dim.process)
             };
-            let entry = DimensionRow {
-                process,
-                name: dim.name.clone(),
-                value: dim.value.clone(),
-            };
-            if !merged_dims.contains(&entry) {
-                merged_dims.push(entry);
+            if seen_dims.insert((process, dim.name.clone(), dim.value.clone())) {
+                merged_dims.push(DimensionRow {
+                    process,
+                    name: dim.name.clone(),
+                    value: dim.value.clone(),
+                });
             }
         }
         for row in &chunk.sanitizer_counts {
-            *counts.entry((row.rule.clone(), row.field)).or_default() += row.fired;
+            let entry = counts.entry((row.rule.clone(), row.field)).or_default();
+            *entry = entry.saturating_add(row.fired);
         }
     }
 
@@ -567,21 +688,43 @@ fn read_relative_time_col(
 type InternedStrings = (Vec<u8>, Vec<u32>, Vec<(u32, u32)>, Vec<u32>);
 
 fn intern_extra_strings(data: &ChunkData) -> InternedStrings {
-    let mut strings = StringsBuilder::default();
-    let base_pool = Strings(&data.capture.strings);
+    let mut pool = data.capture.strings.clone();
+    let mut index: HashMap<String, u32> = HashMap::default();
     let mut at = 0_usize;
-    while at < data.capture.strings.len() {
-        let text = base_pool.get(StrId(u32::try_from(at).unwrap_or(0)));
-        let _ = strings.push(text);
-        at += text.len() + 1;
+    while at < pool.len() {
+        let Some(rel) = memchr::memchr(0, &pool[at..]) else {
+            break;
+        };
+        if let Ok(text) = std::str::from_utf8(&pool[at..at + rel])
+            && let Ok(off) = u32::try_from(at)
+        {
+            index.entry(text.to_owned()).or_insert(off);
+        }
+        at += rel + 1;
     }
 
     let mut push = |text: &str| -> u32 {
-        if text.is_empty() {
-            NONE
-        } else {
-            strings.push(text).map_or(NONE, |StrId(id)| id)
+        if text.is_empty() || text.as_bytes().contains(&0) {
+            return NONE;
         }
+        if let Some(&existing) = index.get(text) {
+            return existing;
+        }
+        let Ok(offset) = u32::try_from(pool.len()) else {
+            return NONE;
+        };
+        if pool
+            .len()
+            .checked_add(text.len())
+            .and_then(|n| n.checked_add(1))
+            .is_none_or(|end| end > u32::MAX as usize)
+        {
+            return NONE;
+        }
+        pool.extend_from_slice(text.as_bytes());
+        pool.push(0);
+        index.insert(text.to_owned(), offset);
+        offset
     };
 
     let chunk_rules: Vec<u32> = data.chunks.iter().map(|c| push(&c.rules)).collect();
@@ -596,7 +739,7 @@ fn intern_extra_strings(data: &ChunkData) -> InternedStrings {
         .map(|s| push(&s.rule))
         .collect();
 
-    (strings.into_bytes(), chunk_rules, dim_strings, count_rules)
+    (pool, chunk_rules, dim_strings, count_rules)
 }
 
 pub(super) fn remap_stack(old_id: u32, old_to_dfs: &[u32]) -> u32 {

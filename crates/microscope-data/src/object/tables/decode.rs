@@ -1,15 +1,15 @@
 use std::collections::BTreeMap;
 
 use super::super::codec::{
-    Coding, DecodeBudget, SectionReader, WHOLE_SECTION_GROUP, decode_bp_tree, relative_decode_u64,
-    zigzag_decode,
+    Coding, DecodeBudget, SectionReader, WHOLE_SECTION_GROUP, decode_bp_tree_budgeted,
+    relative_decode_u64, zigzag_decode,
 };
 use super::super::{MAX_DECOMPRESSED_OBJECT_BYTES, ObjectError, RawSection, SectionKind, TimeUnit};
 use super::decode_syscalls::{decode_syscall_blobs, decode_syscall_stats, decode_syscalls};
 use super::{
-    ChunkData, ChunkRow, DimensionRow, SanitizerCountRow, StringDecodeMap, read_delta_u64_col,
-    read_relative_time_col, read_string_col, read_time_col, read_time_units_col, read_u8_col,
-    read_u32_col, read_u64_col,
+    ChunkData, ChunkRow, DimensionRow, SanitizerCountRow, StringDecodeMap, TABLE_VERSION,
+    read_delta_u64_col, read_relative_time_col, read_string_col, read_time_col,
+    read_time_units_col, read_u8_col, read_u32_col, read_u64_col,
 };
 use crate::capture::Capture;
 use crate::capture::records::{
@@ -21,6 +21,21 @@ use crate::image::{StrId, Strings};
 
 pub(super) fn charge_rows<T>(r: &SectionReader<'_, '_>, rows: usize) -> Result<(), ObjectError> {
     r.charge(rows.saturating_mul(size_of::<T>()))
+}
+
+pub(super) fn open_table_section<'a, 'b>(
+    bytes: &'a [u8],
+    kind: SectionKind,
+    budget: &'b DecodeBudget,
+) -> Result<SectionReader<'a, 'b>, ObjectError> {
+    let reader = SectionReader::open_budgeted(bytes, kind, budget)?;
+    if reader.version != TABLE_VERSION {
+        return Err(ObjectError::UnknownValue {
+            what: "table section version",
+            value: u64::from(reader.version),
+        });
+    }
+    Ok(reader)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -37,23 +52,29 @@ pub struct SharedSymbols<'a> {
 }
 
 pub fn decode_tables(sections: &[RawSection<'_>]) -> Result<ChunkData, ObjectError> {
-    decode_selected(sections, None, MAX_DECOMPRESSED_OBJECT_BYTES, |_| true)
+    let budget = DecodeBudget::new(MAX_DECOMPRESSED_OBJECT_BYTES);
+    decode_selected(sections, None, &budget, |_| true)
 }
 
 pub fn decode_tables_budgeted(
     sections: &[RawSection<'_>],
     max_bytes: usize,
 ) -> Result<ChunkData, ObjectError> {
-    decode_selected(sections, None, max_bytes, |_| true)
+    let budget = DecodeBudget::new(max_bytes);
+    decode_selected(sections, None, &budget, |_| true)
 }
 
 pub fn decode_flame_tables(sections: &[RawSection<'_>]) -> Result<ChunkData, ObjectError> {
-    decode_selected(
-        sections,
-        None,
-        MAX_DECOMPRESSED_OBJECT_BYTES,
-        SectionKind::needed_for_flame,
-    )
+    let budget = DecodeBudget::new(MAX_DECOMPRESSED_OBJECT_BYTES);
+    decode_selected(sections, None, &budget, SectionKind::needed_for_flame)
+}
+
+pub fn decode_flame_tables_budgeted(
+    sections: &[RawSection<'_>],
+    max_bytes: usize,
+) -> Result<ChunkData, ObjectError> {
+    let budget = DecodeBudget::new(max_bytes);
+    decode_selected(sections, None, &budget, SectionKind::needed_for_flame)
 }
 
 #[derive(Debug, Default, Clone)]
@@ -93,9 +114,9 @@ pub fn decode_flame_bundle(
             ));
         }
         let str_map = StringDecodeMap::from_pool(shared.strings)?;
-        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Settings, budget)?;
+        let r = open_table_section(sec.bytes, SectionKind::Settings, budget)?;
         let n = r.rows as usize;
-        let p = r.read_page(0)?;
+        let p = r.read_single_page()?;
         let before = budget.remaining();
         let keys = read_string_col(&p, WHOLE_SECTION_GROUP, 0, n, &str_map)?;
         let vals = read_string_col(&p, WHOLE_SECTION_GROUP, 1, n, &str_map)?;
@@ -151,20 +172,79 @@ pub fn decode_event_bundle(
     shared: &SharedSymbols<'_>,
     flame_only: bool,
 ) -> Result<ChunkData, ObjectError> {
+    let budget = DecodeBudget::new(MAX_DECOMPRESSED_OBJECT_BYTES);
+    decode_event_bundle_budgeted(sections, shared, flame_only, &budget)
+}
+
+pub fn decode_event_bundle_budgeted(
+    sections: &[RawSection<'_>],
+    shared: &SharedSymbols<'_>,
+    flame_only: bool,
+    budget: &DecodeBudget,
+) -> Result<ChunkData, ObjectError> {
     if flame_only {
         decode_selected(
             sections,
             Some(shared),
-            MAX_DECOMPRESSED_OBJECT_BYTES,
+            budget,
             SectionKind::needed_for_flame,
         )
     } else {
-        decode_selected(
-            sections,
-            Some(shared),
-            MAX_DECOMPRESSED_OBJECT_BYTES,
-            |_| true,
-        )
+        decode_selected(sections, Some(shared), budget, |_| true)
+    }
+}
+
+struct ResetCursor<'a> {
+    ranges: &'a [ThreadRange],
+    idx: usize,
+    next_reset: usize,
+}
+
+impl<'a> ResetCursor<'a> {
+    fn new(ranges: &'a [ThreadRange], total_rows: usize) -> Result<Self, ObjectError> {
+        let mut running = 0_usize;
+        for r in ranges {
+            let start = r.start.get() as usize;
+            let count = r.count.get() as usize;
+            if start != running || start.saturating_add(count) > total_rows {
+                return Err(ObjectError::Layout(
+                    "thread ranges do not tile event table".into(),
+                ));
+            }
+            running += count;
+        }
+        if running != total_rows {
+            return Err(ObjectError::Layout(
+                "thread ranges do not cover event table".into(),
+            ));
+        }
+        let mut cursor = Self {
+            ranges,
+            idx: 0,
+            next_reset: usize::MAX,
+        };
+        cursor.advance_next();
+        Ok(cursor)
+    }
+
+    fn advance_next(&mut self) {
+        while let Some(r) = self.ranges.get(self.idx) {
+            self.idx += 1;
+            if r.count.get() > 0 {
+                self.next_reset = r.start.get() as usize;
+                return;
+            }
+        }
+        self.next_reset = usize::MAX;
+    }
+
+    fn is_reset(&mut self, row: usize) -> bool {
+        if row == self.next_reset {
+            self.advance_next();
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -174,11 +254,11 @@ fn decode_samples_section(
     keep_tasks: bool,
     budget: &DecodeBudget,
 ) -> Result<Vec<Sample>, ObjectError> {
-    let r = SectionReader::open_budgeted(bytes, SectionKind::Samples, budget)?;
+    let r = open_table_section(bytes, SectionKind::Samples, budget)?;
     let total = r.rows as usize;
     charge_rows::<Sample>(&r, total)?;
     let mut samples = Vec::with_capacity(total);
-    let mut resets_opt: Option<Vec<bool>> = None;
+    let mut resets_opt: Option<ResetCursor<'_>> = None;
     let mut global_offset = 0_usize;
 
     for page_idx in 0..r.page_count() {
@@ -187,7 +267,7 @@ fn decode_samples_section(
         let n = p.rows as usize;
         let use_reset = p.optional_column(WHOLE_SECTION_GROUP, 4).is_some();
         if use_reset && resets_opt.is_none() {
-            resets_opt = Some(build_reset_bitmap(sample_ranges, total)?);
+            resets_opt = Some(ResetCursor::new(sample_ranges, total)?);
         }
         let time_deltas = read_u64_col(&p, WHOLE_SECTION_GROUP, 0, n)?;
         let weights = read_delta_u64_col(&p, WHOLE_SECTION_GROUP, 1, n)?;
@@ -197,11 +277,10 @@ fn decode_samples_section(
         let mut prev = r.base_time;
         for i in 0..n {
             let global_idx = global_offset + i;
-            let is_reset = i == 0
-                || resets_opt
-                    .as_ref()
-                    .and_then(|bm| bm.get(global_idx).copied())
-                    .unwrap_or(false);
+            let range_reset = resets_opt
+                .as_mut()
+                .is_some_and(|cursor| cursor.is_reset(global_idx));
+            let is_reset = i == 0 || range_reset;
             let anchor = if is_reset { r.base_time } else { prev };
             let t = anchor.wrapping_add(zigzag_decode(time_deltas.get(i).copied().unwrap_or(0)));
             prev = t;
@@ -223,32 +302,6 @@ fn decode_samples_section(
     Ok(samples)
 }
 
-fn build_reset_bitmap(ranges: &[ThreadRange], total_rows: usize) -> Result<Vec<bool>, ObjectError> {
-    let mut resets = vec![false; total_rows];
-    let mut running = 0_usize;
-    for r in ranges {
-        let start = r.start.get() as usize;
-        let count = r.count.get() as usize;
-        if start != running || start.saturating_add(count) > total_rows {
-            return Err(ObjectError::Layout(
-                "thread ranges do not tile event table".into(),
-            ));
-        }
-        if count > 0
-            && let Some(slot) = resets.get_mut(start)
-        {
-            *slot = true;
-        }
-        running += count;
-    }
-    if running != total_rows {
-        return Err(ObjectError::Layout(
-            "thread ranges do not cover event table".into(),
-        ));
-    }
-    Ok(resets)
-}
-
 #[expect(
     clippy::too_many_lines,
     reason = "decodes each chunk table section into Capture and metadata"
@@ -256,13 +309,31 @@ fn build_reset_bitmap(ranges: &[ThreadRange], total_rows: usize) -> Result<Vec<b
 fn decode_selected(
     sections: &[RawSection<'_>],
     shared: Option<&SharedSymbols<'_>>,
-    max_bytes: usize,
+    budget: &DecodeBudget,
     include: impl Fn(SectionKind) -> bool,
 ) -> Result<ChunkData, ObjectError> {
     let mut by_kind: BTreeMap<SectionKind, RawSection<'_>> = BTreeMap::new();
     for &sec in sections {
         if !include(sec.kind) {
             continue;
+        }
+        if shared.is_some()
+            && matches!(
+                sec.kind,
+                SectionKind::Strings
+                    | SectionKind::Modules
+                    | SectionKind::Frames
+                    | SectionKind::FrameSymbols
+                    | SectionKind::Lines
+                    | SectionKind::Functions
+                    | SectionKind::Stacks
+                    | SectionKind::Sites
+            )
+        {
+            return Err(ObjectError::Layout(format!(
+                "event bundle must not contain shared symbol section {:?}",
+                sec.kind
+            )));
         }
         if by_kind.insert(sec.kind, sec).is_some() {
             return Err(ObjectError::Layout(format!(
@@ -272,7 +343,6 @@ fn decode_selected(
         }
     }
 
-    let budget = DecodeBudget::new(max_bytes);
     let mut capture = Capture::default();
     let mut chunks = Vec::new();
     let mut dimensions = Vec::new();
@@ -281,6 +351,17 @@ fn decode_selected(
     let mut bundle_proc_remap: Option<BTreeMap<u32, u32>> = None;
 
     if let Some(sym) = shared {
+        let shared_bytes = sym
+            .strings
+            .len()
+            .saturating_add(sym.modules.len().saturating_mul(size_of::<Module>()))
+            .saturating_add(sym.frames.len().saturating_mul(size_of::<Frame>()))
+            .saturating_add(sym.frame_symbols.len().saturating_mul(size_of::<Range>()))
+            .saturating_add(sym.lines.len().saturating_mul(size_of::<Line>()))
+            .saturating_add(sym.functions.len().saturating_mul(size_of::<Function>()))
+            .saturating_add(sym.stacks.len().saturating_mul(size_of::<Stack>()))
+            .saturating_add(sym.sites.len().saturating_mul(size_of::<Site>()));
+        budget.take(shared_bytes)?;
         capture.strings.extend_from_slice(sym.strings);
         capture.modules.extend_from_slice(sym.modules);
         capture.frames.extend_from_slice(sym.frames);
@@ -292,10 +373,10 @@ fn decode_selected(
 
         if let Some(sec) = by_kind.get(&SectionKind::Processes) {
             let mut remap = BTreeMap::new();
-            let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Processes, &budget)?;
+            let r = open_table_section(sec.bytes, SectionKind::Processes, budget)?;
             let n = r.rows as usize;
             charge_rows::<Process>(&r, n)?;
-            let p = r.read_page(0)?;
+            let p = r.read_single_page()?;
             let shared_ids = read_u32_col(&p, WHOLE_SECTION_GROUP, 0, n)?;
             capture.processes.reserve(n);
             for sid in shared_ids {
@@ -309,14 +390,22 @@ fn decode_selected(
             }
             bundle_proc_remap = Some(remap);
         } else {
+            budget.take(sym.processes.len().saturating_mul(size_of::<Process>()))?;
             capture.processes.extend_from_slice(sym.processes);
         }
     } else if let Some(sec) = by_kind.get(&SectionKind::Strings) {
-        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Strings, &budget)?;
-        let p = r.read_page(0)?;
-        capture
-            .strings
-            .clone_from(&p.column(WHOLE_SECTION_GROUP, 0)?.data);
+        let r = open_table_section(sec.bytes, SectionKind::Strings, budget)?;
+        for page_idx in 0..r.page_count() {
+            let p = r.read_page(page_idx)?;
+            let col = p.column(WHOLE_SECTION_GROUP, 0)?;
+            if col.coding != Coding::Bytes {
+                return Err(ObjectError::Layout(
+                    "strings column must use Bytes coding".into(),
+                ));
+            }
+            budget.take(col.data.len())?;
+            capture.strings.extend_from_slice(&col.data);
+        }
     }
 
     if !crate::image::valid_pool(&capture.strings, true) {
@@ -327,10 +416,10 @@ fn decode_selected(
     let str_map = StringDecodeMap::from_pool(&capture.strings)?;
 
     if let Some(sec) = by_kind.get(&SectionKind::Settings) {
-        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Settings, &budget)?;
+        let r = open_table_section(sec.bytes, SectionKind::Settings, budget)?;
         let n = r.rows as usize;
         charge_rows::<Setting>(&r, n)?;
-        let p = r.read_page(0)?;
+        let p = r.read_single_page()?;
         let keys = read_string_col(&p, WHOLE_SECTION_GROUP, 0, n, &str_map)?;
         let vals = read_string_col(&p, WHOLE_SECTION_GROUP, 1, n, &str_map)?;
         capture.settings = keys
@@ -344,10 +433,10 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Modules) {
-        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Modules, &budget)?;
+        let r = open_table_section(sec.bytes, SectionKind::Modules, budget)?;
         let n = r.rows as usize;
         charge_rows::<Module>(&r, n)?;
-        let p = r.read_page(0)?;
+        let p = r.read_single_page()?;
         let paths = read_string_col(&p, WHOLE_SECTION_GROUP, 0, n, &str_map)?;
         let bids = read_string_col(&p, WHOLE_SECTION_GROUP, 1, n, &str_map)?;
         let digests = &p.column(WHOLE_SECTION_GROUP, 2)?.data;
@@ -376,10 +465,10 @@ fn decode_selected(
     if shared.is_none()
         && let Some(sec) = by_kind.get(&SectionKind::Processes)
     {
-        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Processes, &budget)?;
+        let r = open_table_section(sec.bytes, SectionKind::Processes, budget)?;
         let n = r.rows as usize;
         charge_rows::<Process>(&r, n)?;
-        let p = r.read_page(0)?;
+        let p = r.read_single_page()?;
         let pids = read_u32_col(&p, WHOLE_SECTION_GROUP, 0, n)?;
         let names = read_string_col(&p, WHOLE_SECTION_GROUP, 1, n, &str_map)?;
         let start_units = read_time_units_col(&p, r.base_time, WHOLE_SECTION_GROUP, 2, n)?;
@@ -398,10 +487,10 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Threads) {
-        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Threads, &budget)?;
+        let r = open_table_section(sec.bytes, SectionKind::Threads, budget)?;
         let n = r.rows as usize;
         charge_rows::<Thread>(&r, n)?;
-        let p = r.read_page(0)?;
+        let p = r.read_single_page()?;
         let procs = read_u32_col(&p, WHOLE_SECTION_GROUP, 0, n)?;
         let tids = read_u32_col(&p, WHOLE_SECTION_GROUP, 1, n)?;
         let names = read_string_col(&p, WHOLE_SECTION_GROUP, 2, n, &str_map)?;
@@ -423,10 +512,10 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Mappings) {
-        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Mappings, &budget)?;
+        let r = open_table_section(sec.bytes, SectionKind::Mappings, budget)?;
         let n = r.rows as usize;
         charge_rows::<Mapping>(&r, n)?;
-        let p = r.read_page(0)?;
+        let p = r.read_single_page()?;
         let procs = read_u32_col(&p, WHOLE_SECTION_GROUP, 0, n)?;
         let mods = read_u32_col(&p, WHOLE_SECTION_GROUP, 1, n)?;
         let starts = read_delta_u64_col(&p, WHOLE_SECTION_GROUP, 2, n)?;
@@ -450,10 +539,10 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Frames) {
-        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Frames, &budget)?;
+        let r = open_table_section(sec.bytes, SectionKind::Frames, budget)?;
         let n = r.rows as usize;
         charge_rows::<Frame>(&r, n)?;
-        let p = r.read_page(0)?;
+        let p = r.read_single_page()?;
         let raw_addrs = read_delta_u64_col(&p, WHOLE_SECTION_GROUP, 0, n)?;
         let mods = read_u32_col(&p, WHOLE_SECTION_GROUP, 1, n)?;
         let kinds = read_u8_col(&p, WHOLE_SECTION_GROUP, 2, n)?;
@@ -479,17 +568,17 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Stacks) {
-        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Stacks, &budget)?;
+        let r = open_table_section(sec.bytes, SectionKind::Stacks, budget)?;
         let n = r.rows as usize;
         charge_rows::<Stack>(&r, n)?;
-        let p = r.read_page(0)?;
+        let p = r.read_single_page()?;
         let col0 = p.column(WHOLE_SECTION_GROUP, 0)?;
         if col0.coding != Coding::BpTree {
             return Err(ObjectError::Layout(
                 "stacks topology column must use BpTree coding".into(),
             ));
         }
-        let parents = decode_bp_tree(&col0.data, n)?;
+        let parents = decode_bp_tree_budgeted(&col0.data, n, Some(budget))?;
         let frames = read_u32_col(&p, WHOLE_SECTION_GROUP, 1, n)?;
         capture.stacks = parents
             .into_iter()
@@ -502,8 +591,7 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::SampleRanges) {
-        capture.sample_ranges =
-            decode_thread_ranges(sec.bytes, SectionKind::SampleRanges, &budget)?;
+        capture.sample_ranges = decode_thread_ranges(sec.bytes, SectionKind::SampleRanges, budget)?;
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Samples) {
@@ -511,15 +599,15 @@ fn decode_selected(
             sec.bytes,
             &capture.sample_ranges,
             include(SectionKind::Tasks),
-            &budget,
+            budget,
         )?;
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::FrameSymbols) {
-        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::FrameSymbols, &budget)?;
+        let r = open_table_section(sec.bytes, SectionKind::FrameSymbols, budget)?;
         let n = r.rows as usize;
         charge_rows::<Range>(&r, n)?;
-        let p = r.read_page(0)?;
+        let p = r.read_single_page()?;
         let counts = read_u32_col(&p, WHOLE_SECTION_GROUP, 0, n)?;
         let explicit_starts = if p.optional_column(WHOLE_SECTION_GROUP, 1).is_some() {
             Some(read_u32_col(&p, WHOLE_SECTION_GROUP, 1, n)?)
@@ -545,10 +633,10 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Lines) {
-        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Lines, &budget)?;
+        let r = open_table_section(sec.bytes, SectionKind::Lines, budget)?;
         let n = r.rows as usize;
         charge_rows::<Line>(&r, n)?;
-        let p = r.read_page(0)?;
+        let p = r.read_single_page()?;
         let funcs = read_u32_col(&p, WHOLE_SECTION_GROUP, 0, n)?;
         let files = read_string_col(&p, WHOLE_SECTION_GROUP, 1, n, &str_map)?;
         let nums = read_u32_col(&p, WHOLE_SECTION_GROUP, 2, n)?;
@@ -564,10 +652,10 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Functions) {
-        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Functions, &budget)?;
+        let r = open_table_section(sec.bytes, SectionKind::Functions, budget)?;
         let n = r.rows as usize;
         charge_rows::<Function>(&r, n)?;
-        let p = r.read_page(0)?;
+        let p = r.read_single_page()?;
         let names = read_string_col(&p, WHOLE_SECTION_GROUP, 0, n, &str_map)?;
         let mods = read_u32_col(&p, WHOLE_SECTION_GROUP, 1, n)?;
         let files = read_string_col(&p, WHOLE_SECTION_GROUP, 2, n, &str_map)?;
@@ -586,10 +674,10 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Accounting) {
-        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Accounting, &budget)?;
+        let r = open_table_section(sec.bytes, SectionKind::Accounting, budget)?;
         let n = r.rows as usize;
         charge_rows::<Account>(&r, n)?;
-        let p = r.read_page(0)?;
+        let p = r.read_single_page()?;
         let kinds = read_u32_col(&p, WHOLE_SECTION_GROUP, 0, n)?;
         let vals = read_delta_u64_col(&p, WHOLE_SECTION_GROUP, 1, n)?;
         capture.accounting = kinds
@@ -605,15 +693,15 @@ fn decode_selected(
 
     if let Some(sec) = by_kind.get(&SectionKind::OffCpuRanges) {
         capture.off_cpu_ranges =
-            decode_thread_ranges(sec.bytes, SectionKind::OffCpuRanges, &budget)?;
+            decode_thread_ranges(sec.bytes, SectionKind::OffCpuRanges, budget)?;
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::OffCpu) {
-        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::OffCpu, &budget)?;
+        let r = open_table_section(sec.bytes, SectionKind::OffCpu, budget)?;
         let total = r.rows as usize;
         charge_rows::<OffCpu>(&r, total)?;
         let mut off_cpu = Vec::with_capacity(total);
-        let mut resets_opt: Option<Vec<bool>> = None;
+        let mut resets_opt: Option<ResetCursor<'_>> = None;
         let mut global_offset = 0_usize;
 
         for page_idx in 0..r.page_count() {
@@ -622,7 +710,7 @@ fn decode_selected(
             let n = p.rows as usize;
             let use_reset = p.optional_column(WHOLE_SECTION_GROUP, 3).is_some();
             if use_reset && resets_opt.is_none() {
-                resets_opt = Some(build_reset_bitmap(&capture.off_cpu_ranges, total)?);
+                resets_opt = Some(ResetCursor::new(&capture.off_cpu_ranges, total)?);
             }
             let gaps = read_u64_col(&p, WHOLE_SECTION_GROUP, 0, n)?;
             let durations = read_u64_col(&p, WHOLE_SECTION_GROUP, 1, n)?;
@@ -631,11 +719,10 @@ fn decode_selected(
             let mut prev_end = r.base_time;
             for i in 0..n {
                 let global_idx = global_offset + i;
-                let is_reset = i == 0
-                    || resets_opt
-                        .as_ref()
-                        .and_then(|bm| bm.get(global_idx).copied())
-                        .unwrap_or(false);
+                let range_reset = resets_opt
+                    .as_mut()
+                    .is_some_and(|cursor| cursor.is_reset(global_idx));
+                let is_reset = i == 0 || range_reset;
                 let anchor = if is_reset { r.base_time } else { prev_end };
                 let gap = zigzag_decode(gaps.get(i).copied().unwrap_or(0));
                 let dur = durations.get(i).copied().unwrap_or(0);
@@ -658,10 +745,10 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Sites) {
-        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Sites, &budget)?;
+        let r = open_table_section(sec.bytes, SectionKind::Sites, budget)?;
         let n = r.rows as usize;
         charge_rows::<Site>(&r, n)?;
-        let p = r.read_page(0)?;
+        let p = r.read_single_page()?;
         let names = read_string_col(&p, WHOLE_SECTION_GROUP, 0, n, &str_map)?;
         let files = read_string_col(&p, WHOLE_SECTION_GROUP, 1, n, &str_map)?;
         let lines = read_u32_col(&p, WHOLE_SECTION_GROUP, 2, n)?;
@@ -680,10 +767,10 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Zones) {
-        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Zones, &budget)?;
+        let r = open_table_section(sec.bytes, SectionKind::Zones, budget)?;
         let n = r.rows as usize;
         charge_rows::<Zone>(&r, n)?;
-        let p = r.read_page(0)?;
+        let p = r.read_single_page()?;
         let start_units = read_time_units_col(&p, r.base_time, WHOLE_SECTION_GROUP, 0, n)?;
         let ends = read_relative_time_col(&p, r.time_unit, WHOLE_SECTION_GROUP, 1, &start_units)?;
         let sites = read_u32_col(&p, WHOLE_SECTION_GROUP, 2, n)?;
@@ -705,10 +792,10 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::ZoneRanges) {
-        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::ZoneRanges, &budget)?;
+        let r = open_table_section(sec.bytes, SectionKind::ZoneRanges, budget)?;
         let n = r.rows as usize;
         charge_rows::<ZoneRange>(&r, n)?;
-        let p = r.read_page(0)?;
+        let p = r.read_single_page()?;
         let threads = read_u32_col(&p, WHOLE_SECTION_GROUP, 0, n)?;
         let depths = read_u32_col(&p, WHOLE_SECTION_GROUP, 1, n)?;
         let counts = read_u32_col(&p, WHOLE_SECTION_GROUP, 2, n)?;
@@ -729,10 +816,10 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Plots) {
-        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Plots, &budget)?;
+        let r = open_table_section(sec.bytes, SectionKind::Plots, budget)?;
         let n = r.rows as usize;
         charge_rows::<Plot>(&r, n)?;
-        let p = r.read_page(0)?;
+        let p = r.read_single_page()?;
         let times = read_time_col(&p, r.time_unit, r.base_time, WHOLE_SECTION_GROUP, 0, n)?;
         let vals = read_delta_u64_col(&p, WHOLE_SECTION_GROUP, 1, n)?;
         let sites = read_u32_col(&p, WHOLE_SECTION_GROUP, 2, n)?;
@@ -748,10 +835,10 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Markers) {
-        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Markers, &budget)?;
+        let r = open_table_section(sec.bytes, SectionKind::Markers, budget)?;
         let n = r.rows as usize;
         charge_rows::<Marker>(&r, n)?;
-        let p = r.read_page(0)?;
+        let p = r.read_single_page()?;
         let times = read_time_col(&p, r.time_unit, r.base_time, WHOLE_SECTION_GROUP, 0, n)?;
         let threads = read_u32_col(&p, WHOLE_SECTION_GROUP, 1, n)?;
         let sites = read_u32_col(&p, WHOLE_SECTION_GROUP, 2, n)?;
@@ -770,10 +857,10 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Tasks) {
-        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Tasks, &budget)?;
+        let r = open_table_section(sec.bytes, SectionKind::Tasks, budget)?;
         let n = r.rows as usize;
         charge_rows::<Task>(&r, n)?;
-        let p = r.read_page(0)?;
+        let p = r.read_single_page()?;
         let runtimes = read_string_col(&p, WHOLE_SECTION_GROUP, 0, n, &str_map)?;
         let numbers = read_delta_u64_col(&p, WHOLE_SECTION_GROUP, 1, n)?;
         let roots = read_u32_col(&p, WHOLE_SECTION_GROUP, 2, n)?;
@@ -796,10 +883,10 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::TaskWaits) {
-        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::TaskWaits, &budget)?;
+        let r = open_table_section(sec.bytes, SectionKind::TaskWaits, budget)?;
         let n = r.rows as usize;
         charge_rows::<TaskWait>(&r, n)?;
-        let p = r.read_page(0)?;
+        let p = r.read_single_page()?;
         let times = read_time_col(&p, r.time_unit, r.base_time, WHOLE_SECTION_GROUP, 0, n)?;
         let weights = read_delta_u64_col(&p, WHOLE_SECTION_GROUP, 1, n)?;
         let tasks = read_u32_col(&p, WHOLE_SECTION_GROUP, 2, n)?;
@@ -818,10 +905,10 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Gaps) {
-        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Gaps, &budget)?;
+        let r = open_table_section(sec.bytes, SectionKind::Gaps, budget)?;
         let n = r.rows as usize;
         charge_rows::<Gap>(&r, n)?;
-        let p = r.read_page(0)?;
+        let p = r.read_single_page()?;
         let start_units = read_time_units_col(&p, r.base_time, WHOLE_SECTION_GROUP, 0, n)?;
         let ends = read_relative_time_col(&p, r.time_unit, WHOLE_SECTION_GROUP, 1, &start_units)?;
         let reasons = read_u8_col(&p, WHOLE_SECTION_GROUP, 2, n)?;
@@ -838,14 +925,14 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Syscalls) {
-        capture.syscalls = decode_syscalls(sec.bytes, &budget)?;
+        capture.syscalls = decode_syscalls(sec.bytes, budget)?;
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::SyscallNotes) {
-        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::SyscallNotes, &budget)?;
+        let r = open_table_section(sec.bytes, SectionKind::SyscallNotes, budget)?;
         let n = r.rows as usize;
         charge_rows::<SyscallNote>(&r, n)?;
-        let p = r.read_page(0)?;
+        let p = r.read_single_page()?;
         let times = read_time_col(&p, r.time_unit, r.base_time, WHOLE_SECTION_GROUP, 0, n)?;
         let values = read_u64_col(&p, WHOLE_SECTION_GROUP, 1, n)?;
         let extras = read_delta_u64_col(&p, WHOLE_SECTION_GROUP, 2, n)?;
@@ -877,18 +964,18 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::SyscallBlobs) {
-        decode_syscall_blobs(sec.bytes, &mut capture, &budget)?;
+        decode_syscall_blobs(sec.bytes, &mut capture, budget)?;
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::SyscallStats) {
-        capture.syscall_stats = decode_syscall_stats(sec.bytes, &budget)?;
+        capture.syscall_stats = decode_syscall_stats(sec.bytes, budget)?;
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::SyscallErrnos) {
-        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::SyscallErrnos, &budget)?;
+        let r = open_table_section(sec.bytes, SectionKind::SyscallErrnos, budget)?;
         let n = r.rows as usize;
         charge_rows::<SyscallErrno>(&r, n)?;
-        let p = r.read_page(0)?;
+        let p = r.read_single_page()?;
         let counts = read_delta_u64_col(&p, WHOLE_SECTION_GROUP, 0, n)?;
         let errnos = read_delta_u64_col(&p, WHOLE_SECTION_GROUP, 1, n)?;
         capture.syscall_errnos = counts
@@ -921,10 +1008,10 @@ fn decode_selected(
     };
 
     if let Some(sec) = by_kind.get(&SectionKind::Chunk) {
-        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Chunk, &budget)?;
+        let r = open_table_section(sec.bytes, SectionKind::Chunk, budget)?;
         let n = r.rows as usize;
         charge_rows::<ChunkRow>(&r, n)?;
-        let p = r.read_page(0)?;
+        let p = r.read_single_page()?;
         let agents = read_delta_u64_col(&p, WHOLE_SECTION_GROUP, 0, n)?;
         let numbers = read_delta_u64_col(&p, WHOLE_SECTION_GROUP, 1, n)?;
         let start_units = read_time_units_col(&p, r.base_time, WHOLE_SECTION_GROUP, 2, n)?;
@@ -944,7 +1031,9 @@ fn decode_selected(
             chunks.push(ChunkRow {
                 agent: agents.get(i).copied().unwrap_or(0),
                 number: numbers.get(i).copied().unwrap_or(0),
-                start: start_units.get(i).copied().unwrap_or(0),
+                start: r
+                    .time_unit
+                    .to_nanos(start_units.get(i).copied().unwrap_or(0)),
                 end: ends.get(i).copied().unwrap_or(0),
                 sampled_ns: sampled.get(i).copied().unwrap_or(0),
                 preset: presets.get(i).copied().unwrap_or(0),
@@ -956,10 +1045,10 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::Dimensions) {
-        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::Dimensions, &budget)?;
+        let r = open_table_section(sec.bytes, SectionKind::Dimensions, budget)?;
         let n = r.rows as usize;
         charge_rows::<DimensionRow>(&r, n)?;
-        let p = r.read_page(0)?;
+        let p = r.read_single_page()?;
         let procs = read_u32_col(&p, WHOLE_SECTION_GROUP, 0, n)?;
         let names = read_string_col(&p, WHOLE_SECTION_GROUP, 1, n, &str_map)?;
         let vals = read_string_col(&p, WHOLE_SECTION_GROUP, 2, n, &str_map)?;
@@ -973,10 +1062,10 @@ fn decode_selected(
     }
 
     if let Some(sec) = by_kind.get(&SectionKind::SanitizerCounts) {
-        let r = SectionReader::open_budgeted(sec.bytes, SectionKind::SanitizerCounts, &budget)?;
+        let r = open_table_section(sec.bytes, SectionKind::SanitizerCounts, budget)?;
         let n = r.rows as usize;
         charge_rows::<SanitizerCountRow>(&r, n)?;
-        let p = r.read_page(0)?;
+        let p = r.read_single_page()?;
         let rules = read_string_col(&p, WHOLE_SECTION_GROUP, 0, n, &str_map)?;
         let fields = read_delta_u64_col(&p, WHOLE_SECTION_GROUP, 1, n)?;
         let fired = read_delta_u64_col(&p, WHOLE_SECTION_GROUP, 2, n)?;
@@ -1033,10 +1122,10 @@ fn decode_thread_ranges(
     kind: SectionKind,
     budget: &DecodeBudget,
 ) -> Result<Vec<ThreadRange>, ObjectError> {
-    let r = SectionReader::open_budgeted(bytes, kind, budget)?;
+    let r = open_table_section(bytes, kind, budget)?;
     let n = r.rows as usize;
     charge_rows::<ThreadRange>(&r, n)?;
-    let p = r.read_page(0)?;
+    let p = r.read_single_page()?;
     let threads = read_u32_col(&p, WHOLE_SECTION_GROUP, 0, n)?;
     let counts = read_u32_col(&p, WHOLE_SECTION_GROUP, 1, n)?;
     let mut next = 0_u32;

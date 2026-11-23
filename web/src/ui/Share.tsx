@@ -234,18 +234,33 @@ function UploadCaptureBody(props: { profile: ProfileInfo }) {
     },
   );
 
-  const schedulePoll = (started: CloudLoginStarted) => {
+  const LOGIN_POLL_DEADLINE_MS = 10 * 60 * 1000;
+  const LOGIN_POLL_MAX_RETRIES = 3;
+
+  const schedulePoll = (started: CloudLoginStarted, deadline: number, consecutiveFailures = 0) => {
     if (pollTimer !== null) {
       clearTimeout(pollTimer);
     }
     const interval = Math.max(started.pollIntervalMs || 1500, 500);
     pollTimer = setTimeout(() => {
       pollTimer = null;
-      void pollOnce(started);
+      void pollOnce(started, deadline, consecutiveFailures);
     }, interval);
   };
 
-  const pollOnce = async (started: CloudLoginStarted) => {
+  const pollOnce = async (
+    started: CloudLoginStarted,
+    deadline: number,
+    consecutiveFailures: number,
+  ) => {
+    if (Date.now() > deadline) {
+      if (alive) {
+        setLogin(null);
+        setLoginBusy(false);
+        setLoginError("Sign-in timed out. Try again.");
+      }
+      return;
+    }
     try {
       const res = await connection.request("cloudLoginPoll", {
         server: started.server,
@@ -259,7 +274,7 @@ function UploadCaptureBody(props: { profile: ProfileInfo }) {
         setLoginBusy(false);
         await refreshStatus();
       } else if (res.status === "pending") {
-        schedulePoll(started);
+        schedulePoll(started, deadline, 0);
       } else {
         setLogin(null);
         setLoginBusy(false);
@@ -267,6 +282,11 @@ function UploadCaptureBody(props: { profile: ProfileInfo }) {
       }
     } catch (failure) {
       if (!alive) {
+        return;
+      }
+      const nextFailures = consecutiveFailures + 1;
+      if (nextFailures < LOGIN_POLL_MAX_RETRIES && Date.now() < deadline) {
+        schedulePoll(started, deadline, nextFailures);
         return;
       }
       setLogin(null);
@@ -288,7 +308,7 @@ function UploadCaptureBody(props: { profile: ProfileInfo }) {
       }
       setLogin(started);
       window.open(started.verifyUrl, "_blank", "noopener,noreferrer");
-      schedulePoll(started);
+      schedulePoll(started, Date.now() + LOGIN_POLL_DEADLINE_MS, 0);
     } catch (failure) {
       if (!alive) {
         return;
@@ -432,6 +452,13 @@ function UploadCaptureBody(props: { profile: ProfileInfo }) {
             Signed in as <strong>{status()?.username}</strong>
             <Show when={status()?.server}>{(srv) => <> on {srv()}</>}</Show>
           </span>
+          <Show when={status()?.error}>
+            {(err) => (
+              <span class="error" role="alert">
+                {err()}
+              </span>
+            )}
+          </Show>
           <Show
             when={(status()?.projects.length ?? 0) > 0}
             fallback={

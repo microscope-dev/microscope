@@ -142,6 +142,10 @@ impl BinaryFuse8 {
     }
 
     #[must_use]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "peeling loop and reverse assignment pass share filter geometry state"
+    )]
     pub fn build(keys: &[u64]) -> Self {
         let mut unique = keys.to_vec();
         unique.sort_unstable();
@@ -158,8 +162,18 @@ impl BinaryFuse8 {
 
         let mut attempts_at_size = 0_u32;
         loop {
-            let seg_count_len = (seg_count - 2) * seg_len;
-            let array_len = (seg_count * seg_len) as usize;
+            let Some(seg_count_len) = seg_count
+                .checked_sub(2)
+                .and_then(|c| c.checked_mul(seg_len))
+            else {
+                return Self::empty();
+            };
+            let Some(array_len) = (seg_count as usize).checked_mul(seg_len as usize) else {
+                return Self::empty();
+            };
+            if array_len > MAX_FILTER_BYTES {
+                return Self::empty();
+            }
 
             let mut t2count = vec![0_u32; array_len];
             let mut t2hash = vec![0_u64; array_len];
@@ -313,9 +327,9 @@ impl BinaryFuse8 {
             .ok_or(ObjectError::Truncated)?;
 
         if seg_count == 0 {
-            if seg_log2 != 0 || !payload.is_empty() {
+            if seed != 0 || seg_log2 != 0 || !payload.is_empty() {
                 return Err(ObjectError::Layout(
-                    "empty filter must have zero geometry and payload".into(),
+                    "empty filter must have zero seed, geometry, and payload".into(),
                 ));
             }
             return Ok(Self::empty());

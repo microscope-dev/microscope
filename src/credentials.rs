@@ -9,7 +9,7 @@ pub const CREDENTIALS_ENV: &str = "MICROSCOPE_CREDENTIALS_FILE";
 pub const SERVER_ENV: &str = "MICROSCOPE_SERVER";
 pub const TOKEN_ENV: &str = "MICROSCOPE_TOKEN";
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Credentials {
     pub server: String,
     pub token: String,
@@ -17,6 +17,17 @@ pub struct Credentials {
     pub username: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+}
+
+impl std::fmt::Debug for Credentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Credentials")
+            .field("server", &self.server)
+            .field("token", &"[redacted]")
+            .field("username", &self.username)
+            .field("email", &self.email)
+            .finish()
+    }
 }
 
 #[must_use]

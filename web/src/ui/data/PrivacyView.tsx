@@ -23,10 +23,16 @@ export function PrivacyView(props: { org: number | null }) {
   const [previewResult, setPreviewResult] = createSignal<PreviewResponse | null>(null);
 
   let seq = 0;
+  let lastOrg: number | null | undefined;
   createEffect(
     () => [props.org, hours(), rev()] as const,
     ([org, h]) => {
       const id = ++seq;
+      if (lastOrg !== undefined && lastOrg !== org) {
+        setData(null);
+        setPreviewResult(null);
+      }
+      lastOrg = org;
       setLoading(true);
       setErr(null);
       void (async () => {

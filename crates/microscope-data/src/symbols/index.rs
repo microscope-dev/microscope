@@ -346,21 +346,45 @@ impl SymbolIndex {
         let compressed = zstd::bulk::compress(&raw, 3).unwrap_or_else(|_| raw.clone());
         let is_compressed = compressed.len() < raw.len();
         let payload = if is_compressed { &compressed } else { &raw };
-        let checksum = XxHash3_64::oneshot(payload);
+
+        let mut header_prefix = [0_u8; 24];
+        header_prefix[0..8].copy_from_slice(&INDEX_MAGIC);
+        header_prefix[8..10].copy_from_slice(&INDEX_VERSION.to_le_bytes());
+        let codec_flags: u16 = u16::from(is_compressed);
+        header_prefix[10..12].copy_from_slice(&codec_flags.to_le_bytes());
+        header_prefix[12..16].copy_from_slice(&0_u32.to_le_bytes());
+        header_prefix[16..24].copy_from_slice(&(raw.len() as u64).to_le_bytes());
+        let checksum = index_checksum(&header_prefix, payload);
 
         let mut out = Vec::with_capacity(HEADER_LEN + payload.len());
-        out.extend_from_slice(&INDEX_MAGIC);
-        out.extend_from_slice(&INDEX_VERSION.to_le_bytes());
-        let codec_flags: u16 = u16::from(is_compressed);
-        out.extend_from_slice(&codec_flags.to_le_bytes());
-        out.extend_from_slice(&0_u32.to_le_bytes());
-        out.extend_from_slice(&(raw.len() as u64).to_le_bytes());
+        out.extend_from_slice(&header_prefix);
         out.extend_from_slice(&checksum.to_le_bytes());
         out.extend_from_slice(payload);
         out
     }
 
     pub fn decode(bytes: &[u8], budget: &ParseBudget) -> Result<Self, SymbolError> {
+        Self::decode_inner(bytes, budget, true)
+    }
+
+    #[cfg(any(test, feature = "fuzzing"))]
+    pub fn decode_unverified_for_fuzz(
+        bytes: &[u8],
+        budget: &ParseBudget,
+    ) -> Result<Self, SymbolError> {
+        Self::decode_inner(bytes, budget, false)
+    }
+
+    #[cfg(any(test, feature = "fuzzing"))]
+    pub fn decode_body_for_fuzz(raw: &[u8], budget: &ParseBudget) -> Result<Self, SymbolError> {
+        decode_body(raw, budget)
+    }
+
+    fn decode_inner(
+        bytes: &[u8],
+        budget: &ParseBudget,
+        verify_checksum: bool,
+    ) -> Result<Self, SymbolError> {
         if bytes.len() < HEADER_LEN {
             return Err(SymbolError::MalformedIndex("truncated header".to_owned()));
         }
@@ -382,6 +406,11 @@ impl SymbolIndex {
         if codec_flags > 1 {
             return Err(SymbolError::MalformedIndex("unknown flags".to_owned()));
         }
+        if bytes[12..16] != [0; 4] {
+            return Err(SymbolError::MalformedIndex(
+                "non-zero reserved header bytes".to_owned(),
+            ));
+        }
         let raw_len = u64::from_le_bytes([
             bytes[16], bytes[17], bytes[18], bytes[19], bytes[20], bytes[21], bytes[22], bytes[23],
         ]);
@@ -389,12 +418,20 @@ impl SymbolIndex {
             bytes[24], bytes[25], bytes[26], bytes[27], bytes[28], bytes[29], bytes[30], bytes[31],
         ]);
         let payload = &bytes[HEADER_LEN..];
-        if XxHash3_64::oneshot(payload) != expected_checksum {
+        if verify_checksum && index_checksum(&bytes[..24], payload) != expected_checksum {
             return Err(SymbolError::ChecksumMismatch);
         }
         if raw_len > budget.max_decompressed_bytes {
             return Err(SymbolError::BudgetExceeded(
                 "symbol index exceeds max decompressed size".to_owned(),
+            ));
+        }
+        if codec_flags == 1
+            && raw_len > 1024 * 1024
+            && raw_len > (payload.len() as u64).saturating_mul(budget.max_decompression_ratio)
+        {
+            return Err(SymbolError::BudgetExceeded(
+                "symbol index decompression ratio exceeded".to_owned(),
             ));
         }
         let raw_len_usize = usize::try_from(raw_len)
@@ -431,6 +468,14 @@ impl SymbolIndex {
     }
 }
 
+fn index_checksum(header_prefix: &[u8], payload: &[u8]) -> u64 {
+    use std::hash::Hasher as _;
+    let mut hasher = XxHash3_64::new();
+    hasher.write(header_prefix);
+    hasher.write(payload);
+    hasher.finish()
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "decodes and validates every table of SymbolIndex in one pass under ParseBudget"
@@ -440,6 +485,11 @@ fn decode_body(raw: &[u8], budget: &ParseBudget) -> Result<SymbolIndex, SymbolEr
     let build_id = BuildId::parse(&cur.read_str(256)?)?;
     let arch = cur.read_str(64)?;
     let flags = cur.read_u8()?;
+    if (flags & !0x07) != 0 {
+        return Err(SymbolError::MalformedIndex(
+            "unknown body feature flags".to_owned(),
+        ));
+    }
     let has_dwarf = (flags & 1) != 0;
     let has_symtab = (flags & 2) != 0;
     let has_gopclntab = (flags & 4) != 0;
@@ -448,9 +498,15 @@ fn decode_body(raw: &[u8], budget: &ParseBudget) -> Result<SymbolIndex, SymbolEr
     let mut strings = Vec::with_capacity(string_count.min(4096));
     let mut total_str_bytes = 0_usize;
     for _ in 0..string_count {
-        let remaining = budget.max_string_bytes.saturating_sub(total_str_bytes);
+        let overhead = size_of::<String>();
+        let remaining = budget
+            .max_string_bytes
+            .checked_sub(total_str_bytes.saturating_add(overhead))
+            .ok_or_else(|| SymbolError::BudgetExceeded("string table exceeds budget".to_owned()))?;
         let s = cur.read_str(remaining)?;
-        total_str_bytes = total_str_bytes.saturating_add(s.len());
+        total_str_bytes = total_str_bytes
+            .saturating_add(overhead)
+            .saturating_add(s.len());
         strings.push(s);
     }
 

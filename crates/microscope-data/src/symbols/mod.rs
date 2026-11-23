@@ -5,8 +5,13 @@ mod parse;
 mod tests;
 
 use std::fmt;
+use std::fs::File;
+use std::io::{self, SeekFrom};
+use std::path::{Component, Path};
 
-use object::{Object as _, ObjectSection as _, ObjectSymbolTable as _};
+use object::{
+    Endian as _, Endianness, Object as _, ObjectSection as _, ObjectSymbolTable as _, elf,
+};
 use serde::{Deserialize, Serialize};
 
 pub use extract::strip_to_debug_elf;
@@ -234,12 +239,218 @@ pub fn is_public_system_path(path: &str) -> bool {
         "/nix/store/",
     ];
     let trimmed = path.trim();
-    if trimmed.is_empty() || !trimmed.starts_with('/') {
+    if trimmed.is_empty() || !trimmed.starts_with('/') || trimmed.contains('\0') {
+        return false;
+    }
+    if Path::new(trimmed)
+        .components()
+        .any(|c| matches!(c, Component::ParentDir))
+    {
         return false;
     }
     SYSTEM_PREFIXES
         .iter()
         .any(|prefix| trimmed.starts_with(prefix))
+}
+
+const MAX_NOTE_SCAN_BYTES: u64 = 64 * 1024;
+const MAX_ELF_TABLE_ENTRIES: usize = 4096;
+
+pub fn read_elf_build_id_from_file(path: &Path) -> io::Result<Option<BuildId>> {
+    let mut file = File::open(path)?;
+    read_elf_build_id_from_reader(&mut file)
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "handles ELF32/64 program-header and section-header note tables in one streaming pass"
+)]
+pub fn read_elf_build_id_from_reader<R: io::Read + io::Seek>(
+    reader: &mut R,
+) -> io::Result<Option<BuildId>> {
+    let mut ehdr = [0_u8; 64];
+    let n = read_prefix(reader, &mut ehdr)?;
+    if n < 52 || ehdr[..4] != [0x7f, b'E', b'L', b'F'] {
+        return Ok(None);
+    }
+    let class = ehdr[4];
+    let endian = match ehdr[5] {
+        elf::ELFDATA2LSB => Endianness::Little,
+        elf::ELFDATA2MSB => Endianness::Big,
+        _ => return Ok(None),
+    };
+
+    let (phoff, phentsize, phnum, shoff, shentsize, shnum) = match class {
+        elf::ELFCLASS64 => {
+            if n < 64 {
+                return Ok(None);
+            }
+            (
+                endian.read_u64(ehdr[32..40].try_into().unwrap_or([0; 8])),
+                usize::from(endian.read_u16(ehdr[54..56].try_into().unwrap_or([0; 2]))),
+                usize::from(endian.read_u16(ehdr[56..58].try_into().unwrap_or([0; 2]))),
+                endian.read_u64(ehdr[40..48].try_into().unwrap_or([0; 8])),
+                usize::from(endian.read_u16(ehdr[58..60].try_into().unwrap_or([0; 2]))),
+                usize::from(endian.read_u16(ehdr[60..62].try_into().unwrap_or([0; 2]))),
+            )
+        }
+        elf::ELFCLASS32 => (
+            u64::from(endian.read_u32(ehdr[28..32].try_into().unwrap_or([0; 4]))),
+            usize::from(endian.read_u16(ehdr[42..44].try_into().unwrap_or([0; 2]))),
+            usize::from(endian.read_u16(ehdr[44..46].try_into().unwrap_or([0; 2]))),
+            u64::from(endian.read_u32(ehdr[32..36].try_into().unwrap_or([0; 4]))),
+            usize::from(endian.read_u16(ehdr[46..48].try_into().unwrap_or([0; 2]))),
+            usize::from(endian.read_u16(ehdr[48..50].try_into().unwrap_or([0; 2]))),
+        ),
+        _ => return Ok(None),
+    };
+
+    let mut remaining_budget = MAX_NOTE_SCAN_BYTES;
+    if phoff > 0 && phnum > 0 && phnum <= MAX_ELF_TABLE_ENTRIES {
+        let min_ent = if class == elf::ELFCLASS64 { 56 } else { 32 };
+        if phentsize >= min_ent && phentsize <= 256 {
+            let mut ph_buf = vec![0_u8; phnum * phentsize];
+            if seek_read_exact(reader, phoff, &mut ph_buf).is_ok() {
+                for entry in ph_buf.chunks_exact(phentsize) {
+                    let p_type = endian.read_u32(entry[0..4].try_into().unwrap_or([0; 4]));
+                    if p_type != elf::PT_NOTE {
+                        continue;
+                    }
+                    let (offset, filesz, align) = if class == elf::ELFCLASS64 {
+                        (
+                            endian.read_u64(entry[8..16].try_into().unwrap_or([0; 8])),
+                            endian.read_u64(entry[32..40].try_into().unwrap_or([0; 8])),
+                            endian.read_u64(entry[48..56].try_into().unwrap_or([0; 8])),
+                        )
+                    } else {
+                        (
+                            u64::from(endian.read_u32(entry[4..8].try_into().unwrap_or([0; 4]))),
+                            u64::from(endian.read_u32(entry[16..20].try_into().unwrap_or([0; 4]))),
+                            u64::from(endian.read_u32(entry[28..32].try_into().unwrap_or([0; 4]))),
+                        )
+                    };
+                    if let Some(id) = scan_note_region(
+                        reader,
+                        offset,
+                        filesz,
+                        align,
+                        endian,
+                        &mut remaining_budget,
+                    ) {
+                        return Ok(Some(id));
+                    }
+                }
+            }
+        }
+    }
+
+    if shoff > 0 && shnum > 0 && shnum <= MAX_ELF_TABLE_ENTRIES {
+        let min_ent = if class == elf::ELFCLASS64 { 64 } else { 40 };
+        if shentsize >= min_ent && shentsize <= 256 {
+            let mut sh_buf = vec![0_u8; shnum * shentsize];
+            if seek_read_exact(reader, shoff, &mut sh_buf).is_ok() {
+                for entry in sh_buf.chunks_exact(shentsize) {
+                    let sh_type = endian.read_u32(entry[4..8].try_into().unwrap_or([0; 4]));
+                    if sh_type != elf::SHT_NOTE {
+                        continue;
+                    }
+                    let (offset, size, align) = if class == elf::ELFCLASS64 {
+                        (
+                            endian.read_u64(entry[24..32].try_into().unwrap_or([0; 8])),
+                            endian.read_u64(entry[32..40].try_into().unwrap_or([0; 8])),
+                            endian.read_u64(entry[48..56].try_into().unwrap_or([0; 8])),
+                        )
+                    } else {
+                        (
+                            u64::from(endian.read_u32(entry[16..20].try_into().unwrap_or([0; 4]))),
+                            u64::from(endian.read_u32(entry[20..24].try_into().unwrap_or([0; 4]))),
+                            u64::from(endian.read_u32(entry[32..36].try_into().unwrap_or([0; 4]))),
+                        )
+                    };
+                    if let Some(id) =
+                        scan_note_region(reader, offset, size, align, endian, &mut remaining_budget)
+                    {
+                        return Ok(Some(id));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+fn read_prefix<R: io::Read>(reader: &mut R, buf: &mut [u8]) -> io::Result<usize> {
+    let mut total = 0;
+    while total < buf.len() {
+        match reader.read(&mut buf[total..]) {
+            Ok(0) => break,
+            Ok(n) => total += n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(total)
+}
+
+fn seek_read_exact<R: io::Read + io::Seek>(
+    reader: &mut R,
+    offset: u64,
+    buf: &mut [u8],
+) -> io::Result<()> {
+    reader.seek(SeekFrom::Start(offset))?;
+    reader.read_exact(buf)
+}
+
+fn scan_note_region<R: io::Read + io::Seek>(
+    reader: &mut R,
+    offset: u64,
+    size: u64,
+    align: u64,
+    endian: Endianness,
+    budget: &mut u64,
+) -> Option<BuildId> {
+    if size == 0 || *budget == 0 {
+        return None;
+    }
+    let to_read = size.min(*budget);
+    let len = usize::try_from(to_read).ok()?;
+    *budget = budget.saturating_sub(to_read);
+    let mut buf = vec![0_u8; len];
+    if seek_read_exact(reader, offset, &mut buf).is_err() {
+        return None;
+    }
+    let step = if align == 8 { 8_usize } else { 4_usize };
+    let mut at = 0_usize;
+    while at.saturating_add(12) <= buf.len() {
+        let namesz = endian.read_u32(buf[at..at + 4].try_into().ok()?) as usize;
+        let descsz = endian.read_u32(buf[at + 4..at + 8].try_into().ok()?) as usize;
+        let n_type = endian.read_u32(buf[at + 8..at + 12].try_into().ok()?);
+        let name_start = at + 12;
+        let name_end = name_start.checked_add(namesz)?;
+        let desc_start = align_up_note(name_end, step)?;
+        let desc_end = desc_start.checked_add(descsz)?;
+        if desc_end > buf.len() {
+            break;
+        }
+        if n_type == elf::NT_GNU_BUILD_ID && buf.get(name_start..name_end) == Some(b"GNU\0") {
+            let desc = buf.get(desc_start..desc_end)?;
+            if let Ok(bid) = BuildId::from_bytes(desc) {
+                return Some(bid);
+            }
+        }
+        at = align_up_note(desc_end, step)?;
+    }
+    None
+}
+
+const fn align_up_note(value: usize, align: usize) -> Option<usize> {
+    let rem = value % align;
+    if rem == 0 {
+        Some(value)
+    } else {
+        value.checked_add(align - rem)
+    }
 }
 
 #[must_use]

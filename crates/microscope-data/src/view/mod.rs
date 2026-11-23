@@ -19,6 +19,7 @@ pub type BaseLookup<'a> = &'a dyn Fn(&str) -> Option<Arc<CaptureView>>;
 
 pub const HOSTED_MAX_TIMELINE_LANES: usize = 2_048;
 pub const HOSTED_MAX_TIMELINE_CELLS: usize = 524_288;
+pub const HOSTED_MAX_ZONE_WIDTH: u32 = 16_384;
 
 #[derive(Clone, Copy, Default)]
 pub struct AnswerOptions<'a> {
@@ -27,6 +28,7 @@ pub struct AnswerOptions<'a> {
     pub source_lines: Option<SourceLines<'a>>,
     pub max_timeline_lanes: Option<usize>,
     pub max_timeline_cells: Option<usize>,
+    pub max_zone_width: Option<u32>,
 }
 
 impl AnswerOptions<'_> {
@@ -38,6 +40,7 @@ impl AnswerOptions<'_> {
             source_lines: None,
             max_timeline_lanes: Some(HOSTED_MAX_TIMELINE_LANES),
             max_timeline_cells: Some(HOSTED_MAX_TIMELINE_CELLS),
+            max_zone_width: Some(HOSTED_MAX_ZONE_WIDTH),
         }
     }
 }
@@ -107,16 +110,16 @@ impl CaptureView {
         opts: AnswerOptions<'_>,
     ) -> Result<(Value, Vec<u8>), ViewError> {
         match method {
-            "profile" => Ok((profile::to_value(&profile::summary(self)), Vec::new())),
-            "profileInspect" => Ok((
-                self.inspection
-                    .get_or_init(|| {
-                        let _span = crate::span!("web profile inspect");
-                        profile::to_value(&inspect::inspection(&self.capture, self.file.clone()))
-                    })
-                    .clone(),
-                Vec::new(),
-            )),
+            "profile" => Ok((profile::to_value(&profile::summary(self))?, Vec::new())),
+            "profileInspect" => {
+                if let Some(cached) = self.inspection.get() {
+                    return Ok((cached.clone(), Vec::new()));
+                }
+                let _span = crate::span!("web profile inspect");
+                let value =
+                    profile::to_value(&inspect::inspection(&self.capture, self.file.clone()))?;
+                Ok((self.inspection.get_or_init(|| value).clone(), Vec::new()))
+            }
             "profileTree" => {
                 let _span = crate::span!("web profile tree");
                 let query: protocol::ProfileQuery = decode(params)?;
@@ -126,7 +129,7 @@ impl CaptureView {
                 let _span = crate::span!("web profile functions");
                 let query: protocol::ProfileQuery = decode(params)?;
                 Ok((
-                    profile::to_value(&profile::functions(self, &query, opts.base)?),
+                    profile::to_value(&profile::functions(self, &query, opts.base)?)?,
                     Vec::new(),
                 ))
             }
@@ -134,19 +137,19 @@ impl CaptureView {
                 let _span = crate::span!("web profile timeline");
                 let query: protocol::ProfileTimelineQuery = decode(params)?;
                 Ok((
-                    profile::to_value(&profile::timeline(self, &query, opts)?),
+                    profile::to_value(&profile::timeline(self, &query, opts)?)?,
                     Vec::new(),
                 ))
             }
             "profileZones" => {
                 let _span = crate::span!("web profile zones");
                 let query: protocol::ProfileZonesQuery = decode(params)?;
-                Ok(profile::zones(&self.capture, &query))
+                profile::zones(&self.capture, &query, opts)
             }
             "profileZoneStats" => {
                 let query: protocol::ProfileZoneStatsQuery = decode(params)?;
                 Ok((
-                    profile::to_value(&profile::zone_stats(&self.capture, &query)),
+                    profile::to_value(&profile::zone_stats(&self.capture, &query))?,
                     Vec::new(),
                 ))
             }
@@ -154,7 +157,7 @@ impl CaptureView {
                 let _span = crate::span!("web profile lines");
                 let query: protocol::ProfileFunctionQuery = decode(params)?;
                 Ok((
-                    profile::to_value(&profile::lines(self, &query, opts.source_lines)?),
+                    profile::to_value(&profile::lines(self, &query, opts.source_lines)?)?,
                     Vec::new(),
                 ))
             }
@@ -171,34 +174,34 @@ impl CaptureView {
                     files: Vec::new(),
                     unlined: None,
                     inlined_into: None,
-                }),
+                })?,
                 Vec::new(),
             )),
             "syscallSummary" => {
                 let query: protocol::SyscallSummaryQuery = decode(params)?;
                 Ok((
-                    profile::to_value(&syscalls::summary(&self.capture, self.trace(), &query)?),
+                    profile::to_value(&syscalls::summary(&self.capture, self.trace(), &query)?)?,
                     Vec::new(),
                 ))
             }
             "syscallHeatmap" => {
                 let query: protocol::SyscallHeatmapQuery = decode(params)?;
                 Ok((
-                    profile::to_value(&syscalls::heatmap(&self.capture, self.trace(), &query)?),
+                    profile::to_value(&syscalls::heatmap(&self.capture, self.trace(), &query)?)?,
                     Vec::new(),
                 ))
             }
             "syscallDetail" => {
                 let query: protocol::SyscallDetailQuery = decode(params)?;
                 Ok((
-                    profile::to_value(&syscalls::detail(&self.capture, self.trace(), &query)?),
+                    profile::to_value(&syscalls::detail(&self.capture, self.trace(), &query)?)?,
                     Vec::new(),
                 ))
             }
             "syscallLog" => {
                 let query: protocol::SyscallLogQuery = decode(params)?;
                 Ok((
-                    profile::to_value(&syscalls::log(&self.capture, self.trace(), &query)?),
+                    profile::to_value(&syscalls::log(&self.capture, self.trace(), &query)?)?,
                     Vec::new(),
                 ))
             }
@@ -210,33 +213,33 @@ impl CaptureView {
                         self.trace(),
                         &query,
                         opts.source_lines,
-                    )?),
+                    )?)?,
                     Vec::new(),
                 ))
             }
             "syscallFiles" => {
                 let query: protocol::SyscallQuery = decode(params)?;
                 Ok((
-                    profile::to_value(&syscalls::files(&self.capture, self.trace(), &query)?),
+                    profile::to_value(&syscalls::files(&self.capture, self.trace(), &query)?)?,
                     Vec::new(),
                 ))
             }
             "syscallNetwork" => {
                 let query: protocol::SyscallQuery = decode(params)?;
                 Ok((
-                    profile::to_value(&syscalls::network(&self.capture, self.trace(), &query)?),
+                    profile::to_value(&syscalls::network(&self.capture, self.trace(), &query)?)?,
                     Vec::new(),
                 ))
             }
             "syscallProcesses" => {
                 let query: protocol::SyscallQuery = decode(params)?;
                 Ok((
-                    profile::to_value(&syscalls::processes(&self.capture, self.trace(), &query)?),
+                    profile::to_value(&syscalls::processes(&self.capture, self.trace(), &query)?)?,
                     Vec::new(),
                 ))
             }
             "syscallInFlight" => Ok((
-                profile::to_value(&syscalls::in_flight(&self.capture, opts.live)),
+                profile::to_value(&syscalls::in_flight(&self.capture, opts.live))?,
                 Vec::new(),
             )),
             other => Err(ViewError::Invalid(format!(

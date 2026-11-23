@@ -1028,11 +1028,12 @@ pub fn off_cpu(capture: &Capture, query: &Query, buckets: usize) -> Vec<OffCpuLa
         return Vec::new();
     };
 
-    let span = u128::try_from(end - start).unwrap_or(1);
+    let span = u128::try_from(i128::from(end) - i128::from(start)).unwrap_or(1);
     let count = buckets as u128;
 
     let edge = |slice: usize| {
-        start + i64::try_from(slice as u128 * span / count).unwrap_or(i64::MAX - start)
+        let delta = i128::try_from(slice as u128 * span / count).unwrap_or(i128::MAX);
+        i64::try_from(i128::from(start).saturating_add(delta)).unwrap_or(i64::MAX)
     };
 
     let mut lanes: std::collections::BTreeMap<u32, OffCpuLane> = std::collections::BTreeMap::new();
@@ -1065,7 +1066,7 @@ pub fn off_cpu(capture: &Capture, query: &Query, buckets: usize) -> Vec<OffCpuLa
                 &mut lane.preempted
             };
 
-            let offset = u128::try_from(from - start).unwrap_or(0);
+            let offset = u128::try_from(i128::from(from) - i128::from(start)).unwrap_or(0);
             let first = usize::try_from(offset * count / span)
                 .unwrap_or(0)
                 .min(buckets - 1);

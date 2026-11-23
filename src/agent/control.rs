@@ -40,6 +40,7 @@ pub enum ControlEffect {
 pub struct ControlMachine {
     known_version: u64,
     last_flush_id: u64,
+    dispatched_flush_id: u64,
     empty_flush_id: u64,
     policy_version: u64,
     sanitizer_version: u64,
@@ -53,7 +54,7 @@ pub struct ControlMachine {
     need_token: bool,
     revoked: bool,
     active_watch: Option<WatchDirective>,
-    active_burst_ids: Vec<u64>,
+    active_bursts: Vec<BurstDirective>,
 }
 
 impl ControlMachine {
@@ -62,6 +63,7 @@ impl ControlMachine {
         Self {
             known_version: 0,
             last_flush_id: 0,
+            dispatched_flush_id: 0,
             empty_flush_id: 0,
             policy_version: 0,
             sanitizer_version: 0,
@@ -75,7 +77,7 @@ impl ControlMachine {
             need_token: false,
             revoked: false,
             active_watch: None,
-            active_burst_ids: Vec::new(),
+            active_bursts: Vec::new(),
         }
     }
 
@@ -91,6 +93,7 @@ impl ControlMachine {
     pub fn reset(&mut self, now: Instant) {
         self.known_version = 0;
         self.last_flush_id = 0;
+        self.dispatched_flush_id = 0;
         self.empty_flush_id = 0;
         self.policy_version = 0;
         self.sanitizer_version = 0;
@@ -98,10 +101,10 @@ impl ControlMachine {
         self.dispatched_sanitizer_version = 0;
         self.next_poll = now;
         self.failures = 0;
+        self.active_bursts.clear();
         self.need_token = false;
         self.revoked = false;
         self.active_watch = None;
-        self.active_burst_ids.clear();
     }
 
     pub const fn set_applied_policy(&mut self, policy_version: u64, sanitizer_version: u64) {
@@ -208,7 +211,9 @@ impl ControlMachine {
                 }
                 if let Some(flush) = resp.flush
                     && flush.id > self.last_flush_id
+                    && flush.id > self.dispatched_flush_id
                 {
+                    self.dispatched_flush_id = flush.id;
                     effects.push(ControlEffect::Flush(flush));
                 }
                 if let Some(policy) = resp.policy {
@@ -225,9 +230,8 @@ impl ControlMachine {
                         effects.push(ControlEffect::ApplyPolicy(policy));
                     }
                 }
-                let next_burst_ids: Vec<u64> = resp.bursts.iter().map(|b| b.id).collect();
-                if next_burst_ids != self.active_burst_ids {
-                    self.active_burst_ids = next_burst_ids;
+                if resp.bursts != self.active_bursts {
+                    self.active_bursts.clone_from(&resp.bursts);
                     effects.push(ControlEffect::Bursts(resp.bursts));
                 }
                 let wait = Duration::from_millis(resp.poll_after_ms.min(60_000));
@@ -249,5 +253,93 @@ impl ControlMachine {
             }
         }
         effects
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_response(version: u64) -> PollResponse {
+        PollResponse {
+            version,
+            revoked: false,
+            watch: None,
+            flush: None,
+            policy: None,
+            bursts: Vec::new(),
+            poll_after_ms: 1000,
+        }
+    }
+
+    #[test]
+    fn control_machine_dedups_flush_detects_burst_edits_and_handles_revocation() {
+        let t0 = Instant(Duration::ZERO);
+        let mut m = ControlMachine::new(t0, vec!["p".into()], vec!["s".into()]);
+
+        let mut resp1 = empty_response(1);
+        resp1.flush = Some(FlushDirective {
+            id: 10,
+            deadline_ms: 5_000,
+        });
+        resp1.bursts = vec![BurstDirective {
+            id: 1,
+            duration_ms: 60_000,
+            preset: "dev".into(),
+            time_unit: Some("1us".into()),
+            project: Some("p".into()),
+            ends_at_ns: Some(1_000_000),
+        }];
+        let effects1 = m.on(ControlOutcome::Directive(Box::new(resp1)), t0, 0.5);
+        assert!(effects1.contains(&ControlEffect::Flush(FlushDirective {
+            id: 10,
+            deadline_ms: 5_000,
+        })));
+        assert_eq!(
+            effects1
+                .iter()
+                .filter(|e| matches!(e, ControlEffect::Bursts(_)))
+                .count(),
+            1
+        );
+
+        let mut resp2 = empty_response(2);
+        resp2.flush = Some(FlushDirective {
+            id: 10,
+            deadline_ms: 5_000,
+        });
+        resp2.bursts = vec![BurstDirective {
+            id: 1,
+            duration_ms: 120_000,
+            preset: "full".into(),
+            time_unit: Some("1ns".into()),
+            project: Some("p".into()),
+            ends_at_ns: Some(2_000_000),
+        }];
+        let effects2 = m.on(ControlOutcome::Directive(Box::new(resp2)), t0, 0.5);
+        assert!(
+            !effects2
+                .iter()
+                .any(|e| matches!(e, ControlEffect::Flush(_))),
+            "in-flight flush must not be re-dispatched"
+        );
+        assert!(
+            effects2
+                .iter()
+                .any(|e| matches!(e, ControlEffect::Bursts(_))),
+            "edited burst with same id must emit Bursts effect"
+        );
+
+        let effects_unauth = m.on(ControlOutcome::Unauthorized, t0, 0.5);
+        assert!(effects_unauth.is_empty());
+        assert_eq!(m.next(t0, true), ControlAction::NeedToken);
+        m.token_refreshed(t0);
+        assert!(matches!(m.next(t0, true), ControlAction::Poll(_)));
+
+        let mut rev = empty_response(3);
+        rev.revoked = true;
+        let effects_rev = m.on(ControlOutcome::Directive(Box::new(rev)), t0, 0.5);
+        assert_eq!(effects_rev, vec![ControlEffect::Revoked]);
+        assert_eq!(m.next(t0, true), ControlAction::Revoked);
     }
 }

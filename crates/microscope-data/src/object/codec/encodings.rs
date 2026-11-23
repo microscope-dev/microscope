@@ -58,6 +58,9 @@ pub fn decode_varints(bytes: &[u8], count: usize) -> Result<Vec<u64>, ObjectErro
     if count > MAX_TOTAL_ROWS {
         return Err(ObjectError::Limit("row count exceeds limit"));
     }
+    if count > bytes.len() {
+        return Err(ObjectError::Truncated);
+    }
 
     let mut out = Vec::with_capacity(count);
     let mut at = 0;
@@ -134,7 +137,7 @@ pub fn delta_by_key_encode_u64(values: &[u64], keys: &[u32]) -> Vec<u64> {
     debug_assert_eq!(values.len(), keys.len());
     let max_key = keys.iter().copied().max().unwrap_or(0) as usize;
     let mut out = Vec::with_capacity(values.len());
-    if max_key < DENSE_KEY_LIMIT {
+    if max_key < DENSE_KEY_LIMIT && max_key <= values.len().saturating_mul(4) {
         let mut last = vec![0_u64; max_key + 1];
         for (&value, &key) in values.iter().zip(keys) {
             let idx = key as usize;
@@ -166,7 +169,7 @@ pub fn delta_by_key_decode_u64(encoded: &[u64], keys: &[u32]) -> Result<Vec<u64>
 
     let max_key = keys.iter().copied().max().unwrap_or(0) as usize;
     let mut out = Vec::with_capacity(encoded.len());
-    if max_key < DENSE_KEY_LIMIT {
+    if max_key < DENSE_KEY_LIMIT && max_key <= encoded.len().saturating_mul(4) {
         let mut last = vec![0_u64; max_key + 1];
         for (&raw, &key) in encoded.iter().zip(keys) {
             let idx = key as usize;
@@ -285,6 +288,9 @@ pub fn decode_dict_u64_budgeted(
     if dict_len > MAX_TOTAL_ROWS {
         return Err(ObjectError::Limit("dictionary exceeds limit"));
     }
+    if dict_len > bytes.len().saturating_sub(at) {
+        return Err(ObjectError::Truncated);
+    }
     if let Some(budget) = budget {
         budget.take(dict_len.saturating_mul(size_of::<u64>()))?;
     }
@@ -294,6 +300,9 @@ pub fn decode_dict_u64_budgeted(
         dict.push(read_varint(bytes, &mut at)?);
     }
 
+    if count > bytes.len().saturating_sub(at) {
+        return Err(ObjectError::Truncated);
+    }
     let mut out = Vec::with_capacity(count);
     for _ in 0..count {
         let idx = usize::try_from(read_varint(bytes, &mut at)?)
@@ -501,6 +510,14 @@ pub fn encode_bp_tree(dfs_parents: &[u32]) -> Vec<u8> {
 }
 
 pub fn decode_bp_tree(bytes: &[u8], count: usize) -> Result<Vec<u32>, ObjectError> {
+    decode_bp_tree_budgeted(bytes, count, None)
+}
+
+pub fn decode_bp_tree_budgeted(
+    bytes: &[u8],
+    count: usize,
+    budget: Option<&DecodeBudget>,
+) -> Result<Vec<u32>, ObjectError> {
     if count > MAX_TOTAL_ROWS {
         return Err(ObjectError::Limit("tree node count exceeds limit"));
     }
@@ -512,6 +529,9 @@ pub fn decode_bp_tree(bytes: &[u8], count: usize) -> Result<Vec<u32>, ObjectErro
         return Err(ObjectError::Layout(
             "bp tree bitstream length disagrees with node count".into(),
         ));
+    }
+    if let Some(b) = budget {
+        b.take(count.saturating_mul(size_of::<u32>()))?;
     }
 
     let mut parents = Vec::with_capacity(count);
@@ -586,6 +606,10 @@ pub fn decode_nonzero_u64(bytes: &[u8], count: usize) -> Result<Vec<u64>, Object
     }
 
     let mut at = bitmap_len;
+    let set_bits: usize = bitmap.iter().map(|b| b.count_ones() as usize).sum();
+    if set_bits > bytes.len().saturating_sub(at) {
+        return Err(ObjectError::Truncated);
+    }
     let mut out = vec![0_u64; count];
     for (idx, slot) in out.iter_mut().enumerate() {
         let byte = bitmap.get(idx >> 3).copied().unwrap_or(0);
@@ -648,13 +672,21 @@ pub fn decode_sparse_histograms(
     let masks = decode_dict_u64_budgeted(mask_bytes, count, budget)?;
     at = masks_end;
 
-    let mut out = Vec::with_capacity(count);
-    for mask in masks {
+    let mut total_nz = 0_usize;
+    for &mask in &masks {
         if (mask >> 40) != 0 {
             return Err(ObjectError::Layout(
                 "sparse histogram mask sets bit >= 40".into(),
             ));
         }
+        total_nz = total_nz.saturating_add(mask.count_ones() as usize);
+    }
+    if total_nz > bytes.len().saturating_sub(at) {
+        return Err(ObjectError::Truncated);
+    }
+
+    let mut out = Vec::with_capacity(count);
+    for mask in masks {
         let mut hist = [0_u64; 40];
         let mut remaining = mask;
         while remaining != 0 {

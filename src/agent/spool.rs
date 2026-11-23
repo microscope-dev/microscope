@@ -38,6 +38,20 @@ pub struct Batch {
     pub post: EncodedPost,
 }
 
+#[derive(Clone, Debug)]
+pub struct SpoolSnapshot {
+    dir: PathBuf,
+    pub owner_gen: u64,
+    pub queued_total: usize,
+    candidates: Vec<(u64, u64)>,
+}
+
+pub struct BatchBuildResult {
+    pub batch: Option<Batch>,
+    pub missing_chunks: Vec<u64>,
+    pub drop_chunks: Vec<u64>,
+}
+
 #[derive(Debug)]
 pub struct Spool {
     dir: PathBuf,
@@ -233,6 +247,43 @@ impl Spool {
         Ok(size)
     }
 
+    #[must_use]
+    pub fn snapshot_candidates(&self) -> SpoolSnapshot {
+        SpoolSnapshot {
+            dir: self.dir.clone(),
+            owner_gen: self.owner_gen,
+            queued_total: self.entries.len(),
+            candidates: self
+                .entries
+                .iter()
+                .map(|(&number, &size)| (number, size))
+                .collect(),
+        }
+    }
+
+    pub fn apply_batch_drops(
+        &mut self,
+        owner_gen: u64,
+        missing_chunks: &[u64],
+        drop_chunks: &[u64],
+    ) -> io::Result<()> {
+        if owner_gen != self.owner_gen {
+            return Ok(());
+        }
+        for &number in missing_chunks {
+            if let Some(removed) = self.entries.remove(&number) {
+                self.total_bytes = self.total_bytes.saturating_sub(removed);
+            }
+            self.highest_lost_chunk = self.highest_lost_chunk.max(number);
+        }
+        for &number in drop_chunks {
+            if self.entries.contains_key(&number) {
+                self.drop_entry(number)?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn peek_batch(
         &mut self,
         max_bytes: usize,
@@ -243,10 +294,6 @@ impl Spool {
         self.peek_batch_capped(max_bytes, usize::MAX, agent_id, created_at, sanitizer)
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "selects project-homogeneous batches while quarantining corrupt or oversized chunks"
-    )]
     pub fn peek_batch_capped(
         &mut self,
         max_bytes: usize,
@@ -255,127 +302,39 @@ impl Spool {
         created_at: i64,
         sanitizer: &Sanitizer,
     ) -> io::Result<Option<Batch>> {
-        let limit = max_bytes.min(MAX_POST_BYTES);
-        let chunk_cap = max_chunks.max(1);
+        self.peek_batch_with_resolver(max_bytes, max_chunks, agent_id, created_at, |_| sanitizer)
+    }
 
+    pub fn peek_batch_with_resolver<'a>(
+        &mut self,
+        max_bytes: usize,
+        max_chunks: usize,
+        agent_id: u64,
+        created_at: i64,
+        sanitizer_for: impl Fn(Option<&str>) -> &'a Sanitizer,
+    ) -> io::Result<Option<Batch>> {
         while !self.entries.is_empty() {
-            let candidates: Vec<(u64, u64)> = self
-                .entries
-                .iter()
-                .map(|(&number, &size)| (number, size))
-                .collect();
-            let mut chunks = Vec::new();
-            let mut numbers = Vec::new();
-            let mut estimated = 0_usize;
-            let mut batch_project: Option<String> = None;
-            let mut has_project = false;
-
-            for (number, size) in candidates {
-                let size_usize = usize::try_from(size).unwrap_or(usize::MAX);
-                if chunks.len() >= chunk_cap
-                    || (!chunks.is_empty() && estimated.saturating_add(size_usize) > limit)
-                {
-                    break;
-                }
-                let path = self.dir.join(chunk_file_name(number));
-                let raw = match fs::read(&path) {
-                    Ok(raw) => raw,
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                        if chunks.is_empty() {
-                            if let Some(removed) = self.entries.remove(&number) {
-                                self.total_bytes = self.total_bytes.saturating_sub(removed);
-                            }
-                            self.highest_lost_chunk = self.highest_lost_chunk.max(number);
-                            continue;
-                        }
-                        break;
-                    }
-                    Err(_) => {
-                        if chunks.is_empty() {
-                            self.drop_entry(number)?;
-                            break;
-                        }
-                        break;
-                    }
-                };
-
-                let decoded = ObjectReader::open(&raw)
-                    .and_then(|reader| reader.part_sections(0, None))
-                    .and_then(|sections| decode_tables(&sections));
-                let mut data = match decoded {
-                    Ok(data) if data.chunks.iter().all(|row| row.agent == agent_id) => data,
-                    Ok(_) | Err(_) => {
-                        if chunks.is_empty() {
-                            self.drop_entry(number)?;
-                            break;
-                        }
-                        break;
-                    }
-                };
-
-                let project = normalize_project_dimension(&mut data);
-                normalize_legacy_clock(&mut data);
-                if has_project {
-                    if batch_project.is_none() || batch_project != project {
-                        break;
-                    }
-                } else {
-                    batch_project = project;
-                    has_project = true;
-                }
-
-                let unit = data
-                    .chunks
-                    .first()
-                    .map_or(TimeUnit::Us, |row| row.time_unit);
-                chunks.push(sanitize_chunk(data, unit, sanitizer));
-                numbers.push(number);
-                estimated = estimated.saturating_add(size_usize);
+            let snapshot = self.snapshot_candidates();
+            let built = build_batch_from_snapshot(
+                &snapshot,
+                max_bytes,
+                max_chunks,
+                agent_id,
+                created_at,
+                &sanitizer_for,
+            )?;
+            self.apply_batch_drops(
+                snapshot.owner_gen,
+                &built.missing_chunks,
+                &built.drop_chunks,
+            )?;
+            if let Some(batch) = built.batch {
+                return Ok(Some(batch));
             }
-
-            if chunks.is_empty() {
-                continue;
-            }
-
-            while chunks.len() > 1 {
-                if let Ok(post) = encode_post(&chunks, agent_id, created_at, DEFAULT_ZSTD_LEVEL)
-                    && post.as_bytes().len() <= limit
-                {
-                    let first_chunk = numbers.first().copied().unwrap_or(0);
-                    let last_chunk = numbers.last().copied().unwrap_or(0);
-                    return Ok(Some(Batch {
-                        owner_gen: self.owner_gen,
-                        first_chunk,
-                        last_chunk,
-                        chunk_count: chunks.len(),
-                        project: batch_project,
-                        post,
-                    }));
-                }
-                chunks.pop();
-                numbers.pop();
-            }
-
-            if let Ok(post) = encode_post(&chunks, agent_id, created_at, DEFAULT_ZSTD_LEVEL)
-                && post.as_bytes().len() <= limit
-            {
-                let first_chunk = numbers.first().copied().unwrap_or(0);
-                let last_chunk = numbers.last().copied().unwrap_or(0);
-                return Ok(Some(Batch {
-                    owner_gen: self.owner_gen,
-                    first_chunk,
-                    last_chunk,
-                    chunk_count: chunks.len(),
-                    project: batch_project,
-                    post,
-                }));
-            }
-
-            if let Some(oversized) = numbers.first().copied() {
-                self.drop_entry(oversized)?;
+            if built.missing_chunks.is_empty() && built.drop_chunks.is_empty() {
+                break;
             }
         }
-
         Ok(None)
     }
 
@@ -450,6 +409,149 @@ impl Spool {
         }
         Ok(())
     }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "builds project-homogeneous sanitized batch from snapshot outside lock"
+)]
+pub fn build_batch_from_snapshot<'a>(
+    snapshot: &SpoolSnapshot,
+    max_bytes: usize,
+    max_chunks: usize,
+    agent_id: u64,
+    created_at: i64,
+    sanitizer_for: impl Fn(Option<&str>) -> &'a Sanitizer,
+) -> io::Result<BatchBuildResult> {
+    let limit = max_bytes.min(MAX_POST_BYTES);
+    let chunk_cap = max_chunks.max(1);
+    let mut chunks = Vec::new();
+    let mut numbers = Vec::new();
+    let mut missing_chunks = Vec::new();
+    let mut drop_chunks = Vec::new();
+    let mut estimated = 0_usize;
+    let mut batch_project: Option<String> = None;
+    let mut has_project = false;
+
+    for &(number, size) in &snapshot.candidates {
+        let size_usize = usize::try_from(size).unwrap_or(usize::MAX);
+        if chunks.len() >= chunk_cap
+            || (!chunks.is_empty() && estimated.saturating_add(size_usize) > limit)
+        {
+            break;
+        }
+        let path = snapshot.dir.join(chunk_file_name(number));
+        let raw = match fs::read(&path) {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                if chunks.is_empty() {
+                    missing_chunks.push(number);
+                    continue;
+                }
+                break;
+            }
+            Err(error) => {
+                if chunks.is_empty() {
+                    return Err(error);
+                }
+                break;
+            }
+        };
+
+        let decoded = ObjectReader::open(&raw)
+            .and_then(|reader| reader.part_sections(0, None))
+            .and_then(|sections| decode_tables(&sections));
+        let mut data = match decoded {
+            Ok(data) if data.chunks.iter().all(|row| row.agent == agent_id) => data,
+            Ok(_) | Err(_) => {
+                if chunks.is_empty() {
+                    drop_chunks.push(number);
+                    break;
+                }
+                break;
+            }
+        };
+
+        let project = normalize_project_dimension(&mut data);
+        normalize_legacy_clock(&mut data);
+        if has_project {
+            if batch_project.is_none() || batch_project != project {
+                break;
+            }
+        } else {
+            batch_project = project;
+            has_project = true;
+        }
+
+        let unit = data
+            .chunks
+            .first()
+            .map_or(TimeUnit::Us, |row| row.time_unit);
+        let sanitizer = sanitizer_for(batch_project.as_deref());
+        chunks.push(sanitize_chunk(data, unit, sanitizer));
+        numbers.push(number);
+        estimated = estimated.saturating_add(size_usize);
+    }
+
+    if chunks.is_empty() {
+        return Ok(BatchBuildResult {
+            batch: None,
+            missing_chunks,
+            drop_chunks,
+        });
+    }
+
+    while chunks.len() > 1 {
+        if let Ok(post) = encode_post(&chunks, agent_id, created_at, DEFAULT_ZSTD_LEVEL)
+            && post.as_bytes().len() <= limit
+        {
+            let first_chunk = numbers.first().copied().unwrap_or(0);
+            let last_chunk = numbers.last().copied().unwrap_or(0);
+            return Ok(BatchBuildResult {
+                batch: Some(Batch {
+                    owner_gen: snapshot.owner_gen,
+                    first_chunk,
+                    last_chunk,
+                    chunk_count: chunks.len(),
+                    project: batch_project,
+                    post,
+                }),
+                missing_chunks,
+                drop_chunks,
+            });
+        }
+        chunks.pop();
+        numbers.pop();
+    }
+
+    if let Ok(post) = encode_post(&chunks, agent_id, created_at, DEFAULT_ZSTD_LEVEL)
+        && post.as_bytes().len() <= limit
+    {
+        let first_chunk = numbers.first().copied().unwrap_or(0);
+        let last_chunk = numbers.last().copied().unwrap_or(0);
+        return Ok(BatchBuildResult {
+            batch: Some(Batch {
+                owner_gen: snapshot.owner_gen,
+                first_chunk,
+                last_chunk,
+                chunk_count: chunks.len(),
+                project: batch_project,
+                post,
+            }),
+            missing_chunks,
+            drop_chunks,
+        });
+    }
+
+    if let Some(oversized) = numbers.first().copied() {
+        drop_chunks.push(oversized);
+    }
+
+    Ok(BatchBuildResult {
+        batch: None,
+        missing_chunks,
+        drop_chunks,
+    })
 }
 
 #[derive(Debug, PartialEq, Eq)]

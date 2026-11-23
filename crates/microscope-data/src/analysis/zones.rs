@@ -382,8 +382,8 @@ pub fn plot_series(
         .collect();
     values.sort_by(|a, b| (a.0, a.2).cmp(&(b.0, b.2)));
 
-    let width = i128::from((range.1 - range.0).max(1));
-    let bin_of = |time: i64| i128::from(time - range.0) * bins.max(1) as i128 / width;
+    let width = (i128::from(range.1) - i128::from(range.0)).max(1);
+    let bin_of = |time: i64| (i128::from(time) - i128::from(range.0)) * bins.max(1) as i128 / width;
     let mut series: Vec<PlotSeries> = Vec::new();
     let mut last_bin = 0;
     for (_, name, time, value) in values {

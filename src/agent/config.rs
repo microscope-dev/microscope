@@ -377,11 +377,11 @@ pub fn load(path: Option<&Path>, env: &dyn Environment) -> Result<Config, Config
     if cpu_percent.is_some_and(|cpu| !(1..=100).contains(&cpu)) {
         return Err(ConfigError::Cpu);
     }
-    if file
-        .limits
-        .memory_mib
-        .is_some_and(|memory| !(16..=65536).contains(&memory))
-    {
+    let memory_mib = match env.get("MICROSCOPE_MEMORY_MIB") {
+        Some(value) => Some(value.parse().map_err(|_| ConfigError::Memory)?),
+        None => file.limits.memory_mib,
+    };
+    if memory_mib.is_some_and(|memory| !(16..=65536).contains(&memory)) {
         return Err(ConfigError::Memory);
     }
     let max_preset = env
@@ -401,7 +401,7 @@ pub fn load(path: Option<&Path>, env: &dyn Environment) -> Result<Config, Config
     )?;
     let limits = Limits {
         cpu_percent,
-        memory_mib: file.limits.memory_mib,
+        memory_mib,
         max_preset,
         min_time_unit,
         allow_remote_rules,

@@ -245,7 +245,7 @@ impl Client {
                 |error| PollReply::Unreachable(format!("bad poll answer: {error}")),
                 |resp| PollReply::Directive(Box::new(resp)),
             ),
-            401 | 403 => PollReply::Unauthorized,
+            401 => PollReply::Unauthorized,
             _ => PollReply::Refused {
                 status,
                 retry_after,
@@ -317,7 +317,7 @@ impl Client {
                     last_chunk: body.last_chunk,
                 },
             ),
-            401 | 403 => IngestReply::Unauthorized,
+            401 => IngestReply::Unauthorized,
             _ => IngestReply::Refused {
                 status,
                 error,
@@ -387,7 +387,7 @@ impl Client {
                     },
                 },
             ),
-            401 | 403 => SymbolPartReply::Unauthorized,
+            401 => SymbolPartReply::Unauthorized,
             _ => SymbolPartReply::Refused {
                 status,
                 message: text,

@@ -35,7 +35,9 @@ pub fn strip_to_debug_elf(bytes: &[u8]) -> Result<Vec<u8>, SymbolError> {
     let shstr_index = usize::from(read_u16(bytes, 62, endian)?);
 
     if elf_hdr_size < 64 || sec_entry_size < 64 || sec_count == 0 || shstr_index >= sec_count {
-        return Ok(bytes.to_vec());
+        return Err(SymbolError::NotElf(
+            "invalid ELF64 section header table".to_owned(),
+        ));
     }
     if elf_hdr_size > bytes.len() {
         return Err(SymbolError::NotElf(
@@ -118,9 +120,17 @@ pub fn strip_to_debug_elf(bytes: &[u8]) -> Result<Vec<u8>, SymbolError> {
     } else {
         None
     };
-    for link in kept_linked {
-        if let Some(slot) = keep_section.get_mut(link) {
+    while let Some(link) = kept_linked.pop() {
+        if let Some(slot) = keep_section.get_mut(link)
+            && !*slot
+        {
             *slot = true;
+            if let Some(hdr) = headers.get(link) {
+                let next_link = read_u32(hdr, 40, endian)? as usize;
+                if next_link > 0 && next_link < sec_count {
+                    kept_linked.push(next_link);
+                }
+            }
         }
     }
 
@@ -167,8 +177,9 @@ pub fn strip_to_debug_elf(bytes: &[u8]) -> Result<Vec<u8>, SymbolError> {
             let slice = bytes
                 .get(sec_off..sec_end)
                 .ok_or_else(|| SymbolError::NotElf("truncated section".to_owned()))?;
+            let needs_nul = i == shstr_index && go_text_start.is_some() && !slice.ends_with(&[0]);
             let extra_len = if i == shstr_index && go_text_start.is_some() {
-                GO_TEXT_SECTION_NAME.len() + 1
+                usize::from(needs_nul) + GO_TEXT_SECTION_NAME.len() + 1
             } else {
                 0
             };
@@ -184,8 +195,11 @@ pub fn strip_to_debug_elf(bytes: &[u8]) -> Result<Vec<u8>, SymbolError> {
             let new_off = out.len() as u64;
             out.extend_from_slice(slice);
             if extra_len > 0
-                && let Ok(name_off) = u32::try_from(slice.len())
+                && let Ok(name_off) = u32::try_from(slice.len() + usize::from(needs_nul))
             {
+                if needs_nul {
+                    out.push(0);
+                }
                 go_text_name_off = Some(name_off);
                 out.extend_from_slice(GO_TEXT_SECTION_NAME.as_bytes());
                 out.push(0);
@@ -205,7 +219,7 @@ pub fn strip_to_debug_elf(bytes: &[u8]) -> Result<Vec<u8>, SymbolError> {
         }
         out.resize(aligned, 0);
         let note_off = out.len() as u64;
-        out.extend_from_slice(&text_start.to_le_bytes());
+        out.extend_from_slice(&endian.write_u64(text_start));
 
         let mut synth = vec![0_u8; sec_entry_size];
         write_u32(&mut synth, 0, name_off, endian);

@@ -1,3 +1,4 @@
+import { account } from "./account";
 import { type Method, RequestError, type Results } from "./protocol";
 
 const CAPTURE_PREFIX = "capture:";
@@ -118,11 +119,7 @@ class CaptureCache {
     void (async () => {
       const settled = await entry.promise;
       entry.settled = settled;
-      if (
-        !settled.ok &&
-        settled.error.kind === "disconnected" &&
-        this.#entries.get(key) === entry
-      ) {
+      if (!settled.ok && this.#entries.get(key) === entry) {
         this.#entries.delete(key);
       }
     })();
@@ -147,3 +144,11 @@ export function captureCacheKey(captureId: number, method: Method, params: unkno
 }
 
 export const captureCache = new CaptureCache();
+
+account.subscribe((state, prev) => {
+  const prevId = prev.now.kind === "in" ? prev.now.user.id : null;
+  const nextId = state.now.kind === "in" ? state.now.user.id : null;
+  if (prevId !== nextId) {
+    captureCache.clear();
+  }
+});

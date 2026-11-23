@@ -88,6 +88,7 @@ struct ControlBridgeState {
 
 struct PollHandle {
     bridge: Arc<(Mutex<ControlBridgeState>, Condvar)>,
+    thread: Option<thread::JoinHandle<()>>,
 }
 
 impl PollHandle {
@@ -116,12 +117,15 @@ impl PollHandle {
             Condvar::new(),
         ));
         let worker_bridge = Arc::clone(&bridge);
-        let _ = thread::Builder::new()
+        let handle = thread::Builder::new()
             .name("microscope-agent-poll".into())
             .spawn(move || {
                 poll_loop(&worker_bridge, &client, projects, services, limits);
             })?;
-        Ok(Self { bridge })
+        Ok(Self {
+            bridge,
+            thread: Some(handle),
+        })
     }
 
     fn set_token(&self, token: Option<String>) {
@@ -173,7 +177,7 @@ impl PollHandle {
         needed
     }
 
-    fn stop(&self) {
+    fn stop(&mut self) {
         let (lock, cvar) = &*self.bridge;
         let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
         guard.stop = true;
@@ -181,6 +185,13 @@ impl PollHandle {
         guard.pipeline = None;
         drop(guard);
         cvar.notify_all();
+        let _ = self.thread.take();
+    }
+}
+
+impl Drop for PollHandle {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 
@@ -692,6 +703,15 @@ impl Agent {
                 || config.tags != self.config.tags
                 || (config.record.is_some() && self.pipeline.is_none());
             self.config = config;
+            if !same_state_dir {
+                match Store::open(&self.config.state_dir) {
+                    Ok(store) => self.store = store,
+                    Err(err) => log(&format!(
+                        "could not open state dir {}: {err}",
+                        self.config.state_dir.display()
+                    )),
+                }
+            }
             if pipeline_changed {
                 if let Some(mut old) = self.pipeline.take() {
                     old.stop();
@@ -721,7 +741,7 @@ impl Agent {
                         }
                     }
                 }
-                if let Some(poll) = &self.poll {
+                if let Some(mut poll) = self.poll.take() {
                     poll.stop();
                 }
                 match PollHandle::start(&self.config, self.pipeline.as_ref().map(Pipeline::control))
@@ -819,7 +839,7 @@ impl Agent {
     }
 
     fn stop(&mut self) {
-        if let Some(poll) = self.poll.take() {
+        if let Some(mut poll) = self.poll.take() {
             poll.stop();
         }
         if let Some(mut pipeline) = self.pipeline.take() {

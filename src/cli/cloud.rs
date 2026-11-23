@@ -303,34 +303,30 @@ pub fn poll_device_login(
     Ok(polled)
 }
 
-fn parse_action(raw: &str) -> Option<Action> {
-    match raw {
-        "redact" => Some(Action::Redact),
-        "hash" => Some(Action::Hash),
-        "mask" => Some(Action::Mask),
-        "drop-field" => Some(Action::DropField),
-        "drop-record" => Some(Action::DropRecord),
-        _ => None,
-    }
-}
-
-#[must_use]
-pub fn build_sanitizer(policy: &SanitizerPolicyDirective, project_name: &str) -> Sanitizer {
+pub fn build_sanitizer(policy: &SanitizerPolicyDirective, project_name: &str) -> Result<Sanitizer> {
     let mut builtins: Vec<Builtin> = Builtin::DEFAULT.to_vec();
     for name in &policy.enabled_builtins {
-        if let Ok(b) = name.parse::<Builtin>()
-            && !builtins.contains(&b)
-        {
+        let b = name.parse::<Builtin>().map_err(|e| {
+            anyhow::anyhow!("server sanitizer policy enabled unknown builtin {name:?}: {e}")
+        })?;
+        if !builtins.contains(&b) {
             builtins.push(b);
         }
     }
 
-    let key_bytes = policy
-        .hash_key
-        .as_deref()
-        .and_then(|b64| URL_SAFE_NO_PAD.decode(b64).ok())
-        .filter(|bytes| !bytes.is_empty())
-        .unwrap_or_else(|| b"microscope-workstation-local".to_vec());
+    let key_bytes = match policy.hash_key.as_deref() {
+        Some(b64) => {
+            let decoded = URL_SAFE_NO_PAD
+                .decode(b64)
+                .context("server sanitizer policy returned invalid base64 hash_key")?;
+            anyhow::ensure!(
+                !decoded.is_empty(),
+                "server sanitizer policy returned empty hash_key"
+            );
+            decoded
+        }
+        None => b"microscope-workstation-local".to_vec(),
+    };
 
     let mut custom = Vec::new();
     for rule in &policy.rules {
@@ -341,19 +337,29 @@ pub fn build_sanitizer(policy: &SanitizerPolicyDirective, project_name: &str) ->
         if !applies {
             continue;
         }
-        if let Some(action) = parse_action(&rule.action)
-            && let Ok(compiled) = Rule::new(&RuleSpec {
-                name: rule.name.clone(),
-                fields: rule.fields.clone(),
-                pattern: rule.pattern.clone(),
-                action,
-            })
-        {
-            custom.push(compiled);
-        }
+        let action = Action::parse(&rule.action).ok_or_else(|| {
+            anyhow::anyhow!(
+                "server sanitizer policy rule {:?} has unsupported action {:?}",
+                rule.name,
+                rule.action
+            )
+        })?;
+        let compiled = Rule::new(&RuleSpec {
+            name: rule.name.clone(),
+            fields: rule.fields.clone(),
+            pattern: rule.pattern.clone(),
+            action,
+        })
+        .with_context(|| {
+            format!(
+                "server sanitizer policy rule {:?} failed to compile",
+                rule.name
+            )
+        })?;
+        custom.push(compiled);
     }
 
-    Sanitizer::new(&builtins, custom, HashKey::new(&key_bytes))
+    Ok(Sanitizer::new(&builtins, custom, HashKey::new(&key_bytes)))
 }
 
 #[expect(
@@ -368,7 +374,6 @@ pub fn upload_capture(
     opts: &UploadCaptureOptions,
 ) -> Result<UploadCaptureResult> {
     let control = http_agent(CONTROL_TIMEOUT, ca_file)?;
-    let uploader = http_agent(UPLOAD_TIMEOUT, ca_file)?;
 
     let policy_body = serde_json::to_vec(&PolicyRequest {
         project_id: opts.project_id,
@@ -392,7 +397,7 @@ pub fn upload_capture(
     let policy: PolicyResponse = serde_json::from_str(&policy_text)
         .context("unexpected /api/captures/v1/policy response")?;
 
-    let sanitizer = build_sanitizer(&policy.sanitizer, &policy.project_name);
+    let sanitizer = build_sanitizer(&policy.sanitizer, &policy.project_name)?;
     let cleaned = sanitize_capture(capture, &sanitizer);
     let local_redacted = cleaned.total_fired();
 
@@ -436,9 +441,15 @@ pub fn upload_capture(
     } else {
         init.upload_url
     };
-    let mut put_req = uploader
-        .put(&put_url)
-        .header("content-type", "application/octet-stream");
+    let uploader = super::auth::http_agent_for_url(UPLOAD_TIMEOUT, ca_file, &put_url, server)?;
+    let has_content_type = init
+        .headers
+        .keys()
+        .any(|k| k.eq_ignore_ascii_case("content-type"));
+    let mut put_req = uploader.put(&put_url);
+    if !has_content_type {
+        put_req = put_req.header("content-type", "application/octet-stream");
+    }
     for (k, v) in &init.headers {
         put_req = put_req.header(k.as_str(), v.as_str());
     }

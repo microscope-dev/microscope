@@ -348,12 +348,10 @@ impl SectionWriter {
             return Err(ObjectError::Limit("too many columns"));
         }
         if coding == Coding::Constant {
-            let val = if raw.len() == 8 {
-                u64::from_le_bytes(raw.try_into().unwrap_or([0; 8]))
-            } else {
-                0
-            };
-            return self.add_constant(group, column, val);
+            let bytes: [u8; 8] = raw.try_into().map_err(|_| {
+                ObjectError::Layout("constant column requires an 8-byte payload".into())
+            })?;
+            return self.add_constant(group, column, u64::from_le_bytes(bytes));
         }
         frame.columns.push(PendingColumn {
             group,
@@ -433,6 +431,9 @@ impl SectionWriter {
         if self.pages.len() >= MAX_PAGES {
             return Err(ObjectError::Limit("too many pages in section"));
         }
+        if min_key > max_key {
+            return Err(ObjectError::Layout("page min_key exceeds max_key".into()));
+        }
 
         let frames = std::mem::replace(
             &mut self.current_frames,
@@ -503,7 +504,8 @@ impl SectionWriter {
         let page_count =
             u16::try_from(self.pages.len()).map_err(|_| ObjectError::Limit("too many pages"))?;
 
-        if page_count == 1 {
+        if page_count == 1 && self.pages[0].min_key == i64::MIN && self.pages[0].max_key == i64::MAX
+        {
             let page = &self.pages[0];
             let header = SectionHeader {
                 kind: (self.kind as u16).into(),
@@ -721,12 +723,71 @@ impl DecodedColumn {
         count: usize,
         budget: Option<&DecodeBudget>,
     ) -> Result<Vec<u32>, ObjectError> {
-        let vals = self.decode_u64(count, budget)?;
-        vals.into_iter()
-            .map(|v| {
-                u32::try_from(v).map_err(|_| ObjectError::Layout("column value exceeds u32".into()))
-            })
-            .collect()
+        if count > MAX_TOTAL_ROWS {
+            return Err(ObjectError::Limit("row count exceeds limit"));
+        }
+        if let Some(b) = budget {
+            b.take(count.saturating_mul(size_of::<u32>()))?;
+        }
+        match self.coding {
+            Coding::Constant => {
+                let v = u32::try_from(self.constant_val)
+                    .map_err(|_| ObjectError::Layout("column value exceeds u32".into()))?;
+                Ok(vec![v; count])
+            }
+            Coding::VarintPlain | Coding::VarintDeltaByKey | Coding::VarintRelative => {
+                if count > self.data.len() {
+                    return Err(ObjectError::Truncated);
+                }
+                let mut out = Vec::with_capacity(count);
+                let mut at = 0;
+                for _ in 0..count {
+                    let v = read_varint(&self.data, &mut at)?;
+                    out.push(
+                        u32::try_from(v)
+                            .map_err(|_| ObjectError::Layout("column value exceeds u32".into()))?,
+                    );
+                }
+                if at != self.data.len() {
+                    return Err(ObjectError::Layout(
+                        "trailing bytes in varint column".into(),
+                    ));
+                }
+                Ok(out)
+            }
+            Coding::VarintDelta => {
+                if count > self.data.len() {
+                    return Err(ObjectError::Truncated);
+                }
+                let mut out = Vec::with_capacity(count);
+                let mut at = 0;
+                let mut prev = 0_u64;
+                for _ in 0..count {
+                    let raw = read_varint(&self.data, &mut at)?;
+                    let v = prev.wrapping_add(zigzag_decode(raw).cast_unsigned());
+                    prev = v;
+                    out.push(
+                        u32::try_from(v)
+                            .map_err(|_| ObjectError::Layout("column value exceeds u32".into()))?,
+                    );
+                }
+                if at != self.data.len() {
+                    return Err(ObjectError::Layout(
+                        "trailing bytes in varint column".into(),
+                    ));
+                }
+                Ok(out)
+            }
+            _ => {
+                let vals = self.decode_u64(count, budget)?;
+                vals.into_iter()
+                    .map(|v| {
+                        u32::try_from(v)
+                            .map_err(|_| ObjectError::Layout("column value exceeds u32".into()))
+                    })
+                    .collect()
+            }
+        }
     }
 
     pub fn decode_u8(
@@ -734,12 +795,71 @@ impl DecodedColumn {
         count: usize,
         budget: Option<&DecodeBudget>,
     ) -> Result<Vec<u8>, ObjectError> {
-        let vals = self.decode_u64(count, budget)?;
-        vals.into_iter()
-            .map(|v| {
-                u8::try_from(v).map_err(|_| ObjectError::Layout("column value exceeds u8".into()))
-            })
-            .collect()
+        if count > MAX_TOTAL_ROWS {
+            return Err(ObjectError::Limit("row count exceeds limit"));
+        }
+        if let Some(b) = budget {
+            b.take(count)?;
+        }
+        match self.coding {
+            Coding::Constant => {
+                let v = u8::try_from(self.constant_val)
+                    .map_err(|_| ObjectError::Layout("column value exceeds u8".into()))?;
+                Ok(vec![v; count])
+            }
+            Coding::VarintPlain | Coding::VarintDeltaByKey | Coding::VarintRelative => {
+                if count > self.data.len() {
+                    return Err(ObjectError::Truncated);
+                }
+                let mut out = Vec::with_capacity(count);
+                let mut at = 0;
+                for _ in 0..count {
+                    let v = read_varint(&self.data, &mut at)?;
+                    out.push(
+                        u8::try_from(v)
+                            .map_err(|_| ObjectError::Layout("column value exceeds u8".into()))?,
+                    );
+                }
+                if at != self.data.len() {
+                    return Err(ObjectError::Layout(
+                        "trailing bytes in varint column".into(),
+                    ));
+                }
+                Ok(out)
+            }
+            Coding::VarintDelta => {
+                if count > self.data.len() {
+                    return Err(ObjectError::Truncated);
+                }
+                let mut out = Vec::with_capacity(count);
+                let mut at = 0;
+                let mut prev = 0_u64;
+                for _ in 0..count {
+                    let raw = read_varint(&self.data, &mut at)?;
+                    let v = prev.wrapping_add(zigzag_decode(raw).cast_unsigned());
+                    prev = v;
+                    out.push(
+                        u8::try_from(v)
+                            .map_err(|_| ObjectError::Layout("column value exceeds u8".into()))?,
+                    );
+                }
+                if at != self.data.len() {
+                    return Err(ObjectError::Layout(
+                        "trailing bytes in varint column".into(),
+                    ));
+                }
+                Ok(out)
+            }
+            _ => {
+                let vals = self.decode_u64(count, budget)?;
+                vals.into_iter()
+                    .map(|v| {
+                        u8::try_from(v)
+                            .map_err(|_| ObjectError::Layout("column value exceeds u8".into()))
+                    })
+                    .collect()
+            }
+        }
     }
 }
 
@@ -858,6 +978,11 @@ impl<'a, 'b> SectionReader<'a, 'b> {
                     "unpaged section must have page_count == 1".into(),
                 ));
             }
+            if (header.uncompressed_len.get() as usize) > MAX_PAGE_RAW_BYTES {
+                return Err(ObjectError::Limit(
+                    "section uncompressed_len exceeds maximum page size",
+                ));
+            }
             let payload = bytes
                 .get(SECTION_HEADER_LEN..)
                 .ok_or(ObjectError::Truncated)?;
@@ -899,6 +1024,16 @@ impl<'a, 'b> SectionReader<'a, 'b> {
         let mut page_slices = Vec::with_capacity(page_count);
         let mut sum_rows = 0_u32;
         for entry in entries {
+            if entry.min_key.get() > entry.max_key.get() {
+                return Err(ObjectError::Layout(
+                    "page entry min_key exceeds max_key".into(),
+                ));
+            }
+            if (entry.uncompressed_len.get() as usize) > MAX_PAGE_RAW_BYTES {
+                return Err(ObjectError::Limit(
+                    "page uncompressed_len exceeds maximum page size",
+                ));
+            }
             let plen = entry.stored_len.get() as usize;
             let next = at
                 .checked_add(plen)
@@ -964,6 +1099,24 @@ impl<'a, 'b> SectionReader<'a, 'b> {
         self.read_page_frames(page_index, usize::MAX)
     }
 
+    pub fn read_single_page(&self) -> Result<PageReader<'b>, ObjectError> {
+        if self.pages.len() != 1 {
+            return Err(ObjectError::Layout(format!(
+                "section {:?} expected 1 page, found {}",
+                self.kind,
+                self.pages.len()
+            )));
+        }
+        let page = self.read_page(0)?;
+        if page.rows != self.rows {
+            return Err(ObjectError::Layout(format!(
+                "section {:?} page row count disagrees with section header",
+                self.kind
+            )));
+        }
+        Ok(page)
+    }
+
     pub fn read_page_frames(
         &self,
         page_index: usize,
@@ -991,6 +1144,7 @@ impl<'a, 'b> SectionReader<'a, 'b> {
         let mut groups: Vec<GroupEntry> = Vec::new();
         let mut columns: BTreeMap<(u16, u8), DecodedColumn> = BTreeMap::new();
         let frames_to_decode = frame_count.min(max_frames);
+        let mut total_uncomp = 0_usize;
 
         for frame_idx in 0..frame_count {
             let codec_raw = *slice.get(at).ok_or(ObjectError::Truncated)?;
@@ -1005,6 +1159,10 @@ impl<'a, 'b> SectionReader<'a, 'b> {
                 .map_err(|_| ObjectError::Limit("frame uncompressed_len overflow"))?;
             let bypass_len = usize::try_from(read_varint(slice, &mut at)?)
                 .map_err(|_| ObjectError::Limit("frame bypass_len overflow"))?;
+            total_uncomp = total_uncomp
+                .checked_add(uncomp_len)
+                .and_then(|n| n.checked_add(bypass_len))
+                .ok_or(ObjectError::Limit("page uncompressed size overflow"))?;
 
             let stored_end = at
                 .checked_add(stored_len)
@@ -1033,6 +1191,11 @@ impl<'a, 'b> SectionReader<'a, 'b> {
         if at != slice.len() {
             return Err(ObjectError::Layout(
                 "trailing bytes after page frames".into(),
+            ));
+        }
+        if total_uncomp != entry.uncompressed_len.get() as usize {
+            return Err(ObjectError::Layout(
+                "page uncompressed_len disagrees with frame headers".into(),
             ));
         }
 
@@ -1100,15 +1263,18 @@ fn decode_frame_into(
         } else {
             let local = usize::try_from(enc_group - 1)
                 .map_err(|_| ObjectError::Layout("group index overflow".into()))?;
-            if local >= group_count && local >= groups.len() {
-                return Err(ObjectError::Layout("column group out of bounds".into()));
-            }
-            u16::try_from(if group_count > 0 {
+            let resolved = if group_count > 0 {
+                if local >= group_count {
+                    return Err(ObjectError::Layout("column group out of bounds".into()));
+                }
                 group_base + local
             } else {
+                if local >= groups.len() {
+                    return Err(ObjectError::Layout("column group out of bounds".into()));
+                }
                 local
-            })
-            .map_err(|_| ObjectError::Limit("group index exceeds u16"))?
+            };
+            u16::try_from(resolved).map_err(|_| ObjectError::Limit("group index exceeds u16"))?
         };
         let col_id = *raw.get(at).ok_or(ObjectError::Truncated)?;
         let coding_raw = *raw.get(at + 1).ok_or(ObjectError::Truncated)?;

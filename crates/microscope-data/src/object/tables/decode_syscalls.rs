@@ -1,9 +1,9 @@
 use super::super::codec::{
-    Coding, DecodeBudget, SectionReader, WHOLE_SECTION_GROUP, decode_sparse_histograms,
-    decode_words, delta_by_key_decode_u64, delta_decode_i64, zigzag_decode,
+    Coding, DecodeBudget, WHOLE_SECTION_GROUP, decode_sparse_histograms, decode_words,
+    delta_by_key_decode_u64, delta_decode_i64, zigzag_decode,
 };
 use super::super::{MAX_TOTAL_ROWS, ObjectError, SectionKind};
-use super::decode::charge_rows;
+use super::decode::{charge_rows, open_table_section};
 use super::{
     NOTE_BLOBS_ARGUMENT, read_delta_u64_col, read_u8_col, read_u32_col, read_u64_col, u32_from_u64,
 };
@@ -29,11 +29,11 @@ pub(super) fn decode_syscalls(
         outcomes: Vec<u8>,
         flags: Vec<u8>,
         unseen: Option<Vec<u8>>,
-        args: Vec<Vec<u64>>,
+        args: [Option<Vec<u64>>; 6],
         cursor: usize,
     }
 
-    let reader = SectionReader::open_budgeted(bytes, SectionKind::Syscalls, budget)?;
+    let reader = open_table_section(bytes, SectionKind::Syscalls, budget)?;
     let total = reader.rows as usize;
     charge_rows::<Syscall>(&reader, total)?;
     let mut syscalls = Vec::with_capacity(total);
@@ -42,6 +42,19 @@ pub(super) fn decode_syscalls(
         let page = reader.read_page(page_idx)?;
         let before_cols = budget.remaining();
         let row_count = page.rows as usize;
+        let group_row_sum = page
+            .groups
+            .iter()
+            .try_fold(0_usize, |acc, entry| {
+                acc.checked_add(entry.rows.get() as usize)
+            })
+            .ok_or(ObjectError::Limit("syscall group rows overflow"))?;
+        if group_row_sum != row_count {
+            return Err(ObjectError::Layout(
+                "sum of syscall group rows disagrees with page row count".into(),
+            ));
+        }
+
         let order = read_u64_col(&page, WHOLE_SECTION_GROUP, 0, row_count)?;
         let exit_deltas = read_u64_col(&page, WHOLE_SECTION_GROUP, 1, row_count)?;
         let exit_units = delta_decode_i64(&exit_deltas, reader.base_time);
@@ -80,14 +93,12 @@ pub(super) fn decode_syscalls(
                 None
             };
 
-            let mut args = Vec::with_capacity(6);
-            for arg_idx in 0_u8..6 {
+            let mut args: [Option<Vec<u64>>; 6] = [None, None, None, None, None, None];
+            for (slot, arg_idx) in args.iter_mut().zip(0_u8..6) {
                 if page.optional_column(group_id, 10 + arg_idx).is_some() {
                     let raw = read_u64_col(&page, group_id, 10 + arg_idx, group_rows)?;
                     charge_rows::<u64>(&reader, group_rows)?;
-                    args.push(delta_by_key_decode_u64(&raw, &threads)?);
-                } else {
-                    break;
+                    *slot = Some(delta_by_key_decode_u64(&raw, &threads)?);
                 }
             }
 
@@ -139,8 +150,8 @@ pub(super) fn decode_syscalls(
             };
 
             let mut call_args = [zerocopy::little_endian::U64::new(0); 6];
-            for (i, col) in group.args.iter().enumerate() {
-                if let (Some(slot), Some(&val)) = (call_args.get_mut(i), col.get(pos)) {
+            for (slot, col) in call_args.iter_mut().zip(&group.args) {
+                if let Some(val) = col.as_ref().and_then(|c| c.get(pos).copied()) {
                     *slot = val.into();
                 }
             }
@@ -196,7 +207,7 @@ pub(super) fn decode_syscall_blobs(
         cursor: usize,
     }
 
-    let r = SectionReader::open_budgeted(bytes, SectionKind::SyscallBlobs, budget)?;
+    let r = open_table_section(bytes, SectionKind::SyscallBlobs, budget)?;
     let total_captures = r.rows as usize;
     r.charge(total_captures.saturating_mul(12))?;
 
@@ -226,6 +237,20 @@ pub(super) fn decode_syscall_blobs(
 
         let p = r.read_page(page_idx)?;
         let before_cols = budget.remaining();
+        let capture_group_rows = p
+            .groups
+            .iter()
+            .filter(|entry| entry.argument != NOTE_BLOBS_ARGUMENT)
+            .try_fold(0_usize, |acc, entry| {
+                acc.checked_add(entry.rows.get() as usize)
+            })
+            .ok_or(ObjectError::Limit("blob group rows overflow"))?;
+        if capture_group_rows != page_captures {
+            return Err(ObjectError::Layout(
+                "sum of blob group rows disagrees with page capture count".into(),
+            ));
+        }
+
         let call_counts = read_u32_col(&p, WHOLE_SECTION_GROUP, 0, expected_calls)?;
         let order = read_u64_col(&p, WHOLE_SECTION_GROUP, 1, page_captures)?;
 
@@ -240,8 +265,19 @@ pub(super) fn decode_syscall_blobs(
             }
 
             if entry.argument == NOTE_BLOBS_ARGUMENT {
+                if note_blobs.is_some() {
+                    return Err(ObjectError::Layout(
+                        "duplicate note blob group in syscall_blobs".into(),
+                    ));
+                }
                 let lengths = read_u32_col(&p, g, 0, m)?;
-                let data = p.column(g, 1)?.data.clone();
+                let data_col = p.column(g, 1)?;
+                if data_col.coding != Coding::Bytes {
+                    return Err(ObjectError::Layout(
+                        "note blob data column must use Bytes coding".into(),
+                    ));
+                }
+                let data = data_col.data.clone();
                 note_blobs = Some((lengths, data));
                 groups.push(None);
                 continue;
@@ -253,14 +289,23 @@ pub(super) fn decode_syscall_blobs(
             let data_col = p.column(g, 3)?;
             let data = match data_col.coding {
                 Coding::Words => {
-                    let stride = lengths.first().copied().unwrap_or(0) as usize;
-                    if lengths.iter().any(|&l| l as usize != stride) {
-                        return Err(ObjectError::Layout(
-                            "word-coded blob group has varying lengths".into(),
-                        ));
+                    if m == 0 {
+                        if !data_col.data.is_empty() {
+                            return Err(ObjectError::Layout(
+                                "empty word-coded blob group has non-empty data".into(),
+                            ));
+                        }
+                        Vec::new()
+                    } else {
+                        let stride = lengths.first().copied().unwrap_or(0) as usize;
+                        if lengths.iter().any(|&l| l as usize != stride) {
+                            return Err(ObjectError::Layout(
+                                "word-coded blob group has varying lengths".into(),
+                            ));
+                        }
+                        r.charge(m.saturating_mul(stride))?;
+                        decode_words(&data_col.data, m, stride)?
                     }
-                    r.charge(m.saturating_mul(stride))?;
-                    decode_words(&data_col.data, m, stride)?
                 }
                 Coding::Bytes => data_col.data.clone(),
                 _ => {
@@ -362,6 +407,13 @@ pub(super) fn decode_syscall_blobs(
                 "unconsumed entries in blob order".into(),
             ));
         }
+        for group in groups.iter().flatten() {
+            if group.cursor != group.headers.len() || group.data_offset != group.data.len() {
+                return Err(ObjectError::Layout(
+                    "unconsumed rows or bytes in syscall blob group".into(),
+                ));
+            }
+        }
 
         if let Some((lengths, data)) = note_blobs {
             let mut idx = 0_usize;
@@ -376,6 +428,11 @@ pub(super) fn decode_syscall_blobs(
                 let &len = lengths
                     .get(idx)
                     .ok_or_else(|| ObjectError::Layout("missing note blob length".into()))?;
+                if note.blob_len.get() != len {
+                    return Err(ObjectError::Layout(
+                        "note blob length disagrees with syscall_notes".into(),
+                    ));
+                }
                 idx += 1;
                 let end = off
                     .checked_add(len as usize)
@@ -388,7 +445,6 @@ pub(super) fn decode_syscall_blobs(
                 retained_bytes = retained_bytes.saturating_add(slice.len());
                 blobs.extend_from_slice(slice);
                 note.blob = start.into();
-                note.blob_len = len.into();
             }
             if idx != lengths.len() || off != data.len() {
                 return Err(ObjectError::Layout("unconsumed note blob data".into()));
@@ -420,10 +476,10 @@ pub(super) fn decode_syscall_stats(
     bytes: &[u8],
     budget: &DecodeBudget,
 ) -> Result<Vec<SyscallStat>, ObjectError> {
-    let r = SectionReader::open_budgeted(bytes, SectionKind::SyscallStats, budget)?;
+    let r = open_table_section(bytes, SectionKind::SyscallStats, budget)?;
     let n = r.rows as usize;
     charge_rows::<SyscallStat>(&r, n)?;
-    let p = r.read_page(0)?;
+    let p = r.read_single_page()?;
     let calls = read_delta_u64_col(&p, WHOLE_SECTION_GROUP, 0, n)?;
     let errors = read_delta_u64_col(&p, WHOLE_SECTION_GROUP, 1, n)?;
     let timed = read_delta_u64_col(&p, WHOLE_SECTION_GROUP, 2, n)?;

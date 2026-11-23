@@ -426,10 +426,10 @@ fn sleep_interruptible(stop: &AtomicBool, total: Duration) {
     }
 }
 
-type PlanSignature = (Vec<(u32, Option<String>, u8, u8)>, Vec<u32>);
+type PlanSignature = Vec<(u32, Option<String>, u8, u8)>;
 
-fn plan_signature(targets: &[PlannedTarget], excluded_pids: &BTreeSet<u32>) -> PlanSignature {
-    let selected_sig = targets
+fn plan_signature(targets: &[PlannedTarget]) -> PlanSignature {
+    targets
         .iter()
         .map(|t| {
             (
@@ -439,8 +439,7 @@ fn plan_signature(targets: &[PlannedTarget], excluded_pids: &BTreeSet<u32>) -> P
                 time_unit_rank(t.time_unit),
             )
         })
-        .collect();
-    (selected_sig, excluded_pids.iter().copied().collect())
+        .collect()
 }
 
 #[expect(
@@ -472,7 +471,7 @@ fn recorder_loop(
         pod_annotations_dir: record.pod_annotations_dir.clone(),
         self_pid: std::process::id(),
     };
-    let mut build_ids = BuildIdCache::default();
+    let build_ids = Mutex::new(BuildIdCache::default());
     let mut active_policy: Option<PolicyDirective> = None;
     let mut active_bursts: Vec<BurstDirective> = Vec::new();
     let mut last_policy_seq = 0_u64;
@@ -508,8 +507,20 @@ fn recorder_loop(
                     )
                 };
                 let accept_sanitizer = pol.sanitizer_version > cur_san_ver;
-                let next_sanitizers = accept_sanitizer
-                    .then(|| build_sanitizers(local_sanitize, pol.sanitizer.as_ref()));
+                let next_sanitizers = if accept_sanitizer {
+                    match policy::try_build_sanitizers(local_sanitize, pol.sanitizer.as_ref()) {
+                        Ok(pair) => Some(pair),
+                        Err(error) => {
+                            eprintln!(
+                                "microscope agent: rejecting remote sanitizer policy v{} ({error}); keeping previous sanitizer",
+                                pol.sanitizer_version
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
                 let accept_policy = pol.version > cur_policy_ver;
                 {
                     let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
@@ -534,14 +545,17 @@ fn recorder_loop(
         }
 
         let remote_rules = remote_selection_rules(active_policy.as_ref());
-        let scan = scan_selected_processes(
-            &root,
-            &scan_opts,
-            &record.rules,
-            &remote_rules,
-            limits.allow_remote_rules,
-            &mut build_ids,
-        );
+        let scan = {
+            let mut cache = build_ids.lock().unwrap_or_else(PoisonError::into_inner);
+            scan_selected_processes(
+                &root,
+                &scan_opts,
+                &record.rules,
+                &remote_rules,
+                limits.allow_remote_rules,
+                &mut cache,
+            )
+        };
 
         let now_ns = unix_now_ns();
         let planned: Vec<PlannedTarget> = scan
@@ -564,7 +578,6 @@ fn recorder_loop(
                 }
             })
             .collect();
-        let excluded_pids = scan.excluded_pids;
 
         {
             let mut projs: BTreeSet<String> = BTreeSet::new();
@@ -597,7 +610,7 @@ fn recorder_loop(
             continue;
         }
 
-        let current_sig = plan_signature(&planned, &excluded_pids);
+        let current_sig = plan_signature(&planned);
         let mut by_preset: BTreeMap<u8, (Preset, Vec<PlannedTarget>)> = BTreeMap::new();
         for t in planned {
             by_preset
@@ -666,8 +679,8 @@ fn recorder_loop(
             let watch_base_unit = record.time_unit;
             let watch_sig = current_sig.clone();
 
+            let build_ids_ref = &build_ids;
             scope.spawn(move || {
-                let mut local_cache = BuildIdCache::default();
                 while !stop.load(Ordering::Relaxed)
                     && !watcher_done.load(Ordering::Relaxed)
                     && !sess_stop_watch.load(Ordering::Relaxed)
@@ -679,14 +692,18 @@ fn recorder_loop(
                     {
                         break;
                     }
-                    let rescanned = scan_selected_processes(
-                        &watch_root,
-                        &watch_scan_opts,
-                        &watch_local_rules,
-                        &watch_remote_rules,
-                        watch_limits.allow_remote_rules,
-                        &mut local_cache,
-                    );
+                    let rescanned = {
+                        let mut cache =
+                            build_ids_ref.lock().unwrap_or_else(PoisonError::into_inner);
+                        scan_selected_processes(
+                            &watch_root,
+                            &watch_scan_opts,
+                            &watch_local_rules,
+                            &watch_remote_rules,
+                            watch_limits.allow_remote_rules,
+                            &mut cache,
+                        )
+                    };
                     let now_check = unix_now_ns();
                     let next_plan: Vec<PlannedTarget> = rescanned
                         .selected
@@ -708,7 +725,7 @@ fn recorder_loop(
                             }
                         })
                         .collect();
-                    if plan_signature(&next_plan, &rescanned.excluded_pids) != watch_sig {
+                    if plan_signature(&next_plan) != watch_sig {
                         sess_stop_watch.store(true, Ordering::SeqCst);
                         break;
                     }
@@ -924,21 +941,49 @@ fn poster_loop(
                 let _ = cvar.wait_timeout(guard, wait);
             }
             PosterAction::Post => {
-                let (token, batch, post_flush_id) = {
-                    let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+                let (token, agent_id, org_sanitizer, project_sanitizers, snapshot) = {
+                    let guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
                     let (Some(token), Some(agent_id)) = (guard.token.clone(), guard.agent_id)
                     else {
                         continue;
                     };
-                    let sanitizer = Arc::clone(&guard.sanitizer);
-                    let queued_total = guard.spool.stats().queued_chunks;
-                    let batch = guard.spool.peek_batch_capped(
-                        MAX_POST_BYTES,
-                        max_batch_chunks,
+                    (
+                        token,
                         agent_id,
-                        unix_now_ns(),
-                        &sanitizer,
-                    );
+                        Arc::clone(&guard.sanitizer),
+                        guard.project_sanitizers.clone(),
+                        guard.spool.snapshot_candidates(),
+                    )
+                };
+                let built = super::spool::build_batch_from_snapshot(
+                    &snapshot,
+                    MAX_POST_BYTES,
+                    max_batch_chunks,
+                    agent_id,
+                    unix_now_ns(),
+                    |project| {
+                        project
+                            .and_then(|p| project_sanitizers.get(&p.to_ascii_lowercase()))
+                            .map_or_else(|| org_sanitizer.as_ref(), Arc::as_ref)
+                    },
+                );
+                let (batch, post_flush_id) = {
+                    let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+                    let batch = match built {
+                        Ok(result) => {
+                            if let Err(err) = guard.spool.apply_batch_drops(
+                                snapshot.owner_gen,
+                                &result.missing_chunks,
+                                &result.drop_chunks,
+                            ) {
+                                Err(err)
+                            } else {
+                                Ok(result.batch)
+                            }
+                        }
+                        Err(err) => Err(err),
+                    };
+                    let queued_total = snapshot.queued_total;
                     let wall_now = std::time::Instant::now();
                     let flush_check = guard.flush_requested.as_ref().map(|pf| {
                         (
@@ -976,7 +1021,7 @@ fn poster_loop(
                         _ => None,
                     };
                     drop(guard);
-                    (token, batch, post_flush_id)
+                    (batch, post_flush_id)
                 };
                 let batch = match batch {
                     Ok(Some(batch)) => batch,

@@ -97,16 +97,15 @@ impl Builtin {
     }
 
     pub(super) fn found(self, value: &[u8], each: &mut impl FnMut(Range<usize>)) {
-        let check: fn(&[u8]) -> bool = match self {
-            Self::Cards => luhn,
-            Self::IpAddresses => ip,
-            _ => |_| true,
-        };
-
         for pattern in patterns(self) {
             for captures in pattern.captures_iter(value) {
                 let found = span(&captures);
-                if value.get(found.clone()).is_some_and(check) {
+                let ok = match self {
+                    Self::Cards => value.get(found.clone()).is_some_and(luhn),
+                    Self::IpAddresses => ip_in_context(value, &found),
+                    _ => true,
+                };
+                if ok {
                     each(found);
                 }
             }
@@ -231,7 +230,33 @@ fn luhn(found: &[u8]) -> bool {
     sum.is_multiple_of(10)
 }
 
-fn ip(found: &[u8]) -> bool {
-    std::str::from_utf8(found)
-        .is_ok_and(|text| text.parse::<Ipv4Addr>().is_ok() || text.parse::<Ipv6Addr>().is_ok())
+fn ip_in_context(value: &[u8], range: &Range<usize>) -> bool {
+    let Some(found) = value.get(range.clone()) else {
+        return false;
+    };
+    let Ok(text) = std::str::from_utf8(found) else {
+        return false;
+    };
+    if text.parse::<Ipv4Addr>().is_ok() {
+        return true;
+    }
+    if text.parse::<Ipv6Addr>().is_err() {
+        return false;
+    }
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b':';
+    if range.start > 0 && value.get(range.start - 1).is_some_and(|&b| is_ident(b)) {
+        return false;
+    }
+    if value.get(range.end).is_some_and(|&b| is_ident(b)) {
+        return false;
+    }
+    if text == "::" {
+        let bracketed = range.start > 0
+            && value.get(range.start - 1) == Some(&b'[')
+            && value.get(range.end) == Some(&b']');
+        if !bracketed {
+            return false;
+        }
+    }
+    true
 }

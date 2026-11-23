@@ -136,6 +136,18 @@ pub fn http_agent(timeout: Duration, ca_file: Option<&Path>) -> Result<ureq::Age
     Ok(builder.build().new_agent())
 }
 
+pub fn http_agent_for_url(
+    timeout: Duration,
+    ca_file: Option<&Path>,
+    url: &str,
+    server: &Server,
+) -> Result<ureq::Agent> {
+    let same_origin = url.starts_with('/')
+        || credentials::normalize_origin(url)
+            .starts_with(&credentials::normalize_origin(server.origin()));
+    http_agent(timeout, same_origin.then_some(ca_file).flatten())
+}
+
 fn login(args: &LoginArgs) -> Result<()> {
     let env_server = std::env::var(credentials::SERVER_ENV)
         .ok()
@@ -309,6 +321,30 @@ fn login_via_browser(agent: &ureq::Agent, server: &Server, no_browser: bool) -> 
 }
 
 fn logout(args: &LogoutArgs) -> Result<()> {
+    let env_creds = match (
+        std::env::var(credentials::SERVER_ENV),
+        std::env::var(credentials::TOKEN_ENV),
+    ) {
+        (Ok(server), Ok(token)) if !server.trim().is_empty() && !token.trim().is_empty() => Some((
+            server.trim().trim_end_matches('/').to_owned(),
+            token.trim().to_owned(),
+        )),
+        _ => None,
+    };
+
+    if let Some((env_server, env_token)) = env_creds {
+        if let Ok((server, _)) = Server::parse(&env_server)
+            && let Ok(agent) = http_agent(LOGIN_TIMEOUT, args.ca_file.as_deref())
+        {
+            let _ = agent
+                .post(server.url("/api/cli/logout"))
+                .header("authorization", &format!("Bearer {env_token}"))
+                .send(&[][..]);
+        }
+        println!("Revoked token from MICROSCOPE_TOKEN (saved credentials file left unchanged).");
+        return Ok(());
+    }
+
     if let Some(creds) = credentials::load()
         && let Ok((server, _)) = Server::parse(&creds.server)
         && let Ok(agent) = http_agent(LOGIN_TIMEOUT, args.ca_file.as_deref())

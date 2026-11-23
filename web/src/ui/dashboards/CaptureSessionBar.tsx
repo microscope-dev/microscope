@@ -53,11 +53,18 @@ export function CaptureSessionBar() {
     setErr(null);
     try {
       const est = await dashboardsApi.pinEstimate(sid);
+      if (activeView.getState().sessionId !== sid) {
+        return;
+      }
       setEstimate(est);
     } catch (failure) {
-      setErr(failure instanceof Error ? failure.message : String(failure));
+      if (activeView.getState().sessionId === sid) {
+        setErr(failure instanceof Error ? failure.message : String(failure));
+      }
     } finally {
-      setBusy(false);
+      if (activeView.getState().sessionId === sid) {
+        setBusy(false);
+      }
     }
   };
 
@@ -70,6 +77,9 @@ export function CaptureSessionBar() {
     setErr(null);
     try {
       const kept = await dashboardsApi.keepSession(sid, { pin });
+      if (activeView.getState().sessionId !== sid) {
+        return;
+      }
       setEstimate(null);
       activeView.setState({
         pinStatus: kept.pinStatus,
@@ -86,9 +96,13 @@ export function CaptureSessionBar() {
         flash("Capture session kept.");
       }
     } catch (failure) {
-      setErr(failure instanceof Error ? failure.message : String(failure));
+      if (activeView.getState().sessionId === sid) {
+        setErr(failure instanceof Error ? failure.message : String(failure));
+      }
     } finally {
-      setBusy(false);
+      if (activeView.getState().sessionId === sid) {
+        setBusy(false);
+      }
     }
   };
 
@@ -101,7 +115,13 @@ export function CaptureSessionBar() {
     setErr(null);
     try {
       await dashboardsApi.unpinSession(sid);
+      if (activeView.getState().sessionId !== sid) {
+        return;
+      }
       const refreshed = await dashboardsApi.getSession(sid);
+      if (activeView.getState().sessionId !== sid) {
+        return;
+      }
       activeView.setState({
         pinStatus: refreshed.pinStatus,
         pinnedBytes: refreshed.pinnedBytes,
@@ -110,9 +130,13 @@ export function CaptureSessionBar() {
       });
       flash("Capture unpinned.");
     } catch (failure) {
-      setErr(failure instanceof Error ? failure.message : String(failure));
+      if (activeView.getState().sessionId === sid) {
+        setErr(failure instanceof Error ? failure.message : String(failure));
+      }
     } finally {
-      setBusy(false);
+      if (activeView.getState().sessionId === sid) {
+        setBusy(false);
+      }
     }
   };
 

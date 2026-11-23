@@ -21,10 +21,15 @@ export function StorageView(props: { org: number | null }) {
   const [pinCapGb, setPinCapGb] = createSignal("10");
 
   let seq = 0;
+  let lastOrg: number | null | undefined;
   createEffect(
     () => props.org,
     (org) => {
       const id = ++seq;
+      if (lastOrg !== undefined && lastOrg !== org) {
+        setData(null);
+      }
+      lastOrg = org;
       setLoading(true);
       setErr(null);
       void (async () => {

@@ -73,15 +73,28 @@ fn copy_str(from: &Capture, strings: &mut StringsBuilder, id: u32) -> u32 {
     strings.push(from.string(id)).map_or(NONE, |s| s.0)
 }
 
-fn setting_is_process_specific(key: &str) -> bool {
-    key == "program"
-        || key == "pid"
-        || key == "arguments"
-        || key == "argv"
-        || key == "command"
-        || key.starts_with("arguments ")
-        || key.starts_with("argv ")
-        || key.starts_with("command ")
+enum SettingKeyAction {
+    Keep,
+    Drop,
+    Rename(String),
+}
+
+fn remap_process_setting_key(key: &str, proc_map: &[u32]) -> SettingKeyAction {
+    if matches!(key, "program" | "pid" | "arguments" | "argv" | "command") {
+        return SettingKeyAction::Drop;
+    }
+    for prefix in ["arguments ", "argv ", "command "] {
+        if let Some(rest) = key.strip_prefix(prefix) {
+            if let Ok(old_idx) = rest.parse::<u32>() {
+                let mapped = map_id(proc_map, old_idx);
+                if mapped != NONE {
+                    return SettingKeyAction::Rename(format!("{prefix}{mapped}"));
+                }
+            }
+            return SettingKeyAction::Drop;
+        }
+    }
+    SettingKeyAction::Keep
 }
 
 #[expect(
@@ -137,7 +150,7 @@ pub fn filter_capture_by_pids(from: &Capture, allowed_pids: &BTreeSet<u32>) -> C
     }
     for marker in &from.markers {
         let tid = marker.thread.get();
-        if tid == NONE || kept_threads.has(tid) {
+        if tid != NONE && kept_threads.has(tid) {
             kept_sites.keep(marker.site.get());
         }
     }
@@ -204,10 +217,13 @@ pub fn filter_capture_by_pids(from: &Capture, allowed_pids: &BTreeSet<u32>) -> C
 
     for setting in &from.settings {
         let key_str = from.string(setting.key.get());
-        if setting_is_process_specific(key_str) {
-            continue;
-        }
-        let key = copy_str(from, &mut strings, setting.key.get()).into();
+        let key = match remap_process_setting_key(key_str, &proc_map) {
+            SettingKeyAction::Drop => continue,
+            SettingKeyAction::Rename(remapped) => {
+                strings.push(&remapped).map_or(NONE, |s| s.0).into()
+            }
+            SettingKeyAction::Keep => copy_str(from, &mut strings, setting.key.get()).into(),
+        };
         let value = copy_str(from, &mut strings, setting.value.get()).into();
         to.settings.push(Setting { key, value });
     }
@@ -386,7 +402,7 @@ pub fn filter_capture_by_pids(from: &Capture, allowed_pids: &BTreeSet<u32>) -> C
 
     for marker in &from.markers {
         let tid = marker.thread.get();
-        if tid == NONE || kept_threads.has(tid) {
+        if tid != NONE && kept_threads.has(tid) {
             let text = copy_str(from, &mut strings, marker.text.get()).into();
             to.markers.push(Marker {
                 thread: map_id(&thread_map, tid).into(),
@@ -592,5 +608,105 @@ mod tests {
         assert!(!strings_b.contains("alpha_work"));
         assert!(!strings_b.contains("prog-a"));
         assert!(!strings_b.contains("prog-c"));
+    }
+
+    #[test]
+    fn split_remaps_per_process_settings_and_drops_unowned_markers() {
+        let mut b = CaptureBuilder::new();
+        b.setting("weight", "nanoseconds");
+        let p0 = b.process(Pid::new(100), 1_000);
+        let p1 = b.process(Pid::new(200), 1_000);
+        b.setting(&format!("command {p0}"), "/bin/alpha --a");
+        b.setting(&format!("arguments {p0}"), r#"["/bin/alpha","--a"]"#);
+        b.setting(&format!("command {p1}"), "/bin/beta --b");
+        b.setting(&format!("arguments {p1}"), r#"["/bin/beta","--b"]"#);
+        let t0 = b.thread(Pid::new(100), Tid::new(100), 1_000);
+        let t1 = b.thread(Pid::new(200), Tid::new(200), 1_000);
+        let f = b.frame(FrameKind::Native, NONE, 0x1000, CodeRole::Ordinary as u8);
+        let s = b.stack(&[f]);
+        b.sample(t0, 1_100, 10, s, NONE);
+        b.sample(t1, 1_200, 20, s, NONE);
+        b.marker(
+            1_150,
+            microscope_data::capture::records::MarkerKind::Message,
+            "global-secret",
+        );
+        let site = b.site("ev", "a.rs", 1, NONE, 0);
+        b.thread_marker(
+            (t1, site),
+            1_250,
+            microscope_data::capture::records::MarkerKind::Message,
+            Some("beta-marker"),
+        );
+
+        let full = b.finish();
+        let only_b = filter_capture_by_pids(&full, &BTreeSet::from([200]));
+        assert!(only_b.validate().is_ok(), "{:?}", only_b.validate());
+        assert_eq!(only_b.processes.len(), 1);
+        assert_eq!(only_b.setting("command 0"), Some("/bin/beta --b"));
+        assert_eq!(
+            only_b.setting("arguments 0"),
+            Some(r#"["/bin/beta","--b"]"#)
+        );
+        assert!(only_b.setting("command 1").is_none());
+        let strings = String::from_utf8_lossy(&only_b.strings);
+        assert!(strings.contains("beta-marker"));
+        assert!(!strings.contains("global-secret"));
+        assert!(!strings.contains("/bin/alpha"));
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn split_partitions_samples_and_always_validates(
+            proc_count in 1_usize..6,
+            keep_mask in 1_u8..64,
+        ) {
+            let mut b = CaptureBuilder::new();
+            b.setting("weight", "nanoseconds");
+            let mut expected_kept_samples = 0_usize;
+            let mut keep_pids = BTreeSet::new();
+            for i in 0..proc_count {
+                let pid = (u32::try_from(i).unwrap() + 1) * 10;
+                let p = b.process(Pid::new(pid), 1000);
+                b.setting(&format!("command {p}"), &format!("/bin/p{pid}"));
+                let t = b.thread(Pid::new(pid), Tid::new(pid), 1000);
+                let m = b.module(
+                    &format!("/bin/p{pid}"),
+                    None,
+                    [u8::try_from(i).unwrap(); 16],
+                    4096,
+                );
+                let f = b.frame(FrameKind::Native, m, 0x1000 + i as u64, CodeRole::Ordinary as u8);
+                let s = b.stack(&[f]);
+                for k in 0..=(i % 3) {
+                    b.sample(
+                        t,
+                        2000 + i64::try_from(k).unwrap() * 100,
+                        50,
+                        s,
+                        NONE,
+                    );
+                    if (keep_mask & (1_u8 << i)) != 0 {
+                        expected_kept_samples += 1;
+                    }
+                }
+                if (keep_mask & (1_u8 << i)) != 0 {
+                    keep_pids.insert(pid);
+                }
+            }
+            let full = b.finish();
+            let filtered = filter_capture_by_pids(&full, &keep_pids);
+            proptest::prop_assert!(filtered.validate().is_ok());
+            proptest::prop_assert_eq!(filtered.samples.len(), expected_kept_samples);
+            for (new_idx, proc_row) in filtered.processes.iter().enumerate() {
+                let pid = proc_row.pid.get();
+                proptest::prop_assert!(keep_pids.contains(&pid));
+                let expected_cmd = format!("/bin/p{pid}");
+                proptest::prop_assert_eq!(
+                    filtered.setting(&format!("command {new_idx}")),
+                    Some(expected_cmd.as_str())
+                );
+            }
+        }
     }
 }

@@ -138,6 +138,7 @@ pub fn encode_post(
     let last_chunk = merged.chunks.iter().map(|c| c.number).max().unwrap_or(0);
 
     let sections = encode_tables(&merged, time_unit, zstd_level, 0)?;
+    crate::object::verify_chunk_decode_budget(&merged, &sections, MAX_DECOMPRESSED_OBJECT_BYTES)?;
     let mut object = ObjectWriter::new(ObjectKind::Post, ObjectLevel::None, created_at, writer);
     object.add_part(&PartSpec {
         org_id: 0,
@@ -149,9 +150,6 @@ pub fn encode_post(
         sections,
     })?;
     let (bytes, _) = object.finish()?;
-    let reader = crate::object::ObjectReader::open(&bytes)?;
-    let raw_sections = reader.part_sections(0, None)?;
-    let _ = decode_tables(&raw_sections)?;
 
     Ok(EncodedPost {
         bytes,
@@ -896,19 +894,38 @@ pub fn re_sanitize_sections_verbatim(
     const NOTE_BLOBS_ARGUMENT: u8 = u8::MAX;
 
     let budget = DecodeBudget::new(MAX_DECOMPRESSED_OBJECT_BYTES);
+    let mut seen_kinds = std::collections::BTreeSet::new();
+    for sec in raw_sections {
+        if !seen_kinds.insert(sec.kind) {
+            return Err(ObjectError::Layout(format!(
+                "duplicate section kind {:?}",
+                sec.kind
+            )));
+        }
+    }
     let mut needs_rewrite = false;
 
     for sec in raw_sections {
         if sec.kind == SectionKind::Strings {
             let reader = SectionReader::open_budgeted(sec.bytes, SectionKind::Strings, &budget)?;
+            if reader.version != crate::object::TABLE_VERSION {
+                return Err(ObjectError::UnknownValue {
+                    what: "table section version",
+                    value: u64::from(reader.version),
+                });
+            }
             if reader.page_count() != 1 {
                 needs_rewrite = true;
                 break;
             }
-            let page = reader.read_page(0)?;
-            let pool = &page
-                .column(crate::object::codec::WHOLE_SECTION_GROUP, 0)?
-                .data;
+            let page = reader.read_single_page()?;
+            let col = page.column(crate::object::codec::WHOLE_SECTION_GROUP, 0)?;
+            if col.coding != crate::object::Coding::Bytes {
+                return Err(ObjectError::Layout(
+                    "strings column must use Bytes coding".into(),
+                ));
+            }
+            let pool = &col.data;
             if !crate::image::valid_pool(pool, true) {
                 return Err(ObjectError::Capture(
                     "string pool is not NUL-terminated UTF-8".into(),
@@ -937,6 +954,20 @@ pub fn re_sanitize_sections_verbatim(
                         break;
                     }
                 }
+                if let Some(path) = text
+                    .strip_prefix("debug information ")
+                    .or_else(|| text.strip_prefix("image cache "))
+                {
+                    let changed = match sanitizer.text(FieldClass::ModulePath, path, &mut probe) {
+                        Outcome::Kept => false,
+                        Outcome::Replaced(out) => out != path,
+                        Outcome::DropField | Outcome::DropRecord => true,
+                    };
+                    if changed {
+                        needs_rewrite = true;
+                        break;
+                    }
+                }
                 for class in FieldClass::ALL {
                     let changed = match sanitizer.text(class, text, &mut probe) {
                         Outcome::Kept => false,
@@ -958,21 +989,20 @@ pub fn re_sanitize_sections_verbatim(
                 .copied()
                 .filter(|s| matches!(s.kind, SectionKind::Strings | SectionKind::Dimensions))
                 .collect();
-            if let Ok(decoded_dims) = decode_tables(&subset) {
-                let mut probe = Tally::default();
-                for dim in &decoded_dims.dimensions {
-                    let Some(class) = dimension_field_class(&dim.name) else {
-                        continue;
-                    };
-                    let changed = match sanitizer.text(class, &dim.value, &mut probe) {
-                        Outcome::Kept => false,
-                        Outcome::Replaced(out) => out != dim.value,
-                        Outcome::DropField | Outcome::DropRecord => true,
-                    };
-                    if changed {
-                        needs_rewrite = true;
-                        break;
-                    }
+            let decoded_dims = decode_tables(&subset)?;
+            let mut probe = Tally::default();
+            for dim in &decoded_dims.dimensions {
+                let Some(class) = dimension_field_class(&dim.name) else {
+                    continue;
+                };
+                let changed = match sanitizer.text(class, &dim.value, &mut probe) {
+                    Outcome::Kept => false,
+                    Outcome::Replaced(out) => out != dim.value,
+                    Outcome::DropField | Outcome::DropRecord => true,
+                };
+                if changed {
+                    needs_rewrite = true;
+                    break;
                 }
             }
         } else if sec.kind == SectionKind::SyscallBlobs {

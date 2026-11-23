@@ -114,6 +114,8 @@ struct MissingUpload {
     build_id: String,
     upload_id: i64,
     upload_url: String,
+    #[serde(default, alias = "upload_headers", rename = "uploadHeaders")]
+    headers: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -223,7 +225,7 @@ fn resolve_upload_target(args: &UploadSymbolsArgs) -> Result<(Server, String)> {
 
 struct UploadContext<'a> {
     control_agent: &'a ureq::Agent,
-    upload_agent: &'a ureq::Agent,
+    ca_file: Option<&'a Path>,
     server: &'a Server,
     auth_header: &'a str,
     project: Option<&'a str>,
@@ -243,10 +245,20 @@ fn upload_one_missing(
         item.upload_url.clone()
     };
 
-    let mut put_resp = ctx
-        .upload_agent
-        .put(&put_url)
-        .header("content-type", "application/octet-stream")
+    let upload_agent =
+        super::auth::http_agent_for_url(UPLOAD_TIMEOUT, ctx.ca_file, &put_url, ctx.server)?;
+    let has_content_type = item
+        .headers
+        .keys()
+        .any(|k| k.eq_ignore_ascii_case("content-type"));
+    let mut put_req = upload_agent.put(&put_url);
+    if !has_content_type {
+        put_req = put_req.header("content-type", "application/octet-stream");
+    }
+    for (k, v) in &item.headers {
+        put_req = put_req.header(k.as_str(), v.as_str());
+    }
+    let mut put_resp = put_req
         .send(sym.payload.as_slice())
         .with_context(|| format!("failed uploading {} ({})", sym.path.display(), sym.build_id))?;
     let put_status = put_resp.status().as_u16();
@@ -372,12 +384,11 @@ fn upload(args: &UploadSymbolsArgs) -> Result<()> {
     }
 
     let control_agent = http_agent(CONTROL_TIMEOUT, args.ca_file.as_deref())?;
-    let upload_agent = http_agent(UPLOAD_TIMEOUT, args.ca_file.as_deref())?;
     let auth_header = format!("Bearer {}", token.trim());
 
     let ctx = UploadContext {
         control_agent: &control_agent,
-        upload_agent: &upload_agent,
+        ca_file: args.ca_file.as_deref(),
         server: &server,
         auth_header: &auth_header,
         project: args.project.as_deref(),
@@ -439,7 +450,12 @@ fn prepare_discovered_symbol(item: &DiscoveredPath, strip: bool) -> Result<Prepa
     }
     let has_dwarf = has_dwarf_sections(&raw);
     let payload = if strip {
-        strip_to_debug_elf(&raw).unwrap_or(raw)
+        strip_to_debug_elf(&raw).with_context(|| {
+            format!(
+                "failed to strip executable sections from {}; pass --no-strip to upload the unstripped binary",
+                item.path.display()
+            )
+        })?
     } else {
         raw
     };
@@ -459,10 +475,11 @@ fn discover_symbol_paths(paths: &[PathBuf]) -> Result<BTreeMap<String, Discovere
 
     let mut by_build_id: BTreeMap<String, DiscoveredPath> = BTreeMap::new();
     for path in files {
-        let Ok(raw) = fs::read(&path) else {
+        let Ok(Some(build_id)) = microscope_data::symbols::read_elf_build_id_from_file(&path)
+        else {
             continue;
         };
-        let Ok(build_id) = extract_build_id(&raw) else {
+        let Ok(raw) = fs::read(&path) else {
             continue;
         };
         if !has_debug_or_symtab(&raw) {

@@ -1173,7 +1173,7 @@ fn object_reader_rejects_overlapping_parts_and_multipart_posts() {
         sw.finish(0).expect("finish section")
     };
     let mut writer = ObjectWriter::new(ObjectKind::WriteAhead, ObjectLevel::None, 100, 1);
-    let key_seed = writer.key_seed();
+    let _ = writer.key_seed();
     for _ in 0..2 {
         writer
             .add_part(&PartSpec {
@@ -1217,7 +1217,8 @@ fn object_reader_rejects_overlapping_parts_and_multipart_posts() {
     let recompressed = zstd::bulk::compress(&raw_list, DEFAULT_ZSTD_LEVEL).expect("recompress");
     let mut overlapping = bytes[..list_off].to_vec();
     overlapping.extend_from_slice(&recompressed);
-    let new_sum = part_list_checksum(key_seed, &recompressed);
+    let header = super::parse_object_header(&bytes).expect("header");
+    let new_sum = part_list_checksum(&header, &recompressed);
     overlapping.extend_from_slice(&(list_off as u64).to_le_bytes());
     overlapping.extend_from_slice(&(recompressed.len() as u64).to_le_bytes());
     overlapping.extend_from_slice(&(raw_list.len() as u64).to_le_bytes());
@@ -1235,7 +1236,7 @@ fn decode_tables_enforces_cumulative_decompression_budget() {
     oversized.push(0);
     let mut sw_over = SectionWriter::new(
         SectionKind::Strings,
-        1,
+        super::TABLE_VERSION,
         TimeUnit::Ns,
         1,
         0,
@@ -1252,7 +1253,7 @@ fn decode_tables_enforces_cumulative_decompression_budget() {
     let varint_zeros = vec![0_u8; rows as usize];
     let mut sw = SectionWriter::new(
         SectionKind::Strings,
-        1,
+        super::TABLE_VERSION,
         TimeUnit::Ns,
         1,
         0,
@@ -1266,7 +1267,14 @@ fn decode_tables_enforces_cumulative_decompression_budget() {
         (SectionKind::Functions, 4, 1),
         (SectionKind::Sites, 4, 1),
     ] {
-        let mut sw = SectionWriter::new(kind, 1, TimeUnit::Ns, rows, 0, DEFAULT_ZSTD_LEVEL);
+        let mut sw = SectionWriter::new(
+            kind,
+            super::TABLE_VERSION,
+            TimeUnit::Ns,
+            rows,
+            0,
+            DEFAULT_ZSTD_LEVEL,
+        );
         for id in 0..u32_cols {
             sw.add_column(
                 WHOLE_SECTION_GROUP,
@@ -1338,7 +1346,7 @@ fn decode_tables_enforces_budget_on_repeated_string_references() {
     strings.push(0);
     let mut sw = SectionWriter::new(
         SectionKind::Strings,
-        1,
+        super::TABLE_VERSION,
         TimeUnit::Ns,
         1,
         0,
@@ -1353,7 +1361,7 @@ fn decode_tables_enforces_budget_on_repeated_string_references() {
     let ones = vec![1_u8; rows as usize];
     let mut dw = SectionWriter::new(
         SectionKind::Dimensions,
-        1,
+        super::TABLE_VERSION,
         TimeUnit::Ns,
         rows,
         0,
@@ -1997,4 +2005,321 @@ fn event_bundle_without_process_membership_section_remains_compatible() {
     let decoded_empty =
         decode_event_bundle(&raw_empty, &shared, false).expect("decode empty bundle");
     assert!(decoded_empty.capture.processes.is_empty());
+}
+
+proptest! {
+    #[test]
+    fn prop_sparse_and_dense_delta_by_key_round_trip(
+        pairs in proptest::collection::vec(
+            (prop_oneof![0_u32..16, 1_048_576_u32..2_000_000, (u32::MAX - 100)..=u32::MAX], any::<u64>()),
+            0..128
+        )
+    ) {
+        let keys: Vec<u32> = pairs.iter().map(|&(k, _)| k).collect();
+        let vals: Vec<u64> = pairs.iter().map(|&(_, v)| v).collect();
+        let encoded = delta_by_key_encode_u64(&vals, &keys);
+        let decoded = delta_by_key_decode_u64(&encoded, &keys).expect("decode");
+        prop_assert_eq!(decoded, vals);
+    }
+
+    #[test]
+    fn prop_u64_codecs_round_trip_extremes(
+        vals in proptest::collection::vec(
+            prop_oneof![
+                Just(0_u64),
+                Just(1_u64),
+                Just(u64::MAX - 1),
+                Just(u64::MAX),
+                0_u64..1024,
+                any::<u64>(),
+            ],
+            0..96
+        )
+    ) {
+        let budget = DecodeBudget::new(2 << 20);
+
+        let v = encode_varints(&vals);
+        prop_assert_eq!(&decode_varints(&v, vals.len()).expect("varint"), &vals);
+
+        let d = delta_encode_u64(&vals);
+        prop_assert_eq!(&delta_decode_u64(&d), &vals);
+
+        let bases: Vec<u64> = vals.iter().map(|&x| x.wrapping_sub(7)).collect();
+        let r = super::codec::relative_encode_u64(&vals, &bases);
+        prop_assert_eq!(&super::codec::relative_decode_u64(&r, &bases).expect("rel"), &vals);
+
+        let dict = encode_dict_u64(&vals);
+        prop_assert_eq!(
+            &super::codec::decode_dict_u64_budgeted(&dict, vals.len(), Some(&budget)).expect("dict"),
+            &vals
+        );
+
+        let nz = encode_nonzero_u64(&vals);
+        prop_assert_eq!(&decode_nonzero_u64(&nz, vals.len()).expect("nonzero"), &vals);
+
+        let recs: Vec<[u8; 8]> = vals.iter().map(|&x| x.to_le_bytes()).collect();
+        let slices: Vec<&[u8]> = recs.iter().map(<[u8; 8]>::as_slice).collect();
+        let enc_words = encode_words(&slices, 8);
+        let dec_words = decode_words(&enc_words, recs.len(), 8).expect("words");
+        let expected_words: Vec<u8> = recs.iter().flat_map(|r| *r).collect();
+        prop_assert_eq!(dec_words, expected_words);
+    }
+
+    #[test]
+    fn prop_sparse_histograms_and_section_index_round_trip(
+        hists in proptest::collection::vec(
+            proptest::collection::vec((0_usize..40, prop_oneof![1_u64..64, any::<u64>()]), 0..8),
+            0..24
+        ),
+        metas in proptest::collection::vec(
+            (0_u16..32, any::<u32>(), 0_u64..1_000_000, any::<u32>(), any::<u64>(), any::<u64>()),
+            0..32
+        )
+    ) {
+        let mut arrays = Vec::with_capacity(hists.len());
+        for entries in hists {
+            let mut arr = [0_u64; 40];
+            for (b, c) in entries {
+                arr[b] = c;
+            }
+            arrays.push(arr);
+        }
+        let enc_h = encode_sparse_histograms(&arrays);
+        let budget = DecodeBudget::new(1 << 20);
+        let dec_h = decode_sparse_histograms(&enc_h, arrays.len(), Some(&budget)).expect("hist");
+        prop_assert_eq!(dec_h, arrays);
+
+        let sections: Vec<SectionMeta> = metas
+            .into_iter()
+            .filter_map(|(k, rows, offset, stored_len, key, checksum)| {
+                SectionKind::from_number(k).map(|kind| SectionMeta {
+                    kind: kind as u16,
+                    rows,
+                    offset,
+                    stored_len,
+                    key,
+                    checksum,
+                })
+            })
+            .collect();
+        let enc_idx = encode_section_index(7, &sections);
+        let (part_idx, dec_idx) = decode_section_index(&enc_idx).expect("section index");
+        prop_assert_eq!(part_idx, 7);
+        prop_assert_eq!(dec_idx, sections);
+    }
+
+    #[test]
+    fn prop_bp_tree_forest_round_trips_arbitrary_parents(
+        node_count in 0_usize..64,
+        parent_choices in proptest::collection::vec(0_u32..128, 0..64),
+    ) {
+        let mut parents = Vec::with_capacity(node_count);
+        for i in 0..node_count {
+            let choice = parent_choices.get(i).copied().unwrap_or(0);
+            if i == 0 || choice % 4 == 0 {
+                parents.push(NONE);
+            } else {
+                parents.push(choice % u32::try_from(i).expect("idx"));
+            }
+        }
+        let (dfs_parents, old_to_dfs, dfs_to_old) = forest_to_dfs(&parents);
+        prop_assert_eq!(dfs_parents.len(), node_count);
+        prop_assert_eq!(dfs_to_old.len(), node_count);
+        let bp_bytes = encode_bp_tree(&dfs_parents);
+        let budget = DecodeBudget::new(1 << 20);
+        let decoded = super::codec::decode_bp_tree_budgeted(&bp_bytes, node_count, Some(&budget)).expect("bp");
+        prop_assert_eq!(&decoded, &dfs_parents);
+        for (dfs_idx, &orig_idx) in dfs_to_old.iter().enumerate() {
+            let orig_parent = parents[orig_idx];
+            let expected = if orig_parent == NONE {
+                NONE
+            } else {
+                old_to_dfs[orig_parent as usize]
+            };
+            prop_assert_eq!(dfs_parents[dfs_idx], expected);
+        }
+
+        if node_count >= 2 {
+            let mut cyclic = parents;
+            cyclic[0] = 1;
+            cyclic[1] = 0;
+            let (cyc_dfs, _, _) = forest_to_dfs(&cyclic);
+            let cyc_bp = encode_bp_tree(&cyc_dfs);
+            prop_assert_eq!(
+                super::codec::decode_bp_tree_budgeted(&cyc_bp, node_count, Some(&budget)).expect("cyc bp"),
+                cyc_dfs
+            );
+        }
+    }
+
+    #[test]
+    fn prop_section_writer_multi_page_and_narrow_decoders_agree(
+        pages in proptest::collection::vec(
+            proptest::collection::vec(any::<u8>(), 1..32),
+            1..5
+        )
+    ) {
+        let total_rows: usize = pages.iter().map(Vec::len).sum();
+        let mut sw = SectionWriter::new(
+            SectionKind::Samples,
+            super::TABLE_VERSION,
+            TimeUnit::Ns,
+            u32::try_from(total_rows).expect("rows"),
+            0,
+            DEFAULT_ZSTD_LEVEL,
+        );
+        let mut key_base = 100_i64;
+        for vals in &pages {
+            let u64s: Vec<u64> = vals.iter().map(|&b| u64::from(b)).collect();
+            sw.add_u64_smart(WHOLE_SECTION_GROUP, 0, &u64s, false).expect("add col");
+            sw.finish_page(
+                key_base,
+                key_base + i64::try_from(vals.len()).expect("len"),
+                u32::try_from(vals.len()).expect("len"),
+            )
+            .expect("finish page");
+            key_base += 1000;
+        }
+        let encoded = sw.finish_paged(0).expect("finish paged");
+        let budget = DecodeBudget::new(1 << 20);
+        let reader = SectionReader::open_budgeted(&encoded.bytes, SectionKind::Samples, &budget)
+            .expect("open section");
+        prop_assert_eq!(reader.rows as usize, total_rows);
+        prop_assert_eq!(reader.page_count(), pages.len());
+        prop_assert_eq!(reader.page_entry(0).unwrap().min_key.get(), 100);
+        if pages.len() == 1 {
+            prop_assert!(reader.read_single_page().is_ok());
+        } else {
+            prop_assert!(reader.read_single_page().is_err());
+        }
+        for (idx, expected) in pages.iter().enumerate() {
+            let page = reader.read_page(idx).expect("read page");
+            let col = page.column(WHOLE_SECTION_GROUP, 0).expect("col 0");
+            let as_u64 = col.decode_u64(expected.len(), Some(&budget)).expect("u64");
+            let as_u32 = col.decode_u32(expected.len(), Some(&budget)).expect("u32");
+            let as_u8 = col.decode_u8(expected.len(), Some(&budget)).expect("u8");
+            prop_assert_eq!(as_u8, expected.clone());
+            prop_assert_eq!(as_u32, expected.iter().map(|&b| u32::from(b)).collect::<Vec<_>>());
+            prop_assert_eq!(as_u64, expected.iter().map(|&b| u64::from(b)).collect::<Vec<_>>());
+        }
+    }
+}
+
+#[test]
+fn object_header_tamper_is_detected_and_project_mismatch_rejected() {
+    let capture = build_rich_capture();
+    let data = ChunkData {
+        capture,
+        chunks: vec![ChunkRow {
+            agent: 7,
+            number: 1,
+            start: 1_000_000_000,
+            end: 1_005_000_000,
+            sampled_ns: 1_000,
+            preset: 0,
+            time_unit: TimeUnit::Us,
+            policy: 1,
+            rules: String::new(),
+        }],
+        dimensions: vec![DimensionRow {
+            process: 0,
+            name: "service.name".into(),
+            value: "api".into(),
+        }],
+        sanitizer_counts: Vec::new(),
+    };
+    let sections = encode_tables(&data, TimeUnit::Us, DEFAULT_ZSTD_LEVEL, 1).expect("encode");
+    let mut writer = ObjectWriter::new(ObjectKind::Post, ObjectLevel::None, 1_005_000_000, 7);
+    writer
+        .add_part(&PartSpec {
+            org_id: 42,
+            project_id: 99,
+            starts_at: 1_000_000_000,
+            ends_at: 1_005_000_000,
+            signal: Signal::Profile,
+            part: PartKind::Chunks,
+            sections,
+        })
+        .expect("add part");
+    let (bytes, _) = writer.finish().expect("finish");
+
+    for offset in 0..OBJECT_HEADER_LEN {
+        let mut tampered = bytes.clone();
+        tampered[offset] ^= 0x01;
+        assert!(
+            ObjectReader::open(&tampered).is_err(),
+            "header byte {offset} tamper must fail verification"
+        );
+    }
+
+    let reader = ObjectReader::open(&bytes).expect("open valid");
+    assert!(matches!(
+        reader.part_sections_checked(0, Some(42), Some(100)),
+        Err(ObjectError::ProjectMismatch {
+            expected: 100,
+            found: 99
+        })
+    ));
+    assert!(reader.part_sections_checked(0, Some(42), Some(99)).is_ok());
+}
+
+#[test]
+fn tables_round_trip_all_time_units_and_merge_chunks_preserves_duplicates() {
+    let mut b1 = CaptureBuilder::new();
+    let p1 = b1.process(Pid::new(10), 1_000_000);
+    let t1 = b1.thread(Pid::new(10), Tid::new(10), 1_000_000);
+    let m1 = b1.module("/bin/a", None, [1; 16], 4096);
+    let f1 = b1.frame(FrameKind::Native, m1, 0x100, 0);
+    let s1 = b1.stack(&[f1]);
+    b1.sample(t1, 2_000_000, 10_000, s1, NONE);
+    let dup1 = b1.string("duplicate");
+    let dup2 = b1.string("duplicate");
+    assert_eq!(dup1, dup2);
+    let mut cap1 = b1.finish();
+    cap1.strings.extend_from_slice(b"duplicate\0");
+
+    for unit in [TimeUnit::Ns, TimeUnit::Us, TimeUnit::Ms] {
+        let chunk = ChunkData {
+            capture: cap1.clone(),
+            chunks: vec![ChunkRow {
+                agent: 1,
+                number: 1,
+                start: 1_000_000,
+                end: 3_000_000,
+                sampled_ns: 10_000,
+                preset: 0,
+                time_unit: unit,
+                policy: 1,
+                rules: "r1".into(),
+            }],
+            dimensions: vec![DimensionRow {
+                process: p1,
+                name: "service.name".into(),
+                value: "svc".into(),
+            }],
+            sanitizer_counts: vec![SanitizerCountRow {
+                rule: "r1".into(),
+                field: FieldClass::ZoneText.number(),
+                fired: u64::MAX - 1,
+            }],
+        };
+        let enc = encode_tables(&chunk, unit, DEFAULT_ZSTD_LEVEL, 5).expect("encode");
+        let raw: Vec<super::RawSection<'_>> = enc
+            .iter()
+            .map(|s| super::RawSection {
+                kind: s.kind,
+                rows: s.rows,
+                key: s.key,
+                checksum: 0,
+                bytes: &s.bytes,
+            })
+            .collect();
+        let dec = decode_tables(&raw).expect("decode");
+        assert_eq!(dec.capture.samples.len(), 1);
+        assert_eq!(dec.chunks[0].start, 1_000_000);
+
+        let merged = merge_chunks(&[chunk.clone(), chunk]).expect("merge");
+        assert_eq!(merged.capture.samples.len(), 2);
+        assert_eq!(merged.sanitizer_counts[0].fired, u64::MAX);
+    }
 }

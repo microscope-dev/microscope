@@ -82,21 +82,36 @@ pub fn parse_policy_time_unit(name: &str) -> Option<TimeUnit> {
     }
 }
 
-fn parse_action(raw: &str) -> Option<Action> {
-    match raw {
-        "redact" => Some(Action::Redact),
-        "hash" => Some(Action::Hash),
-        "mask" => Some(Action::Mask),
-        "drop-field" => Some(Action::DropField),
-        "drop-record" => Some(Action::DropRecord),
-        _ => None,
-    }
-}
-
 pub fn build_sanitizers(
     local: &SanitizeConfig,
     remote: Option<&SanitizerPolicyDirective>,
 ) -> (Arc<Sanitizer>, BTreeMap<String, Arc<Sanitizer>>) {
+    match try_build_sanitizers(local, remote) {
+        Ok(pair) => pair,
+        Err(error) => {
+            eprintln!(
+                "microscope agent: invalid remote sanitizer policy ({error}); keeping local sanitizer only"
+            );
+            try_build_sanitizers(local, None).unwrap_or_else(|_| {
+                (
+                    Arc::new(Sanitizer::new(
+                        &Builtin::DEFAULT,
+                        Vec::new(),
+                        HashKey::new(b"microscope-agent-local"),
+                    )),
+                    BTreeMap::new(),
+                )
+            })
+        }
+    }
+}
+
+pub type BuiltSanitizers = (Arc<Sanitizer>, BTreeMap<String, Arc<Sanitizer>>);
+
+pub fn try_build_sanitizers(
+    local: &SanitizeConfig,
+    remote: Option<&SanitizerPolicyDirective>,
+) -> Result<BuiltSanitizers, String> {
     let mut builtins: Vec<Builtin> = Builtin::DEFAULT
         .iter()
         .copied()
@@ -104,37 +119,45 @@ pub fn build_sanitizers(
         .collect();
     if let Some(rem) = remote {
         for name in &rem.enabled_builtins {
-            if let Ok(b) = name.parse::<Builtin>()
-                && !local.disable_builtins.contains(&b)
-                && !builtins.contains(&b)
-            {
+            let b = name
+                .parse::<Builtin>()
+                .map_err(|e| format!("unknown builtin rule {name:?}: {e}"))?;
+            if !local.disable_builtins.contains(&b) && !builtins.contains(&b) {
                 builtins.push(b);
             }
         }
     }
 
-    let key_bytes: Vec<u8> = remote
-        .and_then(|r| r.hash_key.as_deref())
-        .and_then(|b64| URL_SAFE_NO_PAD.decode(b64).ok())
-        .filter(|bytes| !bytes.is_empty())
-        .unwrap_or_else(|| b"microscope-agent-local".to_vec());
+    let key_bytes: Vec<u8> = match remote.and_then(|r| r.hash_key.as_deref()) {
+        Some(b64) => {
+            let decoded = URL_SAFE_NO_PAD
+                .decode(b64)
+                .map_err(|e| format!("invalid base64 hash_key: {e}"))?;
+            if decoded.is_empty() {
+                return Err("empty sanitizer hash_key".to_owned());
+            }
+            decoded
+        }
+        None => b"microscope-agent-local".to_vec(),
+    };
 
     let mut org_specs: Vec<RuleSpec> = local.rules.clone();
     let mut per_project_specs: BTreeMap<String, Vec<RuleSpec>> = BTreeMap::new();
     if let Some(rem) = remote {
         for r in &rem.rules {
-            let Some(action) = parse_action(&r.action) else {
-                continue;
-            };
+            let action = Action::parse(&r.action).ok_or_else(|| {
+                format!(
+                    "unknown sanitizer action {:?} on rule {:?}",
+                    r.action, r.name
+                )
+            })?;
             let spec = RuleSpec {
                 name: r.name.clone(),
                 fields: r.fields.clone(),
                 pattern: r.pattern.clone(),
                 action,
             };
-            if Rule::new(&spec).is_err() {
-                continue;
-            }
+            Rule::new(&spec).map_err(|e| format!("invalid rule {:?}: {e}", r.name))?;
             if let Some(proj) = &r.project {
                 per_project_specs
                     .entry(proj.to_ascii_lowercase())
@@ -146,16 +169,16 @@ pub fn build_sanitizers(
         }
     }
 
-    let compile = |specs: &[RuleSpec]| -> Vec<Rule> {
+    let compile = |specs: &[RuleSpec]| -> Result<Vec<Rule>, String> {
         specs
             .iter()
-            .filter_map(|spec| Rule::new(spec).ok())
+            .map(|spec| Rule::new(spec).map_err(|e| format!("invalid rule {:?}: {e}", spec.name)))
             .collect()
     };
 
     let org_sanitizer = Arc::new(Sanitizer::new(
         &builtins,
-        compile(&org_specs),
+        compile(&org_specs)?,
         HashKey::new(&key_bytes),
     ));
 
@@ -167,13 +190,13 @@ pub fn build_sanitizers(
             proj_key,
             Arc::new(Sanitizer::new(
                 &builtins,
-                compile(&combined),
+                compile(&combined)?,
                 HashKey::new(&key_bytes),
             )),
         );
     }
 
-    (org_sanitizer, project_sanitizers)
+    Ok((org_sanitizer, project_sanitizers))
 }
 
 pub fn remote_selection_rules(policy: Option<&PolicyDirective>) -> Vec<SelectionRule> {

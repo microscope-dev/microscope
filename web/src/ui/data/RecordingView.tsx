@@ -40,10 +40,18 @@ export function RecordingView(props: { org: number | null }) {
   const [burstDuration, setBurstDuration] = createSignal("300");
 
   let seq = 0;
+  let lastOrg: number | null | undefined;
   createEffect(
     () => [props.org, rev()] as const,
     ([org]) => {
       const id = ++seq;
+      if (lastOrg !== undefined && lastOrg !== org) {
+        setData(null);
+        setBurstProjectId("");
+        setBurstEnv("");
+        setBurstOpen(false);
+      }
+      lastOrg = org;
       setLoading(true);
       setErr(null);
       void (async () => {
@@ -51,7 +59,8 @@ export function RecordingView(props: { org: number | null }) {
           const res = await dataPolicyApi.recording(org);
           if (id === seq) {
             setData(res);
-            if (!burstProjectId() && res.policies[0]) {
+            const validProj = res.policies.some((p) => String(p.projectId) === burstProjectId());
+            if ((!validProj || !burstProjectId()) && res.policies[0]) {
               setBurstProjectId(String(res.policies[0].projectId));
             }
           }

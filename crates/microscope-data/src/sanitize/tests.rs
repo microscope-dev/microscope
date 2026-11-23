@@ -570,3 +570,145 @@ fn repeated_sanitization_is_idempotent_across_actions() {
         other => panic!("expected mixed raw+hashed string to still sanitize raw parts: {other:?}"),
     }
 }
+
+#[test]
+fn ip_builtin_preserves_rust_and_cpp_paths_while_scrubbing_ips() {
+    let s = sanitizer(&[Builtin::IpAddresses]);
+    for keep in [
+        "std::io::Error",
+        "foo::bar",
+        "crate::module::Type::method",
+        "a::b::c",
+    ] {
+        assert_eq!(
+            clean(&[Builtin::IpAddresses], FieldClass::ZoneText, keep),
+            keep,
+            "must not corrupt {keep}"
+        );
+    }
+    for scrub in [
+        "10.0.0.1",
+        "192.168.1.254",
+        "::1",
+        "fe80::1",
+        "2001:db8::8a2e:370:7334",
+    ] {
+        let out = clean(
+            &[Builtin::IpAddresses],
+            FieldClass::ZoneText,
+            &format!("host {scrub} ok"),
+        );
+        assert!(!out.contains(scrub), "expected {scrub} scrubbed, got {out}");
+    }
+    let _ = s;
+}
+
+proptest! {
+    #[test]
+    fn prop_sanitizer_args_preserves_arity_with_embedded_nuls_and_is_idempotent(
+        args in proptest::collection::vec(
+            prop_oneof![
+                Just("--password".to_owned()),
+                Just("hunter2".to_owned()),
+                Just("arg\0with\0nul".to_owned()),
+                Just("std::io::Error".to_owned()),
+                Just("10.0.0.1".to_owned()),
+                Just("https://u:p@host/path".to_owned()),
+                "[a-zA-Z0-9_:\\./=\0-]{0,24}",
+            ],
+            0..12
+        )
+    ) {
+        let s = sanitizer(&Builtin::ALL);
+        let mut t1 = Tally::default();
+        let after1 = match s.args(&args, &mut t1) {
+            Outcome::Kept => args.clone(),
+            Outcome::Replaced(v) => {
+                prop_assert_eq!(v.len(), args.len());
+                v
+            }
+            Outcome::DropField | Outcome::DropRecord => return Ok(()),
+        };
+        let mut t2 = Tally::default();
+        let after2 = match s.args(&after1, &mut t2) {
+            Outcome::Kept => after1.clone(),
+            Outcome::Replaced(v) => v,
+            Outcome::DropField | Outcome::DropRecord => return Ok(()),
+        };
+        prop_assert_eq!(after2, after1);
+    }
+}
+
+#[test]
+fn verbatim_resanitize_strips_debug_prefix_and_rejects_duplicate_sections() {
+    use crate::capture::builder::CaptureBuilder;
+    use crate::object::{
+        ChunkData, ChunkRow, DEFAULT_ZSTD_LEVEL, ObjectError, RawSection, TimeUnit, decode_tables,
+        encode_tables,
+    };
+
+    let mut builder = CaptureBuilder::new();
+    builder.setting("debug information /home/alice/secret/app", "loaded");
+    builder.setting("image cache /home/alice/secret/app", "hit");
+    let data = ChunkData {
+        capture: builder.finish(),
+        chunks: vec![ChunkRow {
+            agent: 1,
+            number: 1,
+            start: 1_000,
+            end: 2_000,
+            sampled_ns: 0,
+            preset: 0,
+            time_unit: TimeUnit::Ns,
+            policy: 1,
+            rules: String::new(),
+        }],
+        dimensions: Vec::new(),
+        sanitizer_counts: Vec::new(),
+    };
+    let anchored = Rule::new(&RuleSpec {
+        name: "anchored-home".into(),
+        fields: vec!["module.path".into()],
+        pattern: "^/home/[^/]+/".into(),
+        action: Action::Hash,
+    })
+    .unwrap();
+    let policy = Sanitizer::new(&Builtin::DEFAULT, vec![anchored], HashKey::new(b"org"));
+
+    let encoded = encode_tables(&data, TimeUnit::Ns, DEFAULT_ZSTD_LEVEL, 0).expect("encode");
+    let raw: Vec<RawSection<'_>> = encoded
+        .iter()
+        .map(|s| RawSection {
+            kind: s.kind,
+            rows: s.rows,
+            key: s.key,
+            checksum: 0,
+            bytes: &s.bytes,
+        })
+        .collect();
+    let (resanitized, verbatim) =
+        re_sanitize_sections_verbatim(&raw, &policy, DEFAULT_ZSTD_LEVEL).expect("resanitize");
+    assert!(
+        !verbatim,
+        "anchored ModulePath must trigger on debug information prefix"
+    );
+    let raw_after: Vec<RawSection<'_>> = resanitized
+        .iter()
+        .map(|s| RawSection {
+            kind: s.kind,
+            rows: s.rows,
+            key: s.key,
+            checksum: 0,
+            bytes: &s.bytes,
+        })
+        .collect();
+    let decoded = decode_tables(&raw_after).expect("decode");
+    assert!(!String::from_utf8_lossy(&decoded.capture.strings).contains("/home/alice/"));
+
+    let mut dup = raw;
+    dup.push(dup[0]);
+    assert!(matches!(
+        re_sanitize_sections_verbatim(&dup, &policy, DEFAULT_ZSTD_LEVEL),
+        Err(ObjectError::Layout(_))
+    ));
+}

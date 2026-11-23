@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::analysis::{
     ChosenZones, DiffCost, Granularity, KeyKind, Keys, Lanes, Look, Query, Side, Source, Transform,
@@ -537,7 +537,7 @@ pub(super) fn tree(
         base: base_weight,
     };
 
-    Ok((to_value(&answer), bytes))
+    Ok((to_value(&answer)?, bytes))
 }
 
 pub(super) fn functions(
@@ -832,17 +832,29 @@ fn zone_name(capture: &Capture, site: u32, value: u32) -> String {
     clippy::too_many_lines,
     reason = "packs zone columns, markers, and plot series into one response"
 )]
-pub(super) fn zones(capture: &Capture, query: &ProfileZonesQuery) -> (Value, Vec<u8>) {
+pub(super) fn zones(
+    capture: &Capture,
+    query: &ProfileZonesQuery,
+    opts: AnswerOptions<'_>,
+) -> Result<(Value, Vec<u8>), ViewError> {
     let (start, _) = capture.span();
     let range = match (query.range, zone_extent(capture)) {
         (None, Some((first, last))) => {
-            let margin = ((last - first) / 50).max(1);
-            (first - margin, last + margin)
+            let span = (i128::from(last) - i128::from(first)).max(0);
+            let margin = i64::try_from((span / 50).max(1)).unwrap_or(i64::MAX);
+            (first.saturating_sub(margin), last.saturating_add(margin))
         }
         (range, _) => absolute(capture, range),
     };
 
-    let fold = (range.1 - range.0) * 3 / i64::from(query.width.max(1));
+    let width = opts.max_zone_width.map_or_else(
+        || query.width.max(1),
+        |limit| query.width.clamp(1, limit.max(1)),
+    );
+    let span = (i128::from(range.1) - i128::from(range.0)).max(0);
+    let fold = i64::try_from(span.saturating_mul(3) / i128::from(width))
+        .unwrap_or(i64::MAX)
+        .max(1);
     let band = query.band.map(Into::into);
     let sites = query
         .site
@@ -939,32 +951,27 @@ pub(super) fn zones(capture: &Capture, query: &ProfileZonesQuery) -> (Value, Vec
         .take(MOST_MARKS)
         .collect();
 
-    let plots = plot_series(
-        capture,
-        range,
-        query.threads.as_deref(),
-        query.width.max(1) as usize,
-    )
-    .into_iter()
-    .map(|series| ProfilePlot {
-        name: capture.string(series.name).to_owned(),
-        values: series.values,
-        unshown: series.unshown,
-        bins: series
-            .bins
-            .iter()
-            .map(|bin| {
-                let time = exact_time(bin.time - start);
-                [time, bin.first, bin.last, bin.low, bin.high]
-            })
-            .collect(),
-        held: series.held,
-        continues: series.continues,
-    })
-    .collect();
+    let plots = plot_series(capture, range, query.threads.as_deref(), width as usize)
+        .into_iter()
+        .map(|series| ProfilePlot {
+            name: capture.string(series.name).to_owned(),
+            values: series.values,
+            unshown: series.unshown,
+            bins: series
+                .bins
+                .iter()
+                .map(|bin| {
+                    let time = exact_time(bin.time.saturating_sub(start));
+                    [time, bin.first, bin.last, bin.low, bin.high]
+                })
+                .collect(),
+            held: series.held,
+            continues: series.continues,
+        })
+        .collect();
 
     let answer = ProfileZones {
-        range: [range.0 - start, range.1 - start],
+        range: [range.0.saturating_sub(start), range.1.saturating_sub(start)],
         blocks: u32::try_from(blocks.len()).unwrap_or(u32::MAX),
         off_cpu: capture.setting("off-CPU") == Some("on"),
         names,
@@ -972,7 +979,7 @@ pub(super) fn zones(capture: &Capture, query: &ProfileZonesQuery) -> (Value, Vec
         plots,
     };
 
-    (to_value(&answer), bytes)
+    Ok((to_value(&answer)?, bytes))
 }
 
 pub(super) fn zone_stats(capture: &Capture, query: &ProfileZoneStatsQuery) -> ProfileZoneStats {
@@ -1112,6 +1119,6 @@ const fn exact_time(time: i64) -> f64 {
     time as f64
 }
 
-pub(super) fn to_value(value: &impl serde::Serialize) -> Value {
-    serde_json::to_value(value).unwrap_or_else(|error| json!({ "error": error.to_string() }))
+pub(super) fn to_value(value: &impl serde::Serialize) -> Result<Value, ViewError> {
+    serde_json::to_value(value).map_err(|error| ViewError::Failed(error.to_string()))
 }

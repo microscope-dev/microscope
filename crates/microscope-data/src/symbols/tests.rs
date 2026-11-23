@@ -367,6 +367,118 @@ proptest! {
         let _ = has_debug_or_symtab(&data);
         let _ = parse_elf(&data, &ParseBudget::FUZZ);
         let _ = SymbolIndex::decode(&data, &ParseBudget::FUZZ);
+        let _ = SymbolIndex::decode_unverified_for_fuzz(&data, &ParseBudget::FUZZ);
+        let _ = SymbolIndex::decode_body_for_fuzz(&data, &ParseBudget::FUZZ);
+        let mut cursor = std::io::Cursor::new(&data);
+        let _ = super::read_elf_build_id_from_reader(&mut cursor);
         let _ = strip_to_debug_elf(&data);
     }
+
+    #[test]
+    fn symbol_index_round_trips_and_lookup_matches_spans(
+        span_specs in proptest::collection::vec(
+            (1_u64..1024, 1_u64..256, 1_u32..500, "[a-z_]{1,12}", "[a-z_/]{1,12}"),
+            1..24
+        )
+    ) {
+        let mut strings = Vec::new();
+        let mut files = Vec::new();
+        let mut functions = Vec::new();
+        let mut inlines = Vec::new();
+        let mut spans = Vec::new();
+        let mut line_spans = Vec::new();
+        let mut symtab_spans = Vec::new();
+        let mut cursor = 0x1000_u64;
+
+        for (gap, len, line, fname, file_name) in span_specs {
+            cursor = cursor.saturating_add(gap);
+            let end = cursor.saturating_add(len);
+            let name_id = u32::try_from(strings.len()).unwrap();
+            strings.push(fname);
+            let file_str_id = u32::try_from(strings.len()).unwrap();
+            strings.push(file_name);
+            let file_id = u32::try_from(files.len()).unwrap();
+            files.push(file_str_id);
+            let fn_id = u32::try_from(functions.len()).unwrap();
+            functions.push(super::index::SymbolFunction {
+                name: name_id,
+                file: file_id,
+                decl_line: line,
+            });
+            let inline_start = u32::try_from(inlines.len()).unwrap();
+            inlines.push(super::index::InlineFrame {
+                function: fn_id,
+                call_file: super::index::NO_INDEX,
+                call_line: 0,
+            });
+            spans.push(super::index::SymbolSpan {
+                start: cursor,
+                end,
+                inline_start,
+                inline_count: 1,
+            });
+            line_spans.push(super::index::LineSpan {
+                start: cursor,
+                end,
+                file: file_id,
+                line,
+                column: 1,
+            });
+            symtab_spans.push(super::index::SymtabSpan {
+                start: cursor,
+                end,
+                function: fn_id,
+            });
+            cursor = end;
+        }
+
+        let index = SymbolIndex {
+            build_id: BuildId::parse("0123456789abcdef").unwrap(),
+            arch: "x86_64".to_owned(),
+            has_dwarf: true,
+            has_symtab: true,
+            has_gopclntab: false,
+            strings,
+            files,
+            functions,
+            inlines,
+            spans: spans.clone(),
+            line_spans,
+            symtab_spans,
+        };
+        let encoded = index.encode();
+        let decoded = SymbolIndex::decode(&encoded, &ParseBudget::SERVER).expect("decode");
+        prop_assert_eq!(&decoded, &index);
+
+        for span in &spans {
+            let frames = decoded.lookup(span.start);
+            prop_assert_eq!(frames.len(), 1);
+            let frames_end = decoded.lookup(span.end - 1);
+            prop_assert_eq!(frames_end.len(), 1);
+        }
+        prop_assert!(decoded.lookup(0).is_empty());
+
+        for offset in 0..32 {
+            let mut tampered = encoded.clone();
+            tampered[offset] ^= 0x01;
+            prop_assert!(SymbolIndex::decode(&tampered, &ParseBudget::SERVER).is_err());
+        }
+    }
+}
+
+#[test]
+fn public_system_paths_reject_traversal_and_nul() {
+    assert!(!is_public_system_path("/usr/lib/../../etc/passwd"));
+    assert!(!is_public_system_path("/lib/foo/../bar"));
+    assert!(!is_public_system_path("/nix/store/../secret/app"));
+    assert!(!is_public_system_path("/usr/lib/libc.so\0/srv/app"));
+}
+
+#[test]
+fn streaming_elf_build_id_matches_slice_extract() {
+    let exe = std::env::current_exe().unwrap();
+    let bytes = std::fs::read(&exe).unwrap();
+    let expected = extract_build_id(&bytes).ok();
+    let streamed = super::read_elf_build_id_from_file(&exe).ok().flatten();
+    assert_eq!(streamed, expected);
 }

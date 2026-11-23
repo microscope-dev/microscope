@@ -1,12 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
-use std::path::PathBuf;
+use std::fs::{File, OpenOptions};
+use std::io::Read as _;
+use std::os::unix::fs::OpenOptionsExt as _;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use microscope_data::symbols::{
-    BuildId, extract_build_id, has_debug_or_symtab, strip_to_debug_elf,
+    BuildId, extract_build_id, has_debug_or_symtab, read_elf_build_id_from_reader,
+    strip_to_debug_elf,
 };
+use nix::libc;
 use ring::digest::{SHA256, digest};
 
 use super::client::{Client, SymbolPartHeader, SymbolPartReply};
@@ -15,7 +19,10 @@ use crate::debug_info::DebugFileSearch;
 
 pub const SYMBOL_PIECE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_UPLOAD_COMPRESSED_BYTES: usize = 128 * 1024 * 1024;
+const MAX_ELF_READ_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_TRACKED_BINARIES: usize = 2048;
+const MAX_COMPLETED_TASKS: usize = 4096;
+const FAILED_COOLDOWN: Duration = Duration::from_secs(3600);
 const MAX_RETRIES: u32 = 6;
 const RETRY_BASE_DELAY: Duration = Duration::from_secs(15);
 const RETRY_MAX_DELAY: Duration = Duration::from_secs(300);
@@ -50,6 +57,7 @@ pub struct SymbolUploadQueue {
     pending: BTreeMap<UploadTaskKey, PendingUpload>,
     in_flight: BTreeMap<UploadTaskKey, PendingUpload>,
     completed: BTreeSet<UploadTaskKey>,
+    failed_until: BTreeMap<UploadTaskKey, Instant>,
 }
 
 fn normalize_project_key(project: Option<&str>) -> Option<String> {
@@ -141,9 +149,14 @@ impl SymbolUploadQueue {
             if self.completed.contains(&task)
                 || self.pending.contains_key(&task)
                 || self.in_flight.contains_key(&task)
+                || self
+                    .failed_until
+                    .get(&task)
+                    .is_some_and(|&until| until > now)
             {
                 continue;
             }
+            self.failed_until.remove(&task);
             self.pending.insert(
                 task,
                 PendingUpload {
@@ -202,7 +215,14 @@ impl SymbolUploadQueue {
     }
 
     pub fn mark_done(&mut self, task: &UploadTaskKey) {
+        if self.completed.len() >= MAX_COMPLETED_TASKS
+            && !self.completed.contains(task)
+            && let Some(first) = self.completed.first().cloned()
+        {
+            self.completed.remove(&first);
+        }
         self.completed.insert(task.clone());
+        self.failed_until.remove(task);
         self.pending.remove(task);
         self.in_flight.remove(task);
     }
@@ -220,6 +240,14 @@ impl SymbolUploadQueue {
         }
         item.attempts = item.attempts.saturating_add(1);
         if item.attempts > MAX_RETRIES {
+            if self.failed_until.len() >= MAX_COMPLETED_TASKS
+                && !self.failed_until.contains_key(task)
+                && let Some(first) = self.failed_until.keys().next().cloned()
+            {
+                self.failed_until.remove(&first);
+            }
+            self.failed_until
+                .insert(task.clone(), now + FAILED_COOLDOWN);
             return;
         }
         item.next_attempt = now + retry_backoff(item.attempts);
@@ -234,20 +262,68 @@ pub enum PrepareOutcome {
     RetryLater,
 }
 
+fn read_regular_elf_bounded(path: &Path, follow_symlinks: bool) -> Option<Vec<u8>> {
+    let mut flags = libc::O_NONBLOCK | libc::O_CLOEXEC;
+    if !follow_symlinks {
+        flags |= libc::O_NOFOLLOW;
+    }
+    let file: File = OpenOptions::new()
+        .read(true)
+        .custom_flags(flags)
+        .open(path)
+        .ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > MAX_ELF_READ_BYTES {
+        return None;
+    }
+    let len = usize::try_from(meta.len()).ok()?;
+    let mut out = Vec::with_capacity(len.min(1024 * 1024));
+    file.take(MAX_ELF_READ_BYTES.saturating_add(1))
+        .read_to_end(&mut out)
+        .ok()?;
+    if (out.len() as u64) > MAX_ELF_READ_BYTES {
+        return None;
+    }
+    Some(out)
+}
+
+fn check_regular_elf_build_id(path: &Path, follow_symlinks: bool, expected: &str) -> bool {
+    let mut flags = libc::O_NONBLOCK | libc::O_CLOEXEC;
+    if !follow_symlinks {
+        flags |= libc::O_NOFOLLOW;
+    }
+    let Ok(mut file) = OpenOptions::new().read(true).custom_flags(flags).open(path) else {
+        return false;
+    };
+    let Ok(meta) = file.metadata() else {
+        return false;
+    };
+    if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > MAX_ELF_READ_BYTES {
+        return false;
+    }
+    matches!(
+        read_elf_build_id_from_reader(&mut file),
+        Ok(Some(bid)) if bid.as_str() == expected
+    )
+}
+
 fn read_verified_elf(
     binary: &RecordedBinary,
     expected_build_id: &str,
 ) -> Result<(PathBuf, Vec<u8>), PrepareOutcome> {
-    let mut candidates: Vec<PathBuf> = vec![binary.path.clone()];
+    let mut candidates: Vec<(PathBuf, bool)> = vec![(binary.path.clone(), true)];
     if let Some(pid) = binary.pid {
-        candidates.push(PathBuf::from(format!("/proc/{pid}/exe")));
+        candidates.push((PathBuf::from(format!("/proc/{pid}/exe")), true));
         if let Ok(rel) = binary.path.strip_prefix("/") {
-            candidates.push(PathBuf::from(format!("/proc/{pid}/root")).join(rel));
+            candidates.push((PathBuf::from(format!("/proc/{pid}/root")).join(rel), false));
         }
     }
 
-    for candidate in candidates {
-        if let Ok(raw) = fs::read(&candidate)
+    for (candidate, follow_symlinks) in candidates {
+        if !check_regular_elf_build_id(&candidate, follow_symlinks, expected_build_id) {
+            continue;
+        }
+        if let Some(raw) = read_regular_elf_bounded(&candidate, follow_symlinks)
             && let Ok(bid) = extract_build_id(&raw)
             && bid.as_str() == expected_build_id
         {
@@ -266,7 +342,16 @@ pub fn prepare_debug_payload(binary: &RecordedBinary, expected_build_id: &str) -
     };
 
     let debug_elf = if has_debug_or_symtab(&raw) {
-        strip_to_debug_elf(&raw).unwrap_or(raw)
+        match strip_to_debug_elf(&raw) {
+            Ok(stripped) => stripped,
+            Err(error) => {
+                eprintln!(
+                    "microscope agent: refusing to upload unstripped binary {} ({expected_build_id}): {error}",
+                    resolved_path.display()
+                );
+                return PrepareOutcome::PermanentSkip;
+            }
+        }
     } else {
         let Ok(parsed) = object::File::parse(raw.as_slice()) else {
             return PrepareOutcome::PermanentSkip;
@@ -285,7 +370,15 @@ pub fn prepare_debug_payload(binary: &RecordedBinary, expected_build_id: &str) -
         if !has_debug_or_symtab(&found.data) {
             return PrepareOutcome::PermanentSkip;
         }
-        strip_to_debug_elf(&found.data).unwrap_or(found.data)
+        match strip_to_debug_elf(&found.data) {
+            Ok(stripped) => stripped,
+            Err(error) => {
+                eprintln!(
+                    "microscope agent: refusing to upload unstripped debug file for {expected_build_id}: {error}"
+                );
+                return PrepareOutcome::PermanentSkip;
+            }
+        }
     };
 
     let Ok(compressed) = zstd::bulk::compress(&debug_elf, 3) else {
@@ -470,5 +563,44 @@ mod tests {
 
         assert!(!q.enqueue_missing(Some(10), Some("proj-a"), &["deadbeef".to_owned()]));
         assert!(!q.enqueue_missing(Some(20), Some("proj-b"), &["deadbeef".to_owned()]));
+    }
+
+    #[test]
+    fn retry_exhaustion_enters_cooldown_and_recovers_after_expiry() {
+        let mut q = SymbolUploadQueue::default();
+        q.record_binary(
+            "cafe0001",
+            PathBuf::from("/opt/app"),
+            Some(7),
+            Some("proj".to_owned()),
+            Some("svc".to_owned()),
+        );
+        assert!(q.enqueue_missing(Some(1), Some("proj"), &["cafe0001".to_owned()]));
+        let mut now = Instant::now();
+        let (task, _) = q.pop_next_at(now).expect("initial pop");
+        for i in 0..=MAX_RETRIES {
+            q.mark_retry_later_at(&task, now);
+            now += RETRY_MAX_DELAY + Duration::from_secs(1);
+            if i < MAX_RETRIES {
+                assert!(q.pop_next_at(now).is_some());
+            }
+        }
+        assert!(q.in_flight.is_empty());
+        assert!(q.pending.is_empty());
+        assert!(q.failed_until.contains_key(&task));
+        assert!(
+            !q.enqueue_missing(Some(1), Some("proj"), &["cafe0001".to_owned()]),
+            "exhausted build id must remain suppressed during cooldown"
+        );
+        q.failed_until.insert(
+            task.clone(),
+            Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_else(Instant::now),
+        );
+        assert!(
+            q.enqueue_missing(Some(1), Some("proj"), &["cafe0001".to_owned()]),
+            "build id must become retryable once cooldown expires"
+        );
     }
 }

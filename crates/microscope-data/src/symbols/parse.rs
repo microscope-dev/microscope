@@ -155,6 +155,7 @@ fn collect_elf_symbols(
 
     let mut had_static = false;
     let mut raw_entries: Vec<(u64, u64, u8, String)> = Vec::new();
+    let mut raw_name_bytes = 0_usize;
     for (priority, sym) in file
         .symbols()
         .map(|s| (0_u8, s))
@@ -183,7 +184,21 @@ fn collect_elf_symbols(
             had_static = true;
         }
         let size = sym.size();
-        raw_entries.push((addr, size, priority, demangle_symbol(name)));
+        let mut demangled = demangle_symbol(name);
+        if demangled.len() > 65_536 {
+            let mut end = 65_536;
+            while !demangled.is_char_boundary(end) {
+                end -= 1;
+            }
+            demangled.truncate(end);
+        }
+        raw_name_bytes = raw_name_bytes
+            .saturating_add(demangled.len())
+            .saturating_add(size_of::<String>());
+        if raw_name_bytes > budget.max_string_bytes.saturating_mul(2) {
+            break;
+        }
+        raw_entries.push((addr, size, priority, demangled));
         if raw_entries.len() >= budget.max_spans {
             break;
         }
@@ -260,7 +275,7 @@ fn decompress_section<'data>(
     let size = usize::try_from(claimed)
         .map_err(|_| SymbolError::BudgetExceeded(format!("{name} size overflow")))?;
     let mut out = Vec::new();
-    out.try_reserve_exact(size)
+    out.try_reserve(size.min(1024 * 1024))
         .map_err(|_| SymbolError::BudgetExceeded(format!("{name} allocation")))?;
 
     match data.format {
@@ -773,7 +788,9 @@ pub fn resolve_gopclntab_text_start(file: &object::File<'_>) -> Option<u64> {
     };
     let sec = file.section_by_name(sec_name)?;
     let table_addr = sec.address();
-    let data = sec.uncompressed_data().ok()?;
+    let mut used = 0_u64;
+    let budget = ParseBudget::SERVER;
+    let data = read_section_budgeted(file, sec_name, &mut used, &budget).ok()?;
     if data.len() < GO_HEADER_SIZE {
         return None;
     }
@@ -1051,8 +1068,10 @@ fn flatten_dwarf_spans(
     let mut chain_intern: BTreeMap<ChainInternKey, (u32, u32)> = BTreeMap::new();
     let mut spans: Vec<SymbolSpan> = Vec::new();
 
+    let Some(&(mut prev_addr, _, _)) = events.first() else {
+        return Ok((Vec::new(), Vec::new()));
+    };
     let mut i = 0_usize;
-    let mut prev_addr = events[0].0;
 
     while i < events.len() {
         let addr = events[i].0;

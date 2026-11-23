@@ -664,21 +664,30 @@ fn unix_now_ns() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX))
 }
 
+fn print_flame(resp: &Value, tree: bool, limit: usize, min_percent: f64) {
+    print!("{}", format_flame(resp, tree, limit, min_percent));
+}
+
 #[expect(
-    clippy::cast_precision_loss,
     clippy::too_many_lines,
     reason = "flame summary formatting handles tree and flat modes"
 )]
-fn print_flame(resp: &Value, tree: bool, limit: usize, min_percent: f64) {
+fn format_flame(resp: &Value, tree: bool, limit: usize, min_percent: f64) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
     if resp.get("locked").and_then(Value::as_bool) == Some(true) {
-        println!("Scope is locked (missing read permission on one or more projects).");
-        return;
+        let _ = writeln!(
+            out,
+            "Scope is locked (missing read permission on one or more projects)."
+        );
+        return out;
     }
-    let total_weight = resp.get("weight").and_then(Value::as_u64).unwrap_or(0) as f64;
+    let total_weight = resp.get("weight").and_then(Value::as_f64).unwrap_or(0.0);
     let samples = resp.get("samples").and_then(Value::as_u64).unwrap_or(0);
     if total_weight <= 0.0 {
-        println!("No samples in scope.");
-        return;
+        let _ = writeln!(out, "No samples in scope.");
+        return out;
     }
 
     let keys = resp
@@ -715,14 +724,15 @@ fn print_flame(resp: &Value, tree: bool, limit: usize, min_percent: f64) {
             .to_owned()
     };
 
-    println!(
+    let _ = writeln!(
+        out,
         "Total: {} ({samples} samples, {} blocks)",
         format_ns(total_weight),
         resp.get("blocks").and_then(Value::as_u64).unwrap_or(0),
     );
 
     if tree {
-        println!("{:>7}  {:>7}  Function", "Total%", "Own%");
+        let _ = writeln!(out, "{:>7}  {:>7}  Function", "Total%", "Own%");
         let mut shown = 0_usize;
         for i in 0..key_idx.len() {
             if shown >= limit {
@@ -740,44 +750,49 @@ fn print_flame(resp: &Value, tree: bool, limit: usize, min_percent: f64) {
                 .min(24);
             let k =
                 usize::try_from(key_idx.get(i).and_then(Value::as_u64).unwrap_or(0)).unwrap_or(0);
-            println!(
+            let _ = writeln!(
+                out,
                 "{tot_pct:>6.2}%  {own_pct:>6.2}%  {}{}",
                 "  ".repeat(d),
                 key_name(k)
             );
             shown += 1;
         }
-        return;
+        return out;
     }
 
     let mut by_fn: BTreeMap<String, (f64, f64)> = BTreeMap::new();
+    let mut stack: Vec<String> = Vec::new();
     for i in 0..key_idx.len() {
+        let d = usize::try_from(depth.get(i).and_then(Value::as_u64).unwrap_or(0)).unwrap_or(0);
+        stack.truncate(d);
         let k = usize::try_from(key_idx.get(i).and_then(Value::as_u64).unwrap_or(0)).unwrap_or(0);
         let name = key_name(k);
         let own_v = own.get(i).and_then(Value::as_f64).unwrap_or(0.0);
         let tot_v = total.get(i).and_then(Value::as_f64).unwrap_or(0.0);
-        let entry = by_fn.entry(name).or_insert((0.0, 0.0));
+        let recursive = stack.iter().any(|ancestor| ancestor == &name);
+        let entry = by_fn.entry(name.clone()).or_insert((0.0, 0.0));
         entry.0 += own_v;
-        if tot_v > entry.1 {
-            entry.1 = tot_v;
+        if !recursive {
+            entry.1 += tot_v;
         }
+        stack.push(name);
     }
 
     let mut rows: Vec<(String, f64, f64)> = by_fn
         .into_iter()
+        .filter(|(_, (_, t))| (*t * 100.0 / total_weight) >= min_percent)
         .map(|(name, (o, t))| (name, o, t))
         .collect();
     rows.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| b.2.total_cmp(&a.2)));
 
-    println!("{:>7}  {:>7}  Function", "Own%", "Total%");
+    let _ = writeln!(out, "{:>7}  {:>7}  Function", "Own%", "Total%");
     for (name, o, t) in rows.into_iter().take(limit) {
         let tot_pct = t * 100.0 / total_weight;
-        if tot_pct < min_percent {
-            continue;
-        }
         let own_pct = o * 100.0 / total_weight;
-        println!("{own_pct:>6.2}%  {tot_pct:>6.2}%  {name}");
+        let _ = writeln!(out, "{own_pct:>6.2}%  {tot_pct:>6.2}%  {name}");
     }
+    out
 }
 
 #[derive(Deserialize)]
@@ -1030,11 +1045,12 @@ fn format_metric(val: f64, unit: &str) -> String {
 }
 
 fn format_ns(ns: f64) -> String {
-    if ns >= 1e9 {
+    let abs = ns.abs();
+    if abs >= 1e9 {
         format!("{:.2}s", ns / 1e9)
-    } else if ns >= 1e6 {
+    } else if abs >= 1e6 {
         format!("{:.1}ms", ns / 1e6)
-    } else if ns >= 1e3 {
+    } else if abs >= 1e3 {
         format!("{:.1}us", ns / 1e3)
     } else {
         format!("{ns:.0}ns")
@@ -1235,5 +1251,31 @@ mod tests {
         assert!(rendered_ot.contains("2.000 cores"), "{rendered_ot}");
         assert!(rendered_ot.contains("2.500 cores"), "{rendered_ot}");
         assert!(!rendered_ot.contains("ns"), "{rendered_ot}");
+    }
+
+    #[test]
+    fn flat_flame_does_not_double_count_recursion_and_formats_negative_ns() {
+        let flame = json!({
+            "weight": 100.0,
+            "samples": 10,
+            "unit": "nanoseconds",
+            "keys": [{ "name": "recur" }, { "name": "leaf" }],
+            "own": [10.0, 20.0, 70.0],
+            "total": [100.0, 90.0, 70.0],
+            "key": [0, 0, 1],
+            "depth": [0, 1, 2],
+            "blocks": 1,
+            "prunedBlocks": 0,
+            "cacheHits": 0,
+            "locked": false,
+            "truncated": false
+        });
+        let rendered = format_flame(&flame, false, 10, 0.0);
+        assert!(rendered.contains("100.00%"), "{rendered}");
+        assert!(
+            !rendered.contains("190.00%"),
+            "must not double-count recursion: {rendered}"
+        );
+        assert_eq!(format_ns(-5_000_000.0), "-5.0ms");
     }
 }

@@ -1038,9 +1038,6 @@ fn file_of(captures: &[Capture]) -> (Vec<u8>, Vec<usize>) {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
 
-    /// A capture rebuilt through `absorb` says what it said: every row,
-    /// zone depth, task label, gap, and note among its calls, a reused
-    /// tid still two threads. And what it says is what was recorded.
     #[test]
     fn a_rebuilt_capture_keeps_every_row(model in model()) {
         let original = build(&model, true).finish();
@@ -1060,10 +1057,6 @@ proptest! {
         prop_assert_eq!(merged(std::slice::from_ref(&rebuilt)), rebuilt);
     }
 
-    /// Cut at any moments, a recording's pieces hold each row of it in
-    /// exactly the piece of its moment, and each span in every piece it
-    /// overlaps, cut there and flagged; merged, they are the recording
-    /// with its spans cut.
     #[test]
     fn cut_pieces_split_every_row_and_merge_back(model in model(), draws in cut_draws()) {
         let cuts = cuts(&model, &draws);
@@ -1115,10 +1108,6 @@ proptest! {
         }
     }
 
-    /// A file of a recording's pieces reads back as them merged; cut at
-    /// any byte, it reads exactly the chunks that end by the cut, and says
-    /// it was cut; with any byte changed, it reads as it was or not at
-    /// all.
     #[test]
     fn a_file_reads_its_whole_chunks_and_nothing_else(
         model in model(),

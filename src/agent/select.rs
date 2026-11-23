@@ -10,7 +10,6 @@ use nix::{
     fcntl::{OFlag, openat, readlinkat},
     sys::stat::Mode,
 };
-use object::Object as _;
 
 use super::host::Root;
 
@@ -178,13 +177,10 @@ impl BuildIdCache {
 }
 
 fn read_elf_build_id(path: &Path) -> Option<String> {
-    let bytes = fs::read(path).ok()?;
-    let file = object::File::parse(&*bytes).ok()?;
-    let id = file.build_id().ok()??;
-    if id.is_empty() {
-        return None;
-    }
-    Some(super::wire::hex(id))
+    microscope_data::symbols::read_elf_build_id_from_file(path)
+        .ok()
+        .flatten()
+        .map(|bid| bid.as_str().to_owned())
 }
 
 #[must_use]
@@ -293,16 +289,28 @@ pub fn classify_selection(
     }
 
     if meta.env_record == Some(true) || meta.env_project.is_some() {
-        let project = meta.env_project.clone();
+        let project = meta.env_project.clone().or_else(|| {
+            local_rules
+                .iter()
+                .chain(active_remote.iter())
+                .find(|r| r.action == RuleAction::Record && rule_matches(r, &meta))
+                .and_then(|r| r.project.clone())
+        });
         let service_explicit = meta.env_service.is_some();
         let service = meta.env_service.clone().unwrap_or_else(|| program.clone());
+        let matched_by = if meta.env_project.is_some() {
+            "env: MICROSCOPE_PROJECT"
+        } else {
+            "env: MICROSCOPE_RECORD"
+        }
+        .to_owned();
         return SelectionDecision::Selected(Box::new(SelectedProcess {
             pid: meta.pid,
             program,
             project,
             service,
             service_explicit,
-            matched_by: "env: MICROSCOPE_PROJECT".to_owned(),
+            matched_by,
             meta,
         }));
     }
@@ -368,12 +376,15 @@ pub fn scan_selected_processes(
     let mut container_cache: BTreeMap<String, ContainerMeta> = BTreeMap::new();
     let mut result = ScanResult::default();
     for pid in pids {
-        let Some(meta) = read_process_metadata(root, pid, options, &mut container_cache, build_ids)
-        else {
+        let Some(meta) = read_process_metadata(root, pid, options, &mut container_cache) else {
             continue;
         };
         match classify_selection(meta, local_rules, remote_rules, allow_remote_rules) {
-            SelectionDecision::Selected(chosen) => result.selected.push(*chosen),
+            SelectionDecision::Selected(mut chosen) => {
+                let exe_link = root.path(&format!("/proc/{pid}/exe"));
+                chosen.meta.build_id = build_ids.get_or_read(&exe_link);
+                result.selected.push(*chosen);
+            }
             SelectionDecision::Excluded => {
                 result.excluded_pids.insert(pid);
             }
@@ -399,7 +410,6 @@ fn read_process_metadata(
     pid: u32,
     options: &ScanOptions,
     container_cache: &mut BTreeMap<String, ContainerMeta>,
-    build_ids: &mut BuildIdCache,
 ) -> Option<ProcessMetadata> {
     let pdir = root.path(&format!("/proc/{pid}"));
     let comm = fs::read_to_string(pdir.join("comm"))
@@ -421,7 +431,7 @@ fn read_process_metadata(
         (Some(cleaned), base)
     });
 
-    let build_id = build_ids.get_or_read(&exe_link);
+    let build_id = None;
 
     let (env_record, env_project, env_service) = read_allowed_env(&pdir.join("environ"));
 

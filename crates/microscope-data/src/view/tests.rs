@@ -201,6 +201,64 @@ fn hosted_timeline_bounds_lanes_and_cells() {
     assert_eq!(narrow["lanes"].as_array().unwrap().len(), 1);
 }
 
+proptest::proptest! {
+    #[test]
+    fn hosted_endpoints_survive_adversarial_numeric_params(
+        start in proptest::prelude::prop_oneof![
+            proptest::prelude::Just(i64::MIN),
+            proptest::prelude::Just(i64::MAX),
+            proptest::prelude::Just(0_i64),
+            proptest::prelude::any::<i64>(),
+        ],
+        end in proptest::prelude::prop_oneof![
+            proptest::prelude::Just(i64::MIN),
+            proptest::prelude::Just(i64::MAX),
+            proptest::prelude::Just(0_i64),
+            proptest::prelude::any::<i64>(),
+        ],
+        width in proptest::prelude::prop_oneof![
+            proptest::prelude::Just(0_u32),
+            proptest::prelude::Just(1_u32),
+            proptest::prelude::Just(u32::MAX),
+            0_u32..50_000,
+        ],
+        buckets in proptest::prelude::prop_oneof![
+            proptest::prelude::Just(0_u32),
+            proptest::prelude::Just(1_u32),
+            proptest::prelude::Just(u32::MAX),
+            0_u32..100_000,
+        ],
+    ) {
+        let view = sample_view();
+        let opts = AnswerOptions::hosted();
+        let _ = view.answer(
+            "profileTimeline",
+            json!({ "profile": "capture:1", "during": { "from": start, "to": end }, "buckets": buckets }),
+            opts,
+        );
+        let _ = view.answer(
+            "profileZones",
+            json!({ "profile": "capture:1", "from": start, "to": end, "width": width }),
+            opts,
+        );
+        let _ = view.answer(
+            "profileZoneStats",
+            json!({ "profile": "capture:1", "from": start, "to": end }),
+            opts,
+        );
+        let _ = view.answer(
+            "syscallHeatmap",
+            json!({ "profile": "capture:1", "during": { "from": start, "to": end }, "columns": buckets }),
+            opts,
+        );
+        let _ = view.answer(
+            "syscallLog",
+            json!({ "profile": "capture:1", "from": start, "to": end, "limit": width }),
+            opts,
+        );
+    }
+}
+
 #[test]
 fn hosted_timeline_focus_transform_excludes_filtered_lanes() {
     let mut focus_builder = CaptureBuilder::new();
