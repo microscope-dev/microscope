@@ -21,13 +21,62 @@ const GO_FUNC_SIZE: usize = 44;
 
 type DwarfReader<'a> = EndianSlice<'a, RunTimeEndian>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 struct RawRange {
     start: u64,
     end: u64,
     depth: u32,
     order: u32,
-    chain: Vec<InlineFrame>,
+    chain: ChainId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct ChainId(u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct ChainNode {
+    frame: InlineFrame,
+    parent: Option<ChainId>,
+}
+
+#[derive(Default)]
+struct DwarfRanges {
+    ranges: Vec<RawRange>,
+    chains: InlineChains,
+}
+
+#[derive(Default)]
+struct InlineChains {
+    nodes: Vec<ChainNode>,
+    ids: foldhash::HashMap<ChainNode, ChainId>,
+}
+
+impl InlineChains {
+    fn intern(
+        &mut self,
+        frame: InlineFrame,
+        parent: Option<ChainId>,
+    ) -> Result<ChainId, SymbolError> {
+        let node = ChainNode { frame, parent };
+        if let Some(&id) = self.ids.get(&node) {
+            return Ok(id);
+        }
+        let id = ChainId(
+            u32::try_from(self.nodes.len())
+                .map_err(|_| SymbolError::BudgetExceeded("inline chain overflow".to_owned()))?,
+        );
+        assert!(parent.is_none_or(|p| p.0 < id.0));
+        self.nodes.push(node);
+        self.ids.insert(node, id);
+        Ok(id)
+    }
+
+    fn frames(&self, id: ChainId) -> impl Iterator<Item = InlineFrame> + '_ {
+        std::iter::successors(Some(self.nodes[id.0 as usize]), |node| {
+            node.parent.map(|p| self.nodes[p.0 as usize])
+        })
+        .map(|node| node.frame)
+    }
 }
 
 pub fn parse_elf(
@@ -59,7 +108,7 @@ pub fn parse_elf(
     let has_symtab = collect_elf_symbols(&file, &mut builder, &mut raw_symtab, budget)?;
 
     let mut line_spans = Vec::new();
-    let mut dwarf_ranges = Vec::new();
+    let mut dwarf_ranges = DwarfRanges::default();
     let has_dwarf = collect_dwarf(
         &file,
         &mut builder,
@@ -310,7 +359,7 @@ fn decompress_section<'data>(
 fn collect_dwarf(
     file: &object::File<'_>,
     builder: &mut IndexBuilder,
-    out_ranges: &mut Vec<RawRange>,
+    out_ranges: &mut DwarfRanges,
     out_lines: &mut Vec<LineSpan>,
     decompressed_used: &mut u64,
     budget: &ParseBudget,
@@ -510,18 +559,18 @@ fn parse_unit_functions(
     unit: &Unit<DwarfReader<'_>>,
     unit_files: &[u32],
     builder: &mut IndexBuilder,
-    out_ranges: &mut Vec<RawRange>,
+    out: &mut DwarfRanges,
     order: &mut u32,
     budget: &ParseBudget,
 ) -> Result<(), SymbolError> {
     let mut name_cache: BTreeMap<usize, ResolvedDieName> = BTreeMap::new();
     let mut entries = unit.entries();
-    let mut stack: Vec<(isize, InlineFrame)> = Vec::new();
+    let mut stack: Vec<(isize, ChainId)> = Vec::new();
     let mut die_count = 0_usize;
 
     while let Ok(Some(entry)) = entries.next_dfs() {
         die_count += 1;
-        if die_count > budget.max_dies_per_unit || out_ranges.len() >= budget.max_spans {
+        if die_count > budget.max_dies_per_unit || out.ranges.len() >= budget.max_spans {
             break;
         }
         let depth = entry.depth();
@@ -564,26 +613,25 @@ fn parse_unit_functions(
             call_file,
             call_line,
         };
-        stack.push((depth, frame));
+        let chain = out.chains.intern(frame, stack.last().map(|&(_, id)| id))?;
+        stack.push((depth, chain));
 
         if let Ok(mut ranges) = dwarf.die_ranges(unit, entry) {
-            let chain_innermost_first: Vec<InlineFrame> =
-                stack.iter().rev().map(|(_, f)| *f).collect();
-            let chain_depth = u32::try_from(chain_innermost_first.len()).unwrap_or(u32::MAX);
+            let chain_depth = u32::try_from(stack.len()).unwrap_or(u32::MAX);
             while let Ok(Some(range)) = ranges.next() {
                 if range.end <= range.begin || range.begin == 0 {
                     continue;
                 }
-                if out_ranges.len() >= budget.max_spans {
+                if out.ranges.len() >= budget.max_spans {
                     break;
                 }
                 *order = order.saturating_add(1);
-                out_ranges.push(RawRange {
+                out.ranges.push(RawRange {
                     start: range.begin,
                     end: range.end,
                     depth: chain_depth,
                     order: *order,
-                    chain: chain_innermost_first.clone(),
+                    chain,
                 });
             }
         }
@@ -1036,12 +1084,11 @@ fn read_word_le(data: &[u8], offset: usize, ptr_size: usize) -> Option<u64> {
     }
 }
 
-type ChainInternKey = Vec<(u32, u32, u32)>;
-
 fn flatten_dwarf_spans(
-    ranges: &[RawRange],
+    dwarf: &DwarfRanges,
     budget: &ParseBudget,
 ) -> Result<(Vec<InlineFrame>, Vec<SymbolSpan>), SymbolError> {
+    let ranges = &dwarf.ranges;
     if ranges.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
@@ -1057,7 +1104,7 @@ fn flatten_dwarf_spans(
 
     let mut active: BTreeSet<(u32, u32, usize)> = BTreeSet::new();
     let mut inlines: Vec<InlineFrame> = Vec::new();
-    let mut chain_intern: BTreeMap<ChainInternKey, (u32, u32)> = BTreeMap::new();
+    let mut materialized: foldhash::HashMap<ChainId, (u32, u32)> = foldhash::HashMap::default();
     let mut spans: Vec<SymbolSpan> = Vec::new();
 
     let Some(&(mut prev_addr, _, _)) = events.first() else {
@@ -1070,20 +1117,21 @@ fn flatten_dwarf_spans(
         if addr > prev_addr
             && let Some(&(_, _, winner_idx)) = active.last()
         {
-            let chain = &ranges[winner_idx].chain;
-            let key: Vec<(u32, u32, u32)> = chain
-                .iter()
-                .map(|f| (f.function, f.call_file, f.call_line))
-                .collect();
-            let (inline_start, inline_count) = if let Some(&cached) = chain_intern.get(&key) {
+            let chain = ranges[winner_idx].chain;
+            let (inline_start, inline_count) = if let Some(&cached) = materialized.get(&chain) {
                 cached
             } else {
-                let start = u32::try_from(inlines.len())
-                    .map_err(|_| SymbolError::BudgetExceeded("inline table overflow".to_owned()))?;
-                let count = u32::try_from(chain.len()).unwrap_or(u32::MAX);
-                inlines.extend_from_slice(chain);
-                chain_intern.insert(key, (start, count));
-                (start, count)
+                let start = inlines.len();
+                inlines.extend(dwarf.chains.frames(chain));
+                let span = (
+                    u32::try_from(start).map_err(|_| {
+                        SymbolError::BudgetExceeded("inline table overflow".to_owned())
+                    })?,
+                    u32::try_from(inlines.len() - start).unwrap_or(u32::MAX),
+                );
+                assert_eq!(span.1, ranges[winner_idx].depth);
+                materialized.insert(chain, span);
+                span
             };
 
             if let Some(last) = spans.last_mut()

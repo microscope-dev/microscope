@@ -37,6 +37,7 @@ zstd = "0.14"
 
 [dev-dependencies]
 microscope-test-strategies = { path = "../microscope-test-strategies" }
+object = { version = "0.39", default-features = false, features = ["read", "std", "write"] }
 proptest = { version = "1.11", default-features = false, features = ["fork", "std", "timeout"] }
 
 [lints]

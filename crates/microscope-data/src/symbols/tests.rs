@@ -414,6 +414,141 @@ func main() { fmt.Println("hello", canary[0]) }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+fn elf_with_dwarf(dwarf: &mut gimli::write::DwarfUnit) -> Vec<u8> {
+    let mut sections =
+        gimli::write::Sections::new(gimli::write::EndianVec::new(gimli::LittleEndian));
+    dwarf.write(&mut sections).unwrap();
+
+    let mut elf = object::write::Object::new(
+        object::BinaryFormat::Elf,
+        object::Architecture::X86_64,
+        object::Endianness::Little,
+    );
+    let text = elf.add_section(Vec::new(), b".text".to_vec(), object::SectionKind::Text);
+    elf.append_section_data(text, &[0xc3; 16], 16);
+
+    let note = elf.add_section(
+        Vec::new(),
+        b".note.gnu.build-id".to_vec(),
+        object::SectionKind::Note,
+    );
+    let mut build_id = Vec::new();
+    build_id.extend_from_slice(&4_u32.to_le_bytes());
+    build_id.extend_from_slice(&20_u32.to_le_bytes());
+    build_id.extend_from_slice(&object::elf::NT_GNU_BUILD_ID.to_le_bytes());
+    build_id.extend_from_slice(b"GNU\0");
+    build_id.extend_from_slice(&[0xab; 20]);
+    elf.append_section_data(note, &build_id, 4);
+
+    sections
+        .for_each(|id, data| -> Result<(), ()> {
+            if !data.slice().is_empty() {
+                let section = elf.add_section(
+                    Vec::new(),
+                    id.name().as_bytes().to_vec(),
+                    object::SectionKind::Debug,
+                );
+                elf.append_section_data(section, data.slice(), 1);
+            }
+            Ok(())
+        })
+        .unwrap();
+    elf.write().unwrap()
+}
+
+fn peak_rss_bytes() -> u64 {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap();
+    let kib: u64 = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmHWM:"))
+        .and_then(|rest| rest.trim().strip_suffix("kB"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    kib * 1024
+}
+
+#[test]
+fn many_ranges_under_deep_inlining_cost_memory_per_range_not_per_frame() {
+    use gimli::write::{Address, AttributeValue, DwarfUnit, Range, RangeList};
+
+    const RANGES: u64 = 300_000;
+    const DEPTH: usize = 64;
+    const ISOLATED: &str = "MICROSCOPE_SYMBOLS_ISOLATED_MEMORY_TEST";
+
+    if std::env::var_os(ISOLATED).is_none() {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "symbols::tests::many_ranges_under_deep_inlining_cost_memory_per_range_not_per_frame",
+                "--nocapture",
+            ])
+            .env(ISOLATED, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        return;
+    }
+
+    let mut dwarf = DwarfUnit::new(gimli::Encoding {
+        format: gimli::Format::Dwarf32,
+        version: 5,
+        address_size: 8,
+    });
+    let mut parent = dwarf.unit.root();
+    for level in 0..DEPTH {
+        let tag = if level == 0 {
+            gimli::DW_TAG_subprogram
+        } else {
+            gimli::DW_TAG_inlined_subroutine
+        };
+        let die = dwarf.unit.add(parent, tag);
+        dwarf.unit.get_mut(die).set(
+            gimli::DW_AT_name,
+            AttributeValue::String(format!("f{level}").into_bytes()),
+        );
+        parent = die;
+    }
+    let ranges = RangeList(
+        (0..RANGES)
+            .map(|i| Range::StartLength {
+                begin: Address::Constant(0x1000 + 2 * i),
+                length: 1,
+            })
+            .collect(),
+    );
+    let ranges = dwarf.unit.ranges.add(ranges);
+    dwarf
+        .unit
+        .get_mut(parent)
+        .set(gimli::DW_AT_ranges, AttributeValue::RangeListRef(ranges));
+    let elf = elf_with_dwarf(&mut dwarf);
+    drop(dwarf);
+
+    std::fs::write("/proc/self/clear_refs", "5").unwrap();
+    let before = peak_rss_bytes();
+    let (index, _) = parse_elf(&elf, &ParseBudget::SERVER).unwrap();
+    let used = peak_rss_bytes() - before;
+
+    let frames = index.lookup(0x1000 + 2 * (RANGES - 1));
+    let names: Vec<String> = frames.into_iter().map(|f| f.name).collect();
+    let expected: Vec<String> = (0..DEPTH).rev().map(|level| format!("f{level}")).collect();
+    assert_eq!(names, expected);
+    assert_eq!(index.spans().len(), usize::try_from(RANGES).unwrap());
+
+    assert!(
+        used < 96 << 20,
+        "parsing {RANGES} ranges at inline depth {DEPTH} raised peak RSS by {} MiB",
+        used >> 20
+    );
+}
+
 #[test]
 fn strip_to_debug_elf_rejects_oversized_elf_header_without_panicking() {
     let mut elf = vec![0_u8; 256];

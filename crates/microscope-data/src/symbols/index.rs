@@ -32,7 +32,7 @@ pub struct SymbolFunction {
     pub decl_line: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct InlineFrame {
     pub function: u32,
     pub call_file: u32,
