@@ -274,41 +274,33 @@ fn decompress_section<'data>(
     }
     let size = usize::try_from(claimed)
         .map_err(|_| SymbolError::BudgetExceeded(format!("{name} size overflow")))?;
-    let mut out = Vec::new();
-    out.try_reserve(size.min(1024 * 1024))
-        .map_err(|_| SymbolError::BudgetExceeded(format!("{name} allocation")))?;
-
-    match data.format {
-        CompressionFormat::Zlib => {
-            let mut zlib = flate2::Decompress::new(true);
-            let status = zlib
-                .decompress_vec(data.data, &mut out, flate2::FlushDecompress::Finish)
-                .map_err(|e| SymbolError::Decompress(format!("{name} zlib: {e}")))?;
-            if status != flate2::Status::StreamEnd || out.len() != size {
-                return Err(SymbolError::Decompress(format!(
-                    "{name} zlib stream length mismatch"
-                )));
-            }
-        }
-        CompressionFormat::Zstandard => {
-            let decoder = zstd::stream::read::Decoder::new(data.data)
-                .map_err(|e| SymbolError::Decompress(format!("{name} zstd: {e}")))?;
-            decoder
-                .take(claimed.saturating_add(1))
-                .read_to_end(&mut out)
-                .map_err(|e| SymbolError::Decompress(format!("{name} zstd: {e}")))?;
-            if out.len() != size {
-                return Err(SymbolError::Decompress(format!(
-                    "{name} zstd stream length mismatch"
-                )));
-            }
-        }
-        CompressionFormat::None => return Ok(Cow::Borrowed(data.data)),
+    let (codec, decoder): (&str, Box<dyn std::io::Read + '_>) = match data.format {
+        CompressionFormat::Zlib => ("zlib", Box::new(flate2::read::ZlibDecoder::new(data.data))),
+        CompressionFormat::Zstandard => (
+            "zstd",
+            Box::new(
+                zstd::stream::read::Decoder::new(data.data)
+                    .map_err(|e| SymbolError::Decompress(format!("{name} zstd: {e}")))?,
+            ),
+        ),
         _ => {
             return Err(SymbolError::Decompress(format!(
                 "{name} unsupported compression format"
             )));
         }
+    };
+
+    let mut out = Vec::new();
+    out.try_reserve_exact(size)
+        .map_err(|_| SymbolError::BudgetExceeded(format!("{name} allocation")))?;
+    decoder
+        .take(claimed.saturating_add(1))
+        .read_to_end(&mut out)
+        .map_err(|e| SymbolError::Decompress(format!("{name} {codec}: {e}")))?;
+    if out.len() != size {
+        return Err(SymbolError::Decompress(format!(
+            "{name} {codec} stream length mismatch"
+        )));
     }
 
     *used = next_used;

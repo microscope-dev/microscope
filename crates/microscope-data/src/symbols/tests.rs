@@ -193,6 +193,74 @@ int main(void) {
 }
 
 #[test]
+fn zlib_compressed_dwarf_larger_than_one_mebibyte_resolves_lines() {
+    use object::{Object as _, ObjectSection as _};
+
+    let dir = std::env::temp_dir().join(format!(
+        "microscope-sym-zlib-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos())
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("large.c");
+    let bin = dir.join("large");
+
+    let structs =
+        (0..25_000).map(|i| format!("struct s{i} {{ int a; long b; char c[4]; double d; }};\n"));
+    let source: String = std::iter::once("int main(void) { return 0; }\n".to_owned())
+        .chain(structs)
+        .collect();
+    std::fs::write(&src, source).unwrap();
+
+    let Ok(status) = Command::new("cc")
+        .args([
+            "-O0",
+            "-g",
+            "-gz=zlib",
+            "-fno-eliminate-unused-debug-types",
+            "-Wl,--build-id=sha1",
+            "-o",
+        ])
+        .arg(&bin)
+        .arg(&src)
+        .status()
+    else {
+        return;
+    };
+    assert!(status.success(), "failed to compile large C fixture");
+    let elf_bytes = std::fs::read(&bin).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let file = object::File::parse(elf_bytes.as_slice()).unwrap();
+    let debug_info = file
+        .section_by_name(".debug_info")
+        .unwrap()
+        .compressed_data()
+        .unwrap();
+    assert_eq!(debug_info.format, object::CompressionFormat::Zlib);
+    assert!(
+        debug_info.uncompressed_size > 1024 * 1024,
+        "fixture .debug_info must decompress past 1 MiB, got {}",
+        debug_info.uncompressed_size
+    );
+
+    let (index, meta) = parse_elf(&elf_bytes, &ParseBudget::SERVER).unwrap();
+    assert!(meta.has_dwarf);
+    let main = index
+        .find_function_address("main")
+        .expect("main must be indexed");
+    let frames = index.lookup(main);
+    assert_eq!(frames[0].name, "main");
+    assert!(
+        frames[0].file.as_deref().unwrap_or("").ends_with("large.c"),
+        "main must resolve to its source file: {frames:?}"
+    );
+    assert_eq!(frames[0].line, 1);
+}
+
+#[test]
 fn symtab_only_c_fixture_survives_strip_to_debug_elf() {
     use std::process::Command;
 
