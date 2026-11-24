@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read as _;
+use std::time::Instant;
 
 use gimli::{
     AttributeValue, DebuggingInformationEntry, Dwarf, EndianSlice, RunTimeEndian, SectionId, Unit,
@@ -101,6 +102,7 @@ pub fn parse_elf(
     let build_id = BuildId::from_bytes(raw_build_id)?;
     let arch = arch_name(file.architecture()).to_owned();
 
+    let started = Instant::now();
     let mut builder = IndexBuilder::new(*budget);
     let mut decompressed_used = 0_u64;
 
@@ -115,6 +117,7 @@ pub fn parse_elf(
         &mut dwarf_ranges,
         &mut line_spans,
         &mut decompressed_used,
+        started,
         budget,
     )?;
 
@@ -362,6 +365,7 @@ fn collect_dwarf(
     out_ranges: &mut DwarfRanges,
     out_lines: &mut Vec<LineSpan>,
     decompressed_used: &mut u64,
+    started: Instant,
     budget: &ParseBudget,
 ) -> Result<bool, SymbolError> {
     let debug_info = read_section_budgeted(file, ".debug_info", decompressed_used, budget)?;
@@ -395,6 +399,11 @@ fn collect_dwarf(
             continue;
         }
         let bytes = read_section_budgeted(file, id.name(), decompressed_used, budget)?;
+        if id == SectionId::DebugAbbrev && bytes.len() > budget.max_abbrev_bytes {
+            return Err(SymbolError::BudgetExceeded(
+                ".debug_abbrev exceeds max abbreviation bytes".to_owned(),
+            ));
+        }
         owned_sections.insert(id, bytes);
     }
 
@@ -413,6 +422,11 @@ fn collect_dwarf(
         unit_count += 1;
         if unit_count > budget.max_units {
             break;
+        }
+        if started.elapsed() > budget.max_parse_time {
+            return Err(SymbolError::BudgetExceeded(
+                "symbol parse exceeded its time budget".to_owned(),
+            ));
         }
         let Ok(unit) = dwarf.unit(header) else {
             continue;

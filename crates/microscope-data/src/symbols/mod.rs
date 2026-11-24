@@ -8,6 +8,7 @@ use std::fmt;
 use std::fs::File;
 use std::io::{self, SeekFrom};
 use std::path::{Component, Path};
+use std::time::Duration;
 
 use object::{
     Endian as _, Endianness, Object as _, ObjectSection as _, ObjectSymbolTable as _, elf,
@@ -106,6 +107,8 @@ pub struct ParseBudget {
     pub max_inline_depth: usize,
     pub max_units: usize,
     pub max_dies_per_unit: usize,
+    pub max_abbrev_bytes: usize,
+    pub max_parse_time: Duration,
 }
 
 impl ParseBudget {
@@ -121,6 +124,8 @@ impl ParseBudget {
         max_inline_depth: 64,
         max_units: 200_000,
         max_dies_per_unit: 2_000_000,
+        max_abbrev_bytes: 16 * 1024 * 1024,
+        max_parse_time: Duration::from_mins(1),
     };
 
     pub const FUZZ: Self = Self {
@@ -135,6 +140,8 @@ impl ParseBudget {
         max_inline_depth: 32,
         max_units: 1_024,
         max_dies_per_unit: 32_768,
+        max_abbrev_bytes: 1024 * 1024,
+        max_parse_time: Duration::from_secs(1),
     };
 }
 

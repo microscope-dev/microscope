@@ -418,7 +418,17 @@ fn elf_with_dwarf(dwarf: &mut gimli::write::DwarfUnit) -> Vec<u8> {
     let mut sections =
         gimli::write::Sections::new(gimli::write::EndianVec::new(gimli::LittleEndian));
     dwarf.write(&mut sections).unwrap();
+    let mut debug = Vec::new();
+    sections
+        .for_each(|id, data| -> Result<(), ()> {
+            debug.push((id.name(), data.slice().to_vec()));
+            Ok(())
+        })
+        .unwrap();
+    elf_with_debug_sections(&debug)
+}
 
+fn elf_with_debug_sections(debug: &[(&str, Vec<u8>)]) -> Vec<u8> {
     let mut elf = object::write::Object::new(
         object::BinaryFormat::Elf,
         object::Architecture::X86_64,
@@ -440,20 +450,86 @@ fn elf_with_dwarf(dwarf: &mut gimli::write::DwarfUnit) -> Vec<u8> {
     build_id.extend_from_slice(&[0xab; 20]);
     elf.append_section_data(note, &build_id, 4);
 
-    sections
-        .for_each(|id, data| -> Result<(), ()> {
-            if !data.slice().is_empty() {
-                let section = elf.add_section(
-                    Vec::new(),
-                    id.name().as_bytes().to_vec(),
-                    object::SectionKind::Debug,
-                );
-                elf.append_section_data(section, data.slice(), 1);
-            }
-            Ok(())
-        })
-        .unwrap();
+    for (name, data) in debug.iter().filter(|(_, data)| !data.is_empty()) {
+        let section = elf.add_section(
+            Vec::new(),
+            name.as_bytes().to_vec(),
+            object::SectionKind::Debug,
+        );
+        elf.append_section_data(section, data, 1);
+    }
     elf.write().unwrap()
+}
+
+fn uleb128(out: &mut Vec<u8>, mut value: u64) {
+    loop {
+        let byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value == 0 {
+            out.push(byte);
+            return;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
+#[test]
+fn abbreviation_tables_cannot_multiply_parse_cost() {
+    const ENTRIES: u64 = 300_000;
+    const UNITS: usize = 200;
+
+    let mut abbrev = Vec::new();
+    uleb128(&mut abbrev, 1);
+    uleb128(&mut abbrev, gimli::DW_TAG_compile_unit.0.into());
+    abbrev.extend_from_slice(&[gimli::DW_CHILDREN_no.0, 0, 0]);
+    for code in 2..ENTRIES {
+        uleb128(&mut abbrev, code);
+        uleb128(&mut abbrev, gimli::DW_TAG_subprogram.0.into());
+        abbrev.push(gimli::DW_CHILDREN_no.0);
+        for _ in 0..6 {
+            uleb128(&mut abbrev, gimli::DW_AT_name.0.into());
+            uleb128(&mut abbrev, gimli::DW_FORM_string.0.into());
+        }
+        abbrev.extend_from_slice(&[0, 0]);
+    }
+    abbrev.push(0);
+    assert!(abbrev.len() < ParseBudget::SERVER.max_abbrev_bytes);
+
+    let mut info = Vec::new();
+    for _ in 0..UNITS {
+        info.extend_from_slice(&8_u32.to_le_bytes());
+        info.extend_from_slice(&4_u16.to_le_bytes());
+        info.extend_from_slice(&0_u32.to_le_bytes());
+        info.extend_from_slice(&[8, 1]);
+    }
+
+    let budget = ParseBudget {
+        max_parse_time: std::time::Duration::from_millis(250),
+        ..ParseBudget::SERVER
+    };
+    let started = std::time::Instant::now();
+    let shared_table = parse_elf(
+        &elf_with_debug_sections(&[(".debug_abbrev", abbrev), (".debug_info", info.clone())]),
+        &budget,
+    );
+    let took = started.elapsed();
+    assert!(
+        matches!(shared_table, Err(SymbolError::BudgetExceeded(_))),
+        "{UNITS} units sharing one {ENTRIES}-entry abbreviation table: {:?}",
+        shared_table.map(|(_, meta)| meta)
+    );
+    assert!(took < std::time::Duration::from_secs(1), "took {took:?}");
+
+    let oversized = vec![0_u8; ParseBudget::SERVER.max_abbrev_bytes + 1];
+    let oversized = parse_elf(
+        &elf_with_debug_sections(&[(".debug_abbrev", oversized), (".debug_info", info)]),
+        &ParseBudget::SERVER,
+    );
+    assert!(
+        matches!(oversized, Err(SymbolError::BudgetExceeded(_))),
+        "{:?}",
+        oversized.map(|(_, meta)| meta)
+    );
 }
 
 fn peak_rss_bytes() -> u64 {
