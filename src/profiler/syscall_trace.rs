@@ -16,7 +16,9 @@ use crate::syscalls::fds::{self, FdTable};
 use crate::syscalls::filter::{self, Filter};
 use crate::syscalls::specs::{self, Class, Ret};
 use crate::syscalls::stats::Folded;
-use crate::syscalls::{CallSet, Errno, InFlight, Outcome, SyscallEvent, SyscallId, TraceEvent};
+use crate::syscalls::{
+    CallSet, Errno, InFlight, Loss, Outcome, SyscallEvent, SyscallId, TraceEvent,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SyscallLevel {
@@ -251,7 +253,7 @@ impl SyscallOptions {
 }
 
 pub(super) struct SyscallTrace {
-    stop: Arc<AtomicBool>,
+    stop: StopOnDrop,
     thread: std::thread::JoinHandle<Result<(), String>>,
     ended: Mutex<std::sync::mpsc::Receiver<()>>,
     shared: Arc<Mutex<Shared>>,
@@ -259,6 +261,20 @@ pub(super) struct SyscallTrace {
     level: SyscallLevel,
     engine: SyscallEngine,
     budget: Arc<Budgeted>,
+}
+
+struct StopOnDrop(Arc<AtomicBool>);
+
+impl StopOnDrop {
+    fn stop(&self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 #[derive(Default)]
@@ -276,6 +292,8 @@ struct Shared {
     settings: Vec<(String, String)>,
 
     window: Option<u64>,
+    held_for: Option<u64>,
+    dropped: u64,
 
     flushing: bool,
     flush_every: u64,
@@ -447,6 +465,8 @@ pub const BLOCKED_AT: &str = "syscalls blocked at";
 
 const FLUSH_EVERY: u64 = 1_000_000_000;
 
+const HELD_SEGMENTS: u32 = 8;
+
 // Hands each call that would trigger a save over late, as a reader behind on a
 // loaded machine does, so tests can make the trigger arrive after the program.
 #[cfg(debug_assertions)]
@@ -485,6 +505,16 @@ impl Sink for Held {
         }
 
         shared.events.push_back(event);
+        if let Some(held_for) = shared.held_for {
+            let oldest = time.saturating_sub(held_for);
+            while let Some(stale) = shared.events.pop_front_if(|event| event.time() < oldest) {
+                shared.dropped += match stale {
+                    TraceEvent::Lost { count, .. } => count,
+                    _ => 1,
+                };
+            }
+        }
+        drop(shared);
     }
 
     fn attached_by(&mut self, attachment: &bpf::Attachment) {
@@ -617,6 +647,13 @@ impl SyscallTrace {
                 Cuts::Window(span) => Some(u64::try_from(span.as_nanos()).unwrap_or(u64::MAX)),
                 Cuts::Whole | Cuts::Segments(_) => None,
             },
+            held_for: match recording.cuts {
+                Cuts::Segments(span) => {
+                    Some(u64::try_from((span * HELD_SEGMENTS).as_nanos()).unwrap_or(u64::MAX))
+                }
+                Cuts::Whole | Cuts::Window(_) => None,
+            },
+            dropped: 0,
             flushing: recording.cuts != Cuts::Whole,
             flush_every: match recording.cuts {
                 Cuts::Whole => 0,
@@ -668,7 +705,7 @@ impl SyscallTrace {
             .map_err(|error| error.to_string())?;
         if seen.recv().is_ok() {
             return Ok(Some(Self {
-                stop,
+                stop: StopOnDrop(stop),
                 thread,
                 ended: Mutex::new(ended),
                 shared,
@@ -725,7 +762,7 @@ impl SyscallTrace {
     // Ends the trace and waits until its reader has handed over every call,
     // so a trigger the last calls set is seen before the recording's last save.
     pub(super) fn settle(&self) {
-        self.stop.store(true, Ordering::Relaxed);
+        self.stop.stop();
         let _ = self
             .ended
             .lock()
@@ -765,7 +802,7 @@ impl SyscallTrace {
 
     pub(super) fn merge(self, samples: &Capture) -> Result<Capture, String> {
         let _span = crate::span!("record syscalls merge");
-        self.stop.store(true, Ordering::Relaxed);
+        self.stop.stop();
         self.thread
             .join()
             .map_err(|_| "the system call trace panicked".to_owned())??;
@@ -944,6 +981,14 @@ fn cut(
             capture.setting("trigger", &reason);
         }
 
+        if taken != Taken::Live && shared.dropped > 0 {
+            capture.event(&TraceEvent::Lost {
+                time: start,
+                count: std::mem::take(&mut shared.dropped),
+                why: Loss::Dropped,
+            });
+        }
+
         if let Some(length) = shared.window {
             let passed = start.min(stop.saturating_sub(length));
             while shared
@@ -1061,6 +1106,8 @@ mod tests {
             counted: VecDeque::new(),
             settings: Vec::new(),
             window: None,
+            held_for: None,
+            dropped: 0,
             flushing: false,
             flush_every: FLUSH_EVERY,
             last_flush: 0,
@@ -1076,6 +1123,72 @@ mod tests {
 
         let capture = cut(&shared, None, &samples.finish(), Taken::Rest, false);
         assert_eq!(capture.span(), (5_000_000_000, 9_000_000_000));
+    }
+
+    #[test]
+    fn a_session_that_stops_cutting_drops_its_oldest_calls_as_lost() {
+        use crate::capture::records::{AccountKind, NoteKind};
+
+        let shared = Arc::new(Mutex::new(Shared {
+            events: VecDeque::new(),
+            counted: VecDeque::new(),
+            settings: Vec::new(),
+            window: None,
+            held_for: Some(1000),
+            dropped: 0,
+            flushing: true,
+            flush_every: FLUSH_EVERY,
+            last_flush: 0,
+            trigger: None,
+            saving: None,
+            quiet_until: 0,
+            blocked: Vec::new(),
+            blocked_at: 0,
+        }));
+        let mut sink = Held {
+            shared: Arc::clone(&shared),
+            budget: Arc::default(),
+            ready: None,
+            filter: None,
+            fds: FdTable::default(),
+            save_on: SaveOn::default(),
+            quiet: 0,
+            print: None,
+            watched: false,
+        };
+        let signal = |time| TraceEvent::Signal {
+            thread: crate::model::Tid::new(7),
+            process: crate::model::Pid::new(7),
+            time,
+            signal: 10,
+            code: None,
+            sender: None,
+            info: None,
+            stack: None,
+        };
+        sink.event(signal(0));
+        sink.event(TraceEvent::Lost {
+            time: 500,
+            count: 5,
+            why: crate::syscalls::Loss::Capped,
+        });
+        sink.event(signal(1000));
+        sink.event(signal(1600));
+        sink.event(signal(2600));
+
+        let mut samples = CaptureBuilder::new();
+        samples.setting("start", "0");
+        samples.setting("end", "3000");
+        let capture = cut(&shared, None, &samples.finish(), Taken::Span, false);
+
+        assert_eq!(capture.account(AccountKind::SyscallsLost as u32), 7);
+        let signals: Vec<i64> = capture
+            .syscall_notes
+            .iter()
+            .filter(|note| note.kind == NoteKind::Signal as u8)
+            .map(|note| note.time.get())
+            .collect();
+        assert_eq!(signals, [1600, 2600]);
     }
 
     #[test]
@@ -1099,6 +1212,8 @@ mod tests {
             counted: VecDeque::from([(100, folded)]),
             settings: Vec::new(),
             window: None,
+            held_for: None,
+            dropped: 0,
             flushing: false,
             flush_every: FLUSH_EVERY,
             last_flush: 0,

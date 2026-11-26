@@ -387,6 +387,15 @@ pub fn enqueue_multi_project_cut(
     host_name: &str,
     tags: &BTreeMap<String, String>,
 ) {
+    #[cfg(debug_assertions)]
+    {
+        const PANIC_IN_CUT: &str = "MICROSCOPE_TEST_SEGMENT_PANIC";
+        assert!(
+            std::env::var_os(PANIC_IN_CUT).is_none(),
+            "a panic injected by {PANIC_IN_CUT}"
+        );
+    }
+
     let (lock, cvar) = shared;
     let capture = profile.capture();
     if !capture_has_data(capture) || targets.is_empty() {

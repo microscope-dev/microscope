@@ -530,3 +530,105 @@ fn a_bad_config_fails_at_start_with_a_reason() {
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("must start with https://"), "{stderr}");
 }
+
+mod bpf {
+    use super::*;
+
+    fn tracer_threads(pid: u32) -> usize {
+        std::fs::read_dir(format!("/proc/{pid}/task")).map_or(0, |tasks| {
+            tasks
+                .filter_map(|task| std::fs::read_to_string(task.ok()?.path().join("comm")).ok())
+                .filter(|name| name.trim_end() == "microscope-reco")
+                .count()
+        })
+    }
+
+    #[test]
+    #[ignore = "needs CAP_BPF and CAP_PERFMON; run with `just test-bpf`"]
+    fn a_session_that_panics_stops_its_system_call_trace() {
+        let launcher = std::env::var_os("MICROSCOPE_BPF_LAUNCHER").expect("the BPF launcher");
+        let server = Server::start();
+        let scratch = support::ScratchDir::new("agent-session-panic");
+        let program = scratch.path().join("panicky-hot");
+        std::os::unix::fs::symlink(support::Scenario::fixture("hot-calls"), &program).unwrap();
+        let mut workload = Command::new(&program)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+
+        let config = scratch.path().join("agent.toml");
+        std::fs::write(
+            &config,
+            format!(
+                "{}[record]\nprocess = \"panicky-hot\"\npreset = \"dev\"\nchunk_ms = 200\n",
+                server.enroll(KEY)
+            ),
+        )
+        .unwrap();
+        let mut agent = Command::new(launcher)
+            .arg(env!("CARGO_BIN_EXE_microscope"))
+            .args(["agent", "run", "--config"])
+            .arg(&config)
+            .env("MICROSCOPE_STATE_DIR", scratch.path().join("state"))
+            .env("MICROSCOPE_CLOUD_METADATA", "false")
+            .env("MICROSCOPE_TEST_SEGMENT_PANIC", "1")
+            .env_remove("KUBERNETES_SERVICE_HOST")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let stderr = Arc::new(Mutex::new(String::new()));
+        let reader = {
+            let stderr = Arc::clone(&stderr);
+            let mut pipe = agent.stderr.take().unwrap();
+            std::thread::spawn(move || {
+                let mut chunk = [0; 4096];
+                while let Ok(read) = std::io::Read::read(&mut pipe, &mut chunk)
+                    && read > 0
+                {
+                    stderr
+                        .lock()
+                        .unwrap()
+                        .push_str(&String::from_utf8_lossy(&chunk[..read]));
+                }
+            })
+        };
+        let panics = || {
+            stderr
+                .lock()
+                .unwrap()
+                .matches("a panic injected by")
+                .count()
+        };
+
+        let mut most = 0;
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while panics() < 4 && Instant::now() < deadline {
+            most = most.max(tracer_threads(agent.id()));
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let _ = kill(
+            Pid::from_raw(i32::try_from(agent.id()).unwrap()),
+            Signal::SIGKILL,
+        );
+        let _ = agent.wait();
+        let _ = workload.kill();
+        let _ = workload.wait();
+        reader.join().unwrap();
+        let stderr = stderr.lock().unwrap().clone();
+
+        let panics = stderr.matches("a panic injected by").count();
+        assert!(!stderr.contains("syscall BPF unavailable"), "{stderr}");
+        assert!(
+            panics >= 4,
+            "{panics} sessions panicked, with {most} system call traces at once: {stderr}"
+        );
+        assert!(
+            most <= 2,
+            "{most} system call traces ran at once after {panics} panics"
+        );
+    }
+}

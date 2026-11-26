@@ -97,7 +97,7 @@ test-bpf LAUNCHER="/run/wrappers/bin/microscope-bpf" *ARGS: build-test-programs
         exit 1
     fi
     ulimit -c 0
-    MICROSCOPE_BPF_LAUNCHER="$1" MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/nextest.sh --features {{test_features}} --run-ignored only --test syscalls --test python --test node --test profiler_kernel -E 'test(/(^|::)bpf::/) | binary(profiler_kernel)' "${@:2}"
+    MICROSCOPE_BPF_LAUNCHER="$1" MICROSCOPE_CACHE_DIR="$PWD/target/image-cache" XDG_CONFIG_HOME="$PWD/target/test-config" ./scripts/nextest.sh --features {{test_features}} --run-ignored only --test syscalls --test python --test node --test profiler_kernel --test agent -E 'test(/(^|::)bpf::/) | binary(profiler_kernel)' "${@:2}"
 
 [script]
 test-bpf-if-installed LAUNCHER="/run/wrappers/bin/microscope-bpf":
