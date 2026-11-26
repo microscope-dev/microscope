@@ -464,8 +464,8 @@ impl Processor {
     pub fn call_sites(&mut self, path: &std::path::Path) -> Option<Sites> {
         use std::os::unix::fs::MetadataExt;
         let _span = crate::span!("record call sites");
-        let data = std::fs::read(path).ok()?;
-        let file = object::File::parse(data.as_slice()).ok()?;
+        let data = object::ReadCache::new(std::fs::File::open(path).ok()?);
+        let file = object::File::parse(&data).ok()?;
         if object::Object::section_by_name(&file, ".interp").is_some() {
             return Some(Sites::Dynamic);
         }
@@ -473,7 +473,7 @@ impl Processor {
         let inode = std::fs::metadata(path).ok()?.ino();
         let image = self.image(path.to_owned(), path, Some(inode), false);
         let info = image_of(&self.images, image).info.as_ref()?;
-        let sites = call_sites(&data, &info.image, info.unwind.as_ref());
+        let sites = call_sites(&file, &info.image, info.unwind.as_ref());
         let function = sites.first_not_kept.and_then(|address| {
             info.image
                 .symbols()

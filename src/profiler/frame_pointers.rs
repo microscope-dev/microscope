@@ -1,5 +1,5 @@
 use iced_x86::{Decoder, DecoderOptions, FlowControl, Mnemonic};
-use object::{Object, ObjectSection, SectionFlags};
+use object::{Object, ObjectSection, ReadRef, SectionFlags};
 
 use crate::debug_info::UnwindInfo;
 use crate::unwind::FramePointerRule;
@@ -20,20 +20,23 @@ impl CallSites {
     }
 }
 
-pub fn call_sites(data: &[u8], image: &ModuleImage, unwind: &dyn UnwindInfo) -> CallSites {
+pub fn call_sites<'data, R: ReadRef<'data>>(
+    file: &object::File<'data, R>,
+    image: &ModuleImage,
+    unwind: &dyn UnwindInfo,
+) -> CallSites {
     const SHF_EXECINSTR: u64 = 0x4;
     let mut sites = CallSites::default();
-    let Ok(file) = object::File::parse(data) else {
-        return sites;
-    };
-
     for section in file.sections() {
         let executable = matches!(
             section.flags(),
             SectionFlags::Elf { sh_flags } if sh_flags & SHF_EXECINSTR != 0
         );
+        if !executable {
+            continue;
+        }
         let Ok(code) = section.data() else { continue };
-        if !executable || code.is_empty() {
+        if code.is_empty() {
             continue;
         }
 
