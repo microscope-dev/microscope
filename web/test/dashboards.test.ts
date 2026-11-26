@@ -18,6 +18,7 @@ import {
   openDashboardStream,
   parseDashboardsHash,
   parseSseChunk,
+  placeDeployLabels,
   registerViewHooks,
   scopeToSearch,
   searchToScope,
@@ -414,5 +415,25 @@ describe("buildQueryCommand", () => {
     const syscallCmd = buildQueryCommand({ kind: "flame" }, syscallScope, null);
     expect(syscallCmd).toContain("--select-syscall 0:1:write");
     expect(syscallCmd).toContain("--compare 'custom:");
+  });
+});
+
+const at = (...xs: number[]) => xs.map((x) => ({ x, display: "0123456789ab" }));
+
+describe("placeDeployLabels", () => {
+  it("moves a label that would overlap the one before it to the next free lane", () => {
+    const placed = placeDeployLabels(at(100, 110, 140, 300), 600);
+    expect(placed.map((p) => p.lane)).toEqual([0, 1, 2, 0]);
+  });
+
+  it("drops the text, not the marker, once every lane is taken", () => {
+    const placed = placeDeployLabels(at(100, 101, 102, 103, 104), 600);
+    expect(placed.map((p) => p.lane)).toEqual([0, 1, 2, null, null]);
+    expect(placed).toHaveLength(5);
+  });
+
+  it("puts a label left of a marker near the right edge", () => {
+    const [placed] = placeDeployLabels(at(590), 600);
+    expect(placed).toMatchObject({ lane: 0, anchor: "end", textX: 587 });
   });
 });

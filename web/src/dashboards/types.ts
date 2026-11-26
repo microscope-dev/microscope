@@ -154,12 +154,14 @@ export interface FlameResponse {
 
 export interface OverTimeSeries {
   label: string;
+  display: string;
   values: number[];
 }
 
 export interface DeployMarker {
   timeNs: number;
   version: string;
+  display: string;
   service: string;
 }
 

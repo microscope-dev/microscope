@@ -3,8 +3,10 @@ import { createMemo, createSignal, For, Match, Show, Switch } from "solid-js";
 import {
   dashboardsApi,
   formatTimeShort,
+  DEPLOY_LANE_HEIGHT,
   markViewFetched,
   type OverTimeResponse,
+  placeDeployLabels,
   updateViewScope,
 } from "../../dashboards";
 import type { PaneProps } from "../../workbench/kinds";
@@ -112,7 +114,13 @@ export function OverTimePane(props: PaneProps) {
     const plotW = w - padL - padR;
     const plotH = h - padT - padB;
 
-    const stacked: { label: string; color: string; tops: number[]; bottoms: number[] }[] = [];
+    const stacked: {
+      label: string;
+      display: string;
+      color: string;
+      tops: number[];
+      bottoms: number[];
+    }[] = [];
     const running = Array.from({ length: n }, () => 0);
     for (const [idx, s] of res.series.entries()) {
       const bottoms = [...running];
@@ -123,6 +131,7 @@ export function OverTimePane(props: PaneProps) {
       });
       stacked.push({
         label: s.label,
+        display: s.display,
         color: PALETTE[idx % PALETTE.length] as string,
         tops,
         bottoms,
@@ -154,6 +163,7 @@ export function OverTimePane(props: PaneProps) {
         .toReversed();
       return {
         label: layer.label,
+        display: layer.display,
         color: layer.color,
         d: `M ${topPts.join(" L ")} L ${botPts.join(" L ")} Z`,
       };
@@ -164,10 +174,10 @@ export function OverTimePane(props: PaneProps) {
         ? `M ${cmpVals.map((v, i) => `${xOf(i).toFixed(1)},${yOf(v).toFixed(1)}`).join(" L ")}`
         : null;
 
-    const deploys = res.deploys.map((d) => ({
-      ...d,
-      x: xOfTime(d.timeNs),
-    }));
+    const deploys = placeDeployLabels(
+      res.deploys.map((d) => ({ ...d, x: xOfTime(d.timeNs) })),
+      padL + plotW,
+    );
 
     return {
       w,
@@ -399,7 +409,10 @@ export function OverTimePane(props: PaneProps) {
 
                       <For each={c().deploys}>
                         {(dep) => (
-                          <g>
+                          <g data-testid="deploy-marker">
+                            <title>
+                              {dep.service} {dep.version}
+                            </title>
                             <line
                               x1={dep.x}
                               y1={c().padT}
@@ -408,9 +421,16 @@ export function OverTimePane(props: PaneProps) {
                               stroke="var(--changed)"
                               stroke-dasharray="3 2"
                             />
-                            <text x={dep.x + 3} y={c().padT + 10} class="fleet-deploy-text">
-                              {dep.version}
-                            </text>
+                            <Show when={dep.lane !== null}>
+                              <text
+                                x={dep.textX}
+                                y={c().padT + 10 + (dep.lane ?? 0) * DEPLOY_LANE_HEIGHT}
+                                text-anchor={dep.anchor}
+                                class="fleet-deploy-text"
+                              >
+                                {dep.display}
+                              </text>
+                            </Show>
                           </g>
                         )}
                       </For>
@@ -445,9 +465,9 @@ export function OverTimePane(props: PaneProps) {
                     <div class="fleet-legend">
                       <For each={c().areas}>
                         {(area) => (
-                          <span class="fleet-legend-item">
+                          <span class="fleet-legend-item" title={area.label}>
                             <span class="fleet-legend-swatch" style={{ background: area.color }} />
-                            <span>{area.label}</span>
+                            <span>{area.display}</span>
                           </span>
                         )}
                       </For>

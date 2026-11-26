@@ -180,6 +180,33 @@ export function formatTimeShort(ns: number): string {
   return `${hh}:${mm}`;
 }
 
+const DEPLOY_CHAR_WIDTH = 6.1;
+export const DEPLOY_LANE_HEIGHT = 11;
+const DEPLOY_LANES = 3;
+const DEPLOY_GAP = 4;
+
+export function placeDeployLabels<T extends { x: number; display: string }>(
+  deploys: readonly T[],
+  right: number,
+): (T & { lane: number | null; textX: number; anchor: "start" | "end" })[] {
+  const laneEnds = Array.from({ length: DEPLOY_LANES }, () => -Infinity);
+  return deploys.map((deploy) => {
+    const width = deploy.display.length * DEPLOY_CHAR_WIDTH;
+    const fits = deploy.x + 3 + width <= right;
+    const start = fits ? deploy.x + 3 : deploy.x - 3 - width;
+    const lane = laneEnds.findIndex((end) => start >= end + DEPLOY_GAP);
+    if (lane !== -1) {
+      laneEnds[lane] = start + width;
+    }
+    return {
+      ...deploy,
+      lane: lane === -1 ? null : lane,
+      textX: fits ? deploy.x + 3 : deploy.x - 3,
+      anchor: fits ? "start" : "end",
+    };
+  });
+}
+
 export function scopeKey(scope: ViewScope, sessionId: number | null, revision: number): string {
   return `${revision}:${sessionId ?? "live"}:${JSON.stringify(scope)}`;
 }
