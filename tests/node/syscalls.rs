@@ -122,7 +122,7 @@ pub fn program(hold: bool) -> Command {
 pub fn command(mut command: Command, trace: &std::path::Path) -> Command {
     let program = program(false);
     command
-        .args(["record", "--syscall-engine", "ptrace"])
+        .args(["record", "--allow-stopping"])
         .args(["--syscall-filter", "trace=openat", "-o"])
         .arg(trace)
         .arg("--")
@@ -240,8 +240,11 @@ pub fn run_held(
         microscope,
         &program,
         &[
-            "--syscall-engine",
-            engine,
+            if engine == "ptrace" {
+                "--allow-stopping"
+            } else {
+                "--syscalls=calls"
+            },
             "--syscall-filter",
             "trace=openat",
         ],

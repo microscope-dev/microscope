@@ -131,7 +131,7 @@ describe("what a recording did not keep of its calls", () => {
       ),
     ).toEqual({
       text: "System calls were not recorded: CAP_BPF missing.",
-      flag: "--syscall-engine ptrace",
+      flag: "--allow-stopping",
     });
   });
 });

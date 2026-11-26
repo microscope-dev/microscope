@@ -39,7 +39,7 @@ fn recorded(interpreter: &str) -> Profile {
     let program = program(interpreter);
     let mut command = held::unprivileged();
     command
-        .args(["record", "--syscall-engine", "ptrace"])
+        .args(["record", "--allow-stopping"])
         .args(["--syscall-filter", "trace=openat", "-o"])
         .arg(&saved)
         .arg("--")

@@ -10,7 +10,7 @@ use nix::sched::{CpuSet, sched_setaffinity};
 use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
 
-use crate::profiler::{Preset, Profile, PythonEngine, RecordOptions, Watch, record_watched};
+use crate::profiler::{Preset, Profile, RecordOptions, Stopping, Walk, Watch, record_watched};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Measure {
@@ -79,20 +79,19 @@ pub const SETUPS: [(&str, Option<Preset>); 3] = [
     ("dev", Some(Preset::Development)),
 ];
 
-pub const PYTHON_SETUPS: [(&str, PythonEngine); 3] = [
-    (
-        "prod+live",
-        PythonEngine::Live {
-            every: Duration::from_millis(10),
-        },
-    ),
-    (
-        "prod+snapshot",
-        PythonEngine::Snapshot {
-            every: Duration::from_millis(100),
-        },
-    ),
-    ("prod+bpf", PythonEngine::Bpf),
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PythonSetup {
+    Live,
+
+    Snapshot,
+
+    Unwalked,
+}
+
+pub const PYTHON_SETUPS: [(&str, PythonSetup); 3] = [
+    ("prod+live", PythonSetup::Live),
+    ("prod+snapshot", PythonSetup::Snapshot),
+    ("prod-walk", PythonSetup::Unwalked),
 ];
 
 fn recorded_with(workload: &Workload, setup: &str) -> Option<RecordOptions> {
@@ -100,14 +99,28 @@ fn recorded_with(workload: &Workload, setup: &str) -> Option<RecordOptions> {
         return preset.map(RecordOptions::preset);
     }
 
-    let engine = PYTHON_SETUPS
+    let python = PYTHON_SETUPS
         .iter()
         .find(|(name, _)| *name == setup)
-        .map(|(_, engine)| *engine)
+        .map(|(_, python)| *python)
         .filter(|_| matches!(workload.program, Program::Python { .. }))?;
-    Some(RecordOptions {
-        python: Some(engine),
-        ..RecordOptions::preset(Preset::Production)
+    let production = RecordOptions::preset(Preset::Production);
+    Some(match python {
+        PythonSetup::Live => RecordOptions {
+            snapshots: Some(Duration::from_millis(10)),
+            walk: Walk::Never,
+            ..production
+        },
+        PythonSetup::Snapshot => RecordOptions {
+            snapshots: Some(Duration::from_millis(100)),
+            walk: Walk::Never,
+            stopping: Stopping::Allowed,
+            ..production
+        },
+        PythonSetup::Unwalked => RecordOptions {
+            walk: Walk::Never,
+            ..production
+        },
     })
 }
 
@@ -117,7 +130,7 @@ fn setups(workload: &Workload, privileged: bool) -> Vec<&'static str> {
         setups.extend(
             PYTHON_SETUPS
                 .iter()
-                .filter(|(_, engine)| privileged || *engine != PythonEngine::Bpf)
+                .filter(|(_, python)| privileged || *python != PythonSetup::Unwalked)
                 .map(|(name, _)| *name),
         );
     }

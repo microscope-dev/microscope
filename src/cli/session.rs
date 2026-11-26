@@ -281,11 +281,8 @@ fn explicit_target(args: &Args) -> Result<Target> {
     }
 
     if let Some(attach) = &args.attach {
-        let target = attach
-            .parse()
-            .map_or_else(|_| AttachTarget::Name(attach.clone()), AttachTarget::Pid);
         return Ok(Target::Attach {
-            process: attach_process(&target)?,
+            process: attached(attach)?,
             executable: args.executable.clone(),
         });
     }
@@ -295,6 +292,13 @@ fn explicit_target(args: &Args) -> Result<Target> {
     };
 
     Ok(Target::Program(executable))
+}
+
+pub(super) fn attached(attach: &str) -> Result<ProcessId> {
+    let target = attach
+        .parse()
+        .map_or_else(|_| AttachTarget::Name(attach.to_owned()), AttachTarget::Pid);
+    attach_process(&target)
 }
 
 fn attach_process(target: &AttachTarget) -> Result<ProcessId> {

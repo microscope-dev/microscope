@@ -20,6 +20,7 @@ pub use linux::bpf;
 #[cfg(test)]
 pub use linux::native_tracee;
 pub use linux::perf;
+pub use linux::program_runtime;
 pub use linux::reaped;
 pub use linux::resume_address;
 #[cfg(any(test, feature = "sim"))]

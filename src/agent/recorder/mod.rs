@@ -44,7 +44,9 @@ use super::{
     },
     wire::{BurstDirective, PolicyDirective, WatchDirective},
 };
-use crate::profiler::{Preset, Profile, Save, SharedBpfEngine, Watch, record_attached_many_exact};
+use crate::profiler::{
+    Preset, Profile, Save, SharedBpfEngine, Stopping, Watch, record_attached_many_exact,
+};
 
 const RESCAN_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -747,6 +749,7 @@ fn recorder_loop(
                     use_shared.as_ref(),
                     allow_syscalls,
                 );
+                assert_eq!(options.stopping, Stopping::Never);
                 let sess_stop = Arc::clone(&session_stop);
                 let pids: Vec<u32> = targets.iter().map(|t| t.selected.pid).collect();
                 handles.push(scope.spawn(move || {

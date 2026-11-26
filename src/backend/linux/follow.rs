@@ -364,7 +364,7 @@ impl Policy {
     }
 }
 
-pub(super) fn program_runtime(program: &Path) -> Option<&'static str> {
+pub fn program_runtime(program: &Path) -> Option<&'static str> {
     use object::{Object as _, ObjectSection as _, ObjectSymbol as _};
 
     let file = std::fs::File::open(program).ok()?;

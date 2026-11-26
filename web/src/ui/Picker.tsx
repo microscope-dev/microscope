@@ -17,7 +17,7 @@ import { assert } from "../assert";
 import { KIND } from "../documents";
 import { toHref } from "../history";
 import { targetName } from "../model";
-import type { PathEntry, Process, RecordPreset, SyscallsEngine, SyscallsLevel } from "../protocol";
+import type { PathEntry, Process, RecordPreset, SyscallsLevel } from "../protocol";
 import { RequestError } from "../protocol";
 import { isRecentLaunches, type RecentLaunch, read, rememberLaunch } from "../storage";
 import { useConnection, useModel } from "../store";
@@ -332,16 +332,16 @@ const LEVELS: { level: SyscallsLevel; label: string; note: string }[] = [
   { level: "full", label: "Full", note: "Calls with whole strings and the bytes behind pointers." },
 ];
 
-const ENGINES: { engine: SyscallsEngine; label: string; note: string }[] = [
+const STOPPING: { allowed: boolean; label: string; note: string }[] = [
   {
-    engine: "bpf",
-    label: "BPF",
-    note: "Needs CAP_BPF and CAP_PERFMON. Without them, the preset's level records no calls and the profile says why.",
+    allowed: false,
+    label: "Never",
+    note: "System calls need CAP_BPF and CAP_PERFMON. Without them, the preset's level records no calls and the profile says why.",
   },
   {
-    engine: "ptrace",
-    label: "ptrace",
-    note: "Needs no privilege, but stops the program at each call, so each call's time includes the stop.",
+    allowed: true,
+    label: "Allowed",
+    note: "Without CAP_BPF and CAP_PERFMON, ptrace stops the program at each system call, so each call's time includes the stop.",
   },
 ];
 
@@ -365,10 +365,9 @@ function RecordForm(props: { onRecording(): void }) {
   const [window_, setWindow] = createSignal("");
 
   const [level, setLevel] = createSignal<SyscallsLevel | null>(null);
-  const [engine, setEngine] = createSignal<SyscallsEngine>("bpf");
+  const [stopping, setStopping] = createSignal(false);
   const shownLevel = createMemo(() => level() ?? PRESET_LEVELS[preset()]);
-
-  const counting = createMemo(() => engine() === "ptrace" && shownLevel() === "counts");
+  const allowStopping = createMemo(() => stopping() && preset() !== "production");
   const [working, setWorking] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const words = createMemo(() => splitWords(form().arguments));
@@ -387,12 +386,7 @@ function RecordForm(props: { onRecording(): void }) {
     return value === null || (Number.isFinite(value) && value > 0);
   });
   const valid = createMemo(
-    () =>
-      form().program.trim() !== "" &&
-      words().ok &&
-      environment().ok &&
-      validWindow() &&
-      !counting(),
+    () => form().program.trim() !== "" && words().ok && environment().ok && validWindow(),
   );
   const fields = launchFields(setForm);
 
@@ -416,7 +410,7 @@ function RecordForm(props: { onRecording(): void }) {
         function: function_().trim() || null,
         window: seconds(),
         syscalls: level(),
-        syscallEngine: engine(),
+        allowStopping: allowStopping(),
       });
       props.onRecording();
       navigate(toHref(`/profile/${started.profile}`));
@@ -522,20 +516,12 @@ function RecordForm(props: { onRecording(): void }) {
         </Field>
       </div>
       <div class="two">
-        <Field
-          label="System calls"
-          note={
-            counting()
-              ? "ptrace cannot count calls without stopping each one: record calls, or use BPF."
-              : LEVELS.find((each) => each.level === shownLevel())?.note
-          }
-        >
+        <Field label="System calls" note={LEVELS.find((each) => each.level === shownLevel())?.note}>
           {(id) => (
             <select
               id={id}
               class="input"
               value={shownLevel()}
-              aria-invalid={counting() ? "true" : "false"}
               onChange={(event) => setLevel(event.currentTarget.value as SyscallsLevel)}
             >
               <For each={LEVELS}>
@@ -548,17 +534,28 @@ function RecordForm(props: { onRecording(): void }) {
             </select>
           )}
         </Field>
-        <Field label="Engine" note={ENGINES.find((each) => each.engine === engine())?.note}>
+        <Field
+          label="Stopping"
+          note={
+            preset() === "production"
+              ? "The production preset never stops the program."
+              : STOPPING.find((each) => each.allowed === allowStopping())?.note
+          }
+        >
           {(id) => (
             <select
               id={id}
               class="input"
-              value={engine()}
-              onChange={(event) => setEngine(event.currentTarget.value as SyscallsEngine)}
+              value={allowStopping() ? "allowed" : "never"}
+              disabled={preset() === "production"}
+              onChange={(event) => setStopping(event.currentTarget.value === "allowed")}
             >
-              <For each={ENGINES}>
+              <For each={STOPPING}>
                 {(each) => (
-                  <option value={each.engine} selected={engine() === each.engine}>
+                  <option
+                    value={each.allowed ? "allowed" : "never"}
+                    selected={allowStopping() === each.allowed}
+                  >
                     {each.label}
                   </option>
                 )}

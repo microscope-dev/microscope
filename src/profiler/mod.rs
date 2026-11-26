@@ -38,9 +38,7 @@ pub use session::{
     record_attached_many, record_attached_many_exact, record_watched,
 };
 pub use symbols::ModuleSymbols;
-pub use syscall_trace::{
-    BLOCKED_AT, Printer, SharedBpfEngine, SyscallEngine, SyscallLevel, SyscallOptions,
-};
+pub use syscall_trace::{BLOCKED_AT, Printer, SharedBpfEngine, SyscallLevel, SyscallOptions};
 pub use tasks::THREAD;
 pub use zones::{
     PlotValue, ProbeCounts, ProfileZone, ProgramMarker, ZONE_BEGAN_UNSEEN, ZONE_ENDED_UNSEEN,
@@ -151,27 +149,29 @@ impl std::fmt::Display for SampleSource {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PythonEngine {
-    Bpf,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Walk {
+    IfAble,
 
-    Snapshot { every: std::time::Duration },
+    Always,
 
-    Live { every: std::time::Duration },
+    Never,
+
+    Unable(String),
 }
 
-impl std::fmt::Display for PythonEngine {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Bpf => write!(f, "with BPF at each sample"),
-            Self::Snapshot { every } => {
-                write!(f, "stopped every {:.3} s", every.as_secs_f64())
-            }
-            Self::Live { every } => {
-                write!(f, "as the program runs, every {:.3} s", every.as_secs_f64())
-            }
-        }
+impl Walk {
+    #[must_use]
+    pub const fn tried(&self) -> bool {
+        matches!(self, Self::IfAble | Self::Always)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stopping {
+    Never,
+
+    Allowed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,10 +184,6 @@ pub enum Cuts {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "independent recording features"
-)]
 pub struct RecordOptions {
     pub source: SampleSource,
     pub stack: StackCopy,
@@ -210,11 +206,11 @@ pub struct RecordOptions {
 
     pub cuts: Cuts,
 
-    pub task_snapshots: Option<std::time::Duration>,
+    pub snapshots: Option<std::time::Duration>,
 
-    pub live_snapshots: bool,
+    pub walk: Walk,
 
-    pub python: Option<PythonEngine>,
+    pub stopping: Stopping,
 
     pub probes: ProbeSelection,
 
@@ -244,9 +240,9 @@ impl RecordOptions {
             off_cpu: preset.off_cpu(),
             budget: preset.budget(),
             cuts: Cuts::Whole,
-            task_snapshots: None,
-            live_snapshots: false,
-            python: None,
+            snapshots: None,
+            walk: Walk::IfAble,
+            stopping: Stopping::Never,
             probes: ProbeSelection::All,
             probe_timeout: std::time::Duration::from_secs(10),
             debug_directories: Vec::new(),

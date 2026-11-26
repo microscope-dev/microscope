@@ -260,10 +260,16 @@ test("a profile shows where tasks waited, by task, and a lane per task", async (
   try {
     execFileSync(
       path.join(root, "target", "debug", "microscope"),
-      ["record", "-o", file, "--pid", String(program.pid), "--task-snapshots", "0.05"].concat([
-        "--duration",
-        "2",
-      ]),
+      [
+        "record",
+        "-o",
+        file,
+        "--attach",
+        String(program.pid),
+        "--snapshots",
+        "0.05",
+        "--allow-stopping",
+      ].concat(["--duration", "2"]),
       { stdio: "ignore" },
     );
   } finally {

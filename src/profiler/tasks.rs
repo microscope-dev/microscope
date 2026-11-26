@@ -344,7 +344,7 @@ async fn read(
 ) -> Result<Snapshot, crate::Error> {
     let mut snapshot = Snapshot::default();
     if reads.tasks {
-        read_tasks(handle, stop, &mut snapshot).await?;
+        read_tasks(handle, stop, &mut snapshot, !reads.threads).await?;
     }
 
     if reads.threads {
@@ -388,6 +388,7 @@ async fn read_tasks(
     handle: &DebuggerHandle,
     stop: StopId,
     snapshot: &mut Snapshot,
+    alone: bool,
 ) -> Result<(), crate::Error> {
     let mut images = BTreeMap::new();
     let mut cursor = None;
@@ -448,7 +449,9 @@ async fn read_tasks(
                 return Ok(());
             }
             None => {
-                snapshot.note_empty_tasks(seen);
+                if alone {
+                    snapshot.note_empty_tasks(seen);
+                }
                 return Ok(());
             }
         }
@@ -727,7 +730,7 @@ impl Snapshotter {
             ));
         }
 
-        if reads.tasks {
+        if reads.tasks && !reads.threads {
             snapshot.note_empty_tasks(seen);
         }
 

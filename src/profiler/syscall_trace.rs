@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use super::ladder::Rung;
-use super::{Cuts, Preset, RecordOptions};
+use super::{Cuts, Preset, RecordOptions, Stopping};
 use crate::backend::syscall_engines::bpf::{self, BpfOptions, Exceptions, Shed};
 use crate::backend::syscall_engines::capture::SyscallCapture;
 use crate::backend::syscall_engines::stacks::SharedStacks;
@@ -104,7 +104,7 @@ pub struct SyscallOptions {
     pub level: SyscallLevel,
 
     pub asked: bool,
-    pub engine: SyscallEngine,
+    pub(super) engine: SyscallEngine,
 
     pub filter: Option<(String, Filter)>,
 
@@ -147,8 +147,8 @@ impl SyscallOptions {
     pub fn check(&self) -> Result<(), String> {
         if self.engine == SyscallEngine::Ptrace && self.level == SyscallLevel::Counts {
             return Err(
-                "ptrace cannot count calls without stopping each one; record counts with the \
-                 BPF engine, or calls with ptrace"
+                "without BPF, system calls are traced with ptrace, which cannot count calls \
+                 without stopping each one; record --syscalls calls"
                     .to_owned(),
             );
         }
@@ -156,7 +156,9 @@ impl SyscallOptions {
         if self.kept_per_second.is_some() {
             if self.engine == SyscallEngine::Ptrace {
                 return Err(
-                    "ptrace cannot cap the calls it keeps; cap them with the BPF engine".to_owned(),
+                    "without BPF, system calls are traced with ptrace, which cannot cap the calls \
+                     it keeps"
+                        .to_owned(),
                 );
             }
 
@@ -172,9 +174,10 @@ impl SyscallOptions {
         Ok(())
     }
 
-    pub fn resolve(&mut self) -> Result<Option<String>, String> {
+    pub fn resolve(&mut self, stopping: Stopping) -> Result<Option<String>, String> {
+        self.engine = SyscallEngine::Bpf;
         self.check()?;
-        if self.level == SyscallLevel::Off || self.engine == SyscallEngine::Ptrace {
+        if self.level == SyscallLevel::Off {
             return Ok(None);
         }
 
@@ -182,6 +185,14 @@ impl SyscallOptions {
         let Some(missing) = probe.missing() else {
             return Ok(None);
         };
+
+        if stopping == Stopping::Allowed {
+            self.engine = SyscallEngine::Ptrace;
+            self.check()?;
+            return Ok(Some(format!(
+                "system calls are traced with ptrace, which stops the program at each call: {missing}"
+            )));
+        }
 
         if self.asked {
             return Err(probe
@@ -194,8 +205,8 @@ impl SyscallOptions {
         self.level = SyscallLevel::Off;
         self.unavailable = Some(why.clone());
         Ok(Some(format!(
-            "system calls not recorded: {why}; record them with --syscall-engine ptrace, or \
-             silence this with --syscalls off"
+            "system calls not recorded: {why}; --allow-stopping records them with ptrace, which \
+             stops the program at each call, or --syscalls off silences this"
         )))
     }
 

@@ -3,11 +3,10 @@ use std::process::Command;
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use microscope::profiler::{
-    Look, Profile, PythonEngine, Query, RecordOptions, Source, TaskWaitStack,
-};
+use microscope::profiler::{Look, Profile, Query, Source, TaskWaitStack};
 
 use crate::profile::{ENTRY, line_key, paths_of, record_released};
+use crate::support::profile::Snapshotting;
 use crate::support::truth::Report;
 use crate::support::{Scenario, ScratchDir, node};
 use crate::truth::{Thread, threads};
@@ -257,10 +256,7 @@ pub fn check(entry: &str) {
         .arg(Scenario::fixture("node-addon.node"))
         .arg(Scenario::fixture("node-frameless.node"))
         .arg(Scenario::fixture(&format!("node-fast-{entry}.node")));
-    let options = RecordOptions {
-        python: Some(PythonEngine::Live { every: EVERY }),
-        ..RecordOptions::default()
-    };
+    let options = Snapshotting::Live(EVERY).options();
 
     let mut window = (None, 0);
     let (profile, used, text) =
@@ -341,10 +337,7 @@ pub fn check_tiers(entry: &str) {
     command
         .arg("--allow-natives-syntax")
         .arg(node::fixture("tiers.js"));
-    let options = RecordOptions {
-        python: Some(PythonEngine::Live { every: EVERY }),
-        ..RecordOptions::default()
-    };
+    let options = Snapshotting::Live(EVERY).options();
     let report = |text: &str| {
         Report::parse(text)
             .checkpoint("tiers")
@@ -849,12 +842,7 @@ pub fn stress(entry: &str, flags: &[&str]) {
         .arg(Scenario::fixture(&format!("node-fast-{entry}.node")))
         .arg(STRESS_WORKERS.to_string())
         .arg(STRESS_SECONDS.to_string());
-    let options = RecordOptions {
-        python: Some(PythonEngine::Live {
-            every: STRESS_EVERY,
-        }),
-        ..RecordOptions::default()
-    };
+    let options = Snapshotting::Live(STRESS_EVERY).options();
     let waiting = |text: &str| {
         Report::parse(text)
             .lines()
@@ -956,10 +944,7 @@ fn live_reads_keep_their_interval_or_say_they_fell_behind() {
     let every = Duration::from_millis(1);
     let mut command = Command::new(node::node(ENTRY));
     command.args(["-e", "require('node:fs').readSync(0, Buffer.alloc(1))"]);
-    let options = RecordOptions {
-        python: Some(PythonEngine::Live { every }),
-        ..RecordOptions::default()
-    };
+    let options = Snapshotting::Live(every).options();
     let (profile, _, _) = record_released(
         command,
         &options,
@@ -1043,10 +1028,7 @@ const FOREIGN_CODE: &str =
 pub fn check_from_start(entry: &str) {
     let mut command = Command::new(node::node(entry));
     command.arg(node::fixture("waits.js")).arg("4");
-    let options = RecordOptions {
-        python: Some(PythonEngine::Live { every: EVERY }),
-        ..RecordOptions::default()
-    };
+    let options = Snapshotting::Live(EVERY).options();
     let (profile, reported, _) = record_released(
         command,
         &options,

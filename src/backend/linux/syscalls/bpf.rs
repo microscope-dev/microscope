@@ -985,8 +985,8 @@ const REMEDY: &str =
     - run it from a unit with AmbientCapabilities=CAP_BPF CAP_PERFMON
     - on NixOS or system-manager, import microscope's bpf module and run through
       /run/wrappers/bin/microscope-bpf (docs/profiling.md#give-microscope-the-bpf-privileges)
-    - record a program you launch with --syscall-engine ptrace, which stops the
-      program at each chosen call";
+    - record with --allow-stopping, which traces them with ptrace and stops the
+      program at each chosen call; never in production";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Missing {
@@ -1125,13 +1125,11 @@ impl Probe {
 
         let fix = match &missing {
             Missing::Kernel(_) => {
-                "\n  Record a program you launch with --syscall-engine ptrace instead.".to_owned()
+                "\n  Record with --allow-stopping to trace them with ptrace instead.".to_owned()
             }
-            Missing::Btf => {
-                "\n  Build the kernel with CONFIG_DEBUG_INFO_BTF=y, or record a program \
-                             you launch with --syscall-engine ptrace."
-                    .to_owned()
-            }
+            Missing::Btf => "\n  Build the kernel with CONFIG_DEBUG_INFO_BTF=y, or record with \
+                             --allow-stopping to trace them with ptrace."
+                .to_owned(),
             Missing::Privileges(_) | Missing::UserNamespace => {
                 let token = self.token.as_ref().map_or_else(String::new, |path| {
                     format!(
@@ -1143,8 +1141,8 @@ impl Probe {
                 format!("\n{REMEDY}{token}")
             }
             Missing::Lockdown => "\n  BPF programs may not read kernel memory. Boot with \
-                                  lockdown=integrity or none, or record a program you launch \
-                                  with --syscall-engine ptrace."
+                                  lockdown=integrity or none, or record with --allow-stopping \
+                                  to trace them with ptrace."
                 .to_owned(),
         };
 
@@ -3694,7 +3692,7 @@ mod tests {
 
         let message = probe.check().expect_err("unprivileged").to_string();
         assert!(message.contains("has neither"), "{message}");
-        assert!(message.contains("--syscall-engine ptrace"), "{message}");
+        assert!(message.contains("--allow-stopping"), "{message}");
 
         let offered = Probe {
             token: Some("/sys/fs/bpf".into()),

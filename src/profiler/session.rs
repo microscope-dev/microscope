@@ -12,8 +12,8 @@ use super::ladder::{HOLD, Ladder, Move, Period};
 use super::record::{self, Sites};
 use super::tasks::{self, Live, Reads, Snapshot, Snapshotter};
 use super::{
-    Cuts, DEEP_STACK_COPY, Profile, PythonEngine, RecordError, RecordOptions, SMALL_STACK_COPY,
-    SampleSource, StackCopy,
+    Cuts, DEEP_STACK_COPY, Profile, RecordError, RecordOptions, SMALL_STACK_COPY, SampleSource,
+    StackCopy, Stopping, Walk,
 };
 
 use super::syscall_trace::{SyscallEngine, SyscallLevel, SyscallTrace, Traced};
@@ -88,17 +88,14 @@ pub fn record_watched(
     watch: &mut Watch<'_>,
 ) -> Result<Recording, RecordError> {
     let _span = crate::span!("record");
-    let options = &resolved(options)?;
-    if options.kernel_stacks || options.python == Some(PythonEngine::Bpf) {
-        crate::backend::bpf::sampler::check_namespace()?;
-    }
+    let mut options = resolved(options)?;
     let program = PathBuf::from(command.get_program());
     let (source, breakpoint) =
         perf_source(&program, &options.source, None, options.function_period)?;
 
     let watched = watch.every != Duration::MAX;
-    let mut processor = processor(options, breakpoint, !watched);
-    ready(&mut command, options, &mut processor);
+    let mut processor = processor(&options, breakpoint, !watched);
+    ready(&mut command, &options, &mut processor);
     let (stack_bytes, stack_copy) = stack_copy(&mut processor, &program, options.stack);
     let events = perf::EventOptions {
         source,
@@ -114,29 +111,30 @@ pub fn record_watched(
         processor.fixed_period(period);
     }
 
-    let launch = launch_options(options, breakpoint.is_some());
+    let launch = launch_options(&options, breakpoint.is_some());
 
     let mut syscalls = None;
     let mut walker = None;
+    let mut unwalked = None;
     let mut thin = None;
     let mut refused = None;
     let launched = perf::launch(command, &events, &launch, |pid, events| {
-        if options.kernel_stacks || options.python == Some(PythonEngine::Bpf) {
-            match Walker::attach(events, &mut processor, options.kernel_stacks) {
-                Ok(mut attached) => {
+        match Walker::beside(events, &mut processor, &options, &mut unwalked) {
+            Ok(attached) => {
+                walker = attached.map(|mut attached| {
                     attached.lay_out_before(&mut processor, pid, &program);
-                    walker = Some(attached);
-                }
-                Err(error) => {
-                    let why = error.to_string();
-                    refused = Some(error);
-                    return Err(why);
-                }
+                    attached
+                });
+            }
+            Err(error) => {
+                let why = error.to_string();
+                refused = Some(error);
+                return Err(why);
             }
         }
 
-        thin = thinned(walker.as_mut(), events, options);
-        syscalls = SyscallTrace::beside(Traced::Held(pid), options, stack_bytes, watched)?;
+        thin = thinned(walker.as_mut(), events, &options);
+        syscalls = SyscallTrace::beside(Traced::Held(pid), &options, stack_bytes, watched)?;
 
         Ok(())
     });
@@ -153,6 +151,10 @@ pub fn record_watched(
         executed,
         gate,
     } = launched?;
+    if let Some(why) = unwalked {
+        options.walk = Walk::Unable(why);
+    }
+    let options = &options;
 
     settings(
         &mut processor,
@@ -222,16 +224,13 @@ pub fn record_attached(
     watch: &mut Watch<'_>,
 ) -> Result<Attachment, RecordError> {
     let _span = crate::span!("record attached");
-    let options = &resolved(options)?;
-    if options.kernel_stacks || options.python == Some(PythonEngine::Bpf) {
-        crate::backend::bpf::sampler::check_namespace()?;
-    }
+    let mut options = resolved(options)?;
     let program = PathBuf::from(format!("/proc/{pid}/exe"));
     let bias = perf::program_bias(pid);
     let (source, breakpoint) =
         perf_source(&program, &options.source, bias, options.function_period)?;
     let watched = watch.every != Duration::MAX;
-    let mut processor = processor(options, breakpoint, !watched);
+    let mut processor = processor(&options, breakpoint, !watched);
     let (stack_bytes, stack_copy) = stack_copy(&mut processor, &program, options.stack);
     let events = perf::EventOptions {
         source,
@@ -247,17 +246,14 @@ pub fn record_attached(
         processor.fixed_period(period);
     }
 
-    let held = options.kernel_stacks || options.python == Some(PythonEngine::Bpf);
+    let held = options.kernel_stacks || options.walk.tried();
     let perf::Attached { events, process } = perf::attach(pid, &events, options.max_events, held)?;
-    let mut walker = if held {
-        Some(Walker::attach(
-            &events,
-            &mut processor,
-            options.kernel_stacks,
-        )?)
-    } else {
-        None
-    };
+    let mut unwalked = None;
+    let mut walker = Walker::beside(&events, &mut processor, &options, &mut unwalked)?;
+    if let Some(why) = unwalked {
+        options.walk = Walk::Unable(why);
+    }
+    let options = &options;
     let mut thin = thinned(walker.as_mut(), &events, options);
 
     let syscalls = SyscallTrace::beside(Traced::Running(pid), options, stack_bytes, watched)
@@ -279,6 +275,8 @@ pub fn record_attached(
     );
     if let Some(walker) = &mut walker {
         walker.refresh(&mut processor);
+    }
+    if held {
         events.start();
     }
 
@@ -351,15 +349,12 @@ fn record_attached_many_mode(
             perf::OpenError::NoProcess(std::io::Error::from_raw_os_error(nix::libc::ESRCH)).into(),
         );
     };
-    let options = &resolved(options)?;
-    if options.kernel_stacks || options.python == Some(PythonEngine::Bpf) {
-        crate::backend::bpf::sampler::check_namespace()?;
-    }
+    let mut options = resolved(options)?;
     let program = PathBuf::from(format!("/proc/{lead_pid}/exe"));
     let (source, breakpoint) =
         perf_source(&program, &options.source, None, options.function_period)?;
     let watched = watch.every != Duration::MAX;
-    let mut processor = processor(options, breakpoint, !watched);
+    let mut processor = processor(&options, breakpoint, !watched);
     if !follow_descendants {
         processor.restrict_pids(pids.iter().copied().map(Pid::new).collect());
     }
@@ -387,21 +382,18 @@ fn record_attached_many_mode(
         processor.fixed_period(period);
     }
 
-    let held = options.kernel_stacks || options.python == Some(PythonEngine::Bpf);
+    let held = options.kernel_stacks || options.walk.tried();
     let perf::AttachedMany { mut events, wake } =
         perf::attach_many(pids, follow_descendants, &events, options.max_events, held)?;
     if let Some(limit) = options.max_queue_bytes {
         events.set_queue_bytes(limit);
     }
-    let mut walker = if held {
-        Some(Walker::attach(
-            &events,
-            &mut processor,
-            options.kernel_stacks,
-        )?)
-    } else {
-        None
-    };
+    let mut unwalked = None;
+    let mut walker = Walker::beside(&events, &mut processor, &options, &mut unwalked)?;
+    if let Some(why) = unwalked {
+        options.walk = Walk::Unable(why);
+    }
+    let options = &options;
     let mut thin = thinned(walker.as_mut(), &events, options);
 
     let syscalls = SyscallTrace::beside(
@@ -441,6 +433,8 @@ fn record_attached_many_mode(
     );
     if let Some(walker) = &mut walker {
         walker.refresh(&mut processor);
+    }
+    if held {
         events.start();
     }
 
@@ -527,6 +521,26 @@ impl From<SamplerError> for RecordError {
 }
 
 impl Walker {
+    fn beside(
+        events: &perf::Events,
+        processor: &mut record::Processor,
+        options: &RecordOptions,
+        unwalked: &mut Option<String>,
+    ) -> Result<Option<Self>, SamplerError> {
+        if !options.kernel_stacks && !options.walk.tried() {
+            return Ok(None);
+        }
+
+        match Self::attach(events, processor, options.kernel_stacks) {
+            Ok(walker) => Ok(Some(walker)),
+            Err(error) if !options.kernel_stacks && options.walk == Walk::IfAble => {
+                *unwalked = Some(error.to_string());
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     fn attach(
         events: &perf::Events,
         processor: &mut record::Processor,
@@ -692,8 +706,8 @@ fn processor(
     let mut processor = record::Processor::new(search, options.max_frames);
     processor.cuts(options.cuts);
     if defer_debug
-        && options.task_snapshots.is_none()
-        && options.python.is_none()
+        && options.snapshots.is_none()
+        && !options.walk.tried()
         && options.cuts == Cuts::Whole
     {
         processor.defer_debug_information();
@@ -784,26 +798,21 @@ fn settings(
             },
         ),
         (
-            "task snapshots",
-            options.task_snapshots.map_or_else(
+            "snapshots",
+            options.snapshots.map_or_else(
                 || "off".into(),
                 |every| {
-                    let live = if options.live_snapshots {
-                        ", as the program runs"
+                    let how = if options.snapshots_stop() {
+                        "stopping the program"
                     } else {
-                        ""
+                        "as the program runs"
                     };
 
-                    format!("every {:.3} s{live}", every.as_secs_f64())
+                    format!("every {:.3} s, {how}", every.as_secs_f64())
                 },
             ),
         ),
-        (
-            "python",
-            options
-                .python
-                .map_or_else(|| "off".into(), |engine| engine.to_string()),
-        ),
+        ("interpreted frames", interpreted_frames(options, program)),
         ("probes", options.probes.to_string()),
         (
             "budget",
@@ -824,20 +833,73 @@ pub fn affordable_rate(budget: Budget) -> Option<u32> {
     Some(super::budget::unfiltered_rate(budget, cpus))
 }
 
+fn interpreted_frames(options: &RecordOptions, program: &Path) -> String {
+    match &options.walk {
+        Walk::IfAble | Walk::Always => "walked with BPF at each sample".into(),
+        Walk::Never => "off".into(),
+        Walk::Unable(why) => {
+            let runtime = which(program).and_then(|path| crate::backend::program_runtime(&path));
+            if matches!(runtime, Some("python" | "node")) {
+                format!("not walked: {why}")
+            } else {
+                "off".into()
+            }
+        }
+    }
+}
+
+impl RecordOptions {
+    pub fn resolve(&mut self) -> Result<Vec<String>, RecordError> {
+        let mut notes = Vec::new();
+        let untraceable = self.snapshots_stop()
+            && self.syscalls.level != SyscallLevel::Off
+            && crate::backend::syscall_engines::bpf::Probe::read()
+                .missing()
+                .is_some();
+        if untraceable {
+            let why = BESIDE_SNAPSHOTS;
+            if self.syscalls.asked {
+                return Err(RecordError::Syscalls(format!(
+                    "system calls need the BPF engine here: {why}; drop --snapshots or --syscalls"
+                )));
+            }
+            self.syscalls.level = SyscallLevel::Off;
+            self.syscalls.unavailable = Some(why.to_owned());
+            notes.push(format!(
+                "system calls not recorded: {why}; --syscalls off silences this"
+            ));
+        } else if let Some(note) = self
+            .syscalls
+            .resolve(self.stopping)
+            .map_err(RecordError::Syscalls)?
+        {
+            notes.push(note);
+        }
+
+        if self.walk == Walk::IfAble
+            && !self.kernel_stacks
+            && let Some(why) = crate::backend::bpf::sampler::unwalkable()
+        {
+            self.walk = Walk::Unable(why);
+        }
+
+        Ok(notes)
+    }
+
+    #[must_use]
+    pub fn snapshots_stop(&self) -> bool {
+        self.snapshots.is_some() && self.stopping == Stopping::Allowed
+    }
+}
+
+const BESIDE_SNAPSHOTS: &str = "without the BPF privileges only ptrace could trace them, and ptrace \
+     cannot share the program with snapshots that stop it";
+
 fn resolved(options: &RecordOptions) -> Result<RecordOptions, RecordError> {
     let mut options = options.clone();
-    options.syscalls.resolve().map_err(RecordError::Syscalls)?;
-    let stops = (options.task_snapshots.is_some() && !options.live_snapshots)
-        || matches!(options.python, Some(PythonEngine::Snapshot { .. }));
-    if options.syscalls.engine == SyscallEngine::Ptrace
-        && options.syscalls.level != SyscallLevel::Off
-        && stops
-    {
-        return Err(RecordError::Syscalls(
-            "the ptrace engine and snapshots that stop the program both need to trace it; \
-             take live snapshots, or record system calls with the BPF engine"
-                .to_owned(),
-        ));
+    options.resolve()?;
+    if options.walk == Walk::Always || options.kernel_stacks {
+        crate::backend::bpf::sampler::check_namespace()?;
     }
 
     Ok(options)
@@ -869,7 +931,7 @@ fn drive(
         .map(|budget| Pacer::new(budget, monotonic(), processor, syscalls, thin, options));
     let mut snapshots: Vec<Snapshots> = started
         .iter()
-        .flat_map(|&pid| snapshotters(pid, options))
+        .filter_map(|&pid| snapshotters(pid, options, walker.is_some()))
         .collect();
     let mut probes = started
         .first()
@@ -1134,31 +1196,14 @@ fn save_when_due(
     (save.to)(Profile::from_capture(capture));
 }
 
-fn snapshotters(pid: u32, options: &RecordOptions) -> Vec<Snapshots> {
-    let tasks = options.task_snapshots.map(|every| {
-        let reads = Reads {
-            tasks: true,
-            threads: false,
-        };
-        (every, options.live_snapshots, reads)
-    });
-    let threads = options.python.and_then(|engine| {
-        let reads = Reads {
-            tasks: false,
-            threads: true,
-        };
-        match engine {
-            PythonEngine::Snapshot { every } => Some((every, false, reads)),
-            PythonEngine::Live { every } => Some((every, true, reads)),
-            PythonEngine::Bpf => None,
-        }
-    });
-
-    [tasks, threads]
-        .into_iter()
-        .flatten()
-        .map(|(every, live, reads)| Snapshots::new(pid, every, live, reads, options))
-        .collect()
+fn snapshotters(pid: u32, options: &RecordOptions, walking: bool) -> Option<Snapshots> {
+    let reads = Reads {
+        tasks: true,
+        threads: !walking,
+    };
+    options
+        .snapshots
+        .map(|every| Snapshots::new(pid, every, !options.snapshots_stop(), reads, options))
 }
 
 fn fell_behind(late: Duration, took: Duration, every: Duration) -> Option<String> {
@@ -1713,7 +1758,8 @@ mod tests {
         let recording = crate::profiler::record(
             command,
             &super::RecordOptions {
-                task_snapshots: Some(Duration::from_secs(60)),
+                snapshots: Some(Duration::from_secs(60)),
+                stopping: super::Stopping::Allowed,
                 ..super::RecordOptions::default()
             },
         )

@@ -14,6 +14,7 @@ use microscope::profiler::{
 };
 use nix::sys::time::TimeValLike as _;
 use support::Scenario;
+use support::profile::Snapshotting;
 
 const VARIANTS: [(&str, bool); 4] = [
     ("gcc-o0", true),
@@ -2402,10 +2403,7 @@ fn live_task_snapshots_read_a_runtime_in_a_library() {
 
 #[test]
 fn a_program_that_exits_around_a_snapshot_keeps_its_status() {
-    let options = RecordOptions {
-        task_snapshots: Some(Duration::from_millis(1)),
-        ..RecordOptions::default()
-    };
+    let options = Snapshotting::Stopped(Duration::from_millis(1)).options();
 
     for _ in 0..10 {
         let (reader, mut writer) = std::io::pipe().expect("pipe");
@@ -2452,11 +2450,12 @@ fn snapshot_until(
     ready: impl FnMut(&Profile) -> bool,
 ) -> Profile {
     command.stdout(Stdio::null()).stderr(Stdio::null());
-    let options = RecordOptions {
-        task_snapshots: Some(Duration::from_millis(50)),
-        live_snapshots: live,
-        ..RecordOptions::default()
-    };
+    let options = if live {
+        Snapshotting::Live(Duration::from_millis(50))
+    } else {
+        Snapshotting::Stopped(Duration::from_millis(50))
+    }
+    .options();
 
     let recording =
         support::released::record_released(command, &options, support::released::when(ready));

@@ -792,17 +792,7 @@ pub struct RecordProfile {
     pub syscalls: Option<SyscallsLevel>,
 
     #[serde(default)]
-    #[cfg_attr(test, ts(optional = nullable))]
-    pub syscall_engine: Option<SyscallsEngine>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[cfg_attr(test, derive(ts_rs::TS))]
-#[serde(rename_all = "camelCase")]
-pub enum SyscallsEngine {
-    Bpf,
-
-    Ptrace,
+    pub allow_stopping: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -2786,7 +2776,6 @@ mod tests {
         SyscallEndpoint::decl,
         SyscallProcesses::decl,
         SyscallsLevel::decl,
-        SyscallsEngine::decl,
         SyscallInFlightQuery::decl,
         SyscallInFlight::decl,
         SyscallBlocked::decl,

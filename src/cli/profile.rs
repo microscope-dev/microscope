@@ -10,8 +10,8 @@ use anyhow::{Context, Result};
 use microscope::profiler::budget::Budget;
 use microscope::profiler::{
     CommandIdentity, Cuts, GapReason, Granularity, MOST_STACK_COPY, MarkerKind, Preset,
-    ProbeSelection, Profile, PythonEngine, RecordOptions, SampleSource, Save, Source, StackCopy,
-    StackView, SyscallEngine, SyscallLevel, SyscallOptions, Watch,
+    ProbeSelection, Profile, RecordOptions, SampleSource, Save, Source, StackCopy, StackView,
+    Stopping, SyscallLevel, SyscallOptions, Watch,
 };
 
 mod calls;
@@ -105,38 +105,30 @@ pub struct RecordArgs {
     #[arg(long, value_name = "N", requires = "function", value_parser = clap::value_parser!(u64).range(1..))]
     function_period: Option<u64>,
 
-    /// Record the running process PID, without stopping it, until it exits
-    /// or Ctrl-C.
-    #[arg(long, value_name = "PID", conflicts_with = "command")]
-    pid: Option<u32>,
+    /// Record a running process, by its id or its name, without stopping
+    /// it, until it exits or Ctrl-C.
+    #[arg(short = 'p', long, value_name = "PID|NAME", conflicts_with = "command")]
+    attach: Option<String>,
 
     /// Stop recording after DURATION, such as 30s or 5m; a started program
     /// is then killed.
     #[arg(long, value_name = "DURATION", value_parser = duration)]
     duration: Option<Duration>,
 
-    /// Stop the program every DURATION, such as 100ms, to read where its
-    /// tasks, such as goroutines and tokio tasks, wait. Each stop pauses
-    /// the program, and the report says for how long.
+    /// Read where the program's tasks wait, such as goroutines and tokio
+    /// tasks, and where its threads are, Python and JavaScript functions
+    /// included, every DURATION, such as 100ms.
+    /// Each snapshot reads the program's memory as it runs, leaving out each
+    /// task or thread that changes while read, and the report counts those.
     #[arg(long, value_name = "DURATION", value_parser = positive_duration)]
-    task_snapshots: Option<Duration>,
+    snapshots: Option<Duration>,
 
-    /// Read task snapshots from the program's memory as it runs, without
-    /// stopping it. A task that changes while read is left out, and the
-    /// report counts those.
-    #[arg(long, requires = "task_snapshots")]
-    live_snapshots: bool,
-
-    /// Read where a Python or Node program's threads are, by ENGINE: `bpf`
-    /// walks each sampled thread's Python or JavaScript frames as the
-    /// sample is taken, which needs `CAP_BPF` and `CAP_PERFMON`;
-    /// `snapshot[=DURATION]` stops the program every DURATION (100ms if
-    /// not given) and reads each thread's stack, interpreted and native;
-    /// `live[=DURATION]` reads each thread's Python frames every DURATION
-    /// (10ms if not given) as the program runs, leaving out each that
-    /// changes while read.
-    #[arg(long, visible_alias = "node", value_name = "ENGINE")]
-    python: Option<String>,
+    /// Let microscope stop the program where that records more: each
+    /// snapshot stops it to read a complete one, and without the BPF
+    /// privileges ptrace traces system calls, stopping it at each call.
+    /// Never in production: --preset prod refuses it.
+    #[arg(long)]
+    allow_stopping: bool,
 
     /// Keep only the last DURATION of the recording, such as 30s. SIGUSR2
     /// saves the window as it is to FILE-1.usprof, FILE-2.usprof, and so
@@ -191,8 +183,9 @@ pub struct RecordArgs {
     /// counts, every call counted in the kernel, with the failed and slow
     /// ones kept (prod); calls, every call with its arguments and stack
     /// (dev); or full, also whole strings and the bytes behind pointers
-    /// (max). The BPF engine needs `CAP_BPF` and `CAP_PERFMON`; without
-    /// them the preset's level records no calls and says why.
+    /// (max). Tracing them needs `CAP_BPF` and `CAP_PERFMON`; without them
+    /// the preset's level records no calls and says why, unless
+    /// --allow-stopping traces them with ptrace.
     #[arg(long, value_name = "LEVEL")]
     syscalls: Option<SyscallLevel>,
 
@@ -214,20 +207,19 @@ pub struct RecordArgs {
     /// Also print each system call to standard error as it returns, in
     /// the layout of `report --syscalls`. Needs --syscalls calls or full.
     #[arg(long)]
-    print: bool,
+    print_syscalls: bool,
 
     /// Keep at most N system calls a second from each recorded process at
     /// --syscalls calls or full, counting the rest. Uncapped if not given.
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
     syscall_cap: Option<u32>,
 
-    /// What sees system calls: bpf, which never stops the program, or
-    /// ptrace, which stops it at each call and needs no privileges.
-    #[arg(long, value_name = "ENGINE", default_value = "bpf")]
-    syscall_engine: SyscallEngine,
-
     /// The program to record and its arguments.
-    #[arg(last = true, required_unless_present = "pid", value_name = "PROGRAM")]
+    #[arg(
+        last = true,
+        required_unless_present = "attach",
+        value_name = "PROGRAM"
+    )]
     command: Vec<OsString>,
 }
 
@@ -449,9 +441,6 @@ impl LookArgs {
     }
 }
 
-const SNAPSHOT_EVERY: Duration = Duration::from_millis(100);
-const LIVE_EVERY: Duration = Duration::from_millis(10);
-
 fn stack_bytes(text: &str) -> Result<u32, String> {
     let bytes: u64 = text.parse().map_err(|error| format!("{error}"))?;
     u32::try_from(bytes)
@@ -462,30 +451,6 @@ fn stack_bytes(text: &str) -> Result<u32, String> {
                 "--stack-bytes is at most {MOST_STACK_COPY}, the most stack perf copies per sample"
             )
         })
-}
-
-fn python_engine(engine: &str) -> Result<PythonEngine> {
-    let (name, given) = engine
-        .split_once('=')
-        .map_or((engine, None), |(name, every)| (name, Some(every)));
-    let every = |unless: Duration| -> Result<Duration> {
-        given.map_or(Ok(unless), |every| {
-            positive_duration(every).map_err(|error| anyhow::anyhow!("--python {engine}: {error}"))
-        })
-    };
-
-    match name {
-        "bpf" if given.is_none() => Ok(PythonEngine::Bpf),
-        "snapshot" => Ok(PythonEngine::Snapshot {
-            every: every(SNAPSHOT_EVERY)?,
-        }),
-        "live" => Ok(PythonEngine::Live {
-            every: every(LIVE_EVERY)?,
-        }),
-        _ => anyhow::bail!(
-            "--python {engine}: the engines are bpf, snapshot[=DURATION], and live[=DURATION]"
-        ),
-    }
 }
 
 pub fn run_symbolize(args: &SymbolizeArgs) -> std::process::ExitCode {
@@ -621,13 +586,13 @@ fn options(args: &RecordArgs) -> Result<RecordOptions> {
         *rate = (*rate).min(affordable);
     }
 
-    if let Some(every) = args.task_snapshots {
-        options.task_snapshots = Some(every);
-        options.live_snapshots = args.live_snapshots;
-    }
-
-    if let Some(engine) = &args.python {
-        options.python = Some(python_engine(engine)?);
+    options.snapshots = args.snapshots;
+    if args.allow_stopping {
+        anyhow::ensure!(
+            !matches!(args.preset, PresetArg::Prod),
+            "--allow-stopping lets microscope stop the program, which --preset prod never does"
+        );
+        options.stopping = Stopping::Allowed;
     }
 
     if let Some(window) = args.window {
@@ -635,6 +600,9 @@ fn options(args: &RecordArgs) -> Result<RecordOptions> {
     }
 
     syscall_options(args, &mut options.syscalls)?;
+    for note in options.resolve()? {
+        eprintln!("microscope: {note}");
+    }
 
     if args.continuous.is_some() {
         options.cuts = Cuts::Segments(args.segment);
@@ -668,7 +636,6 @@ fn syscall_options(args: &RecordArgs, syscalls: &mut SyscallOptions) -> Result<(
         syscalls.asked = true;
     }
 
-    syscalls.engine = args.syscall_engine;
     if let Some(text) = &args.syscall_filter {
         let expressions: Vec<String> = text.split_whitespace().map(str::to_owned).collect();
         let filter = microscope::syscalls::Filter::parse(
@@ -689,10 +656,10 @@ fn syscall_options(args: &RecordArgs, syscalls: &mut SyscallOptions) -> Result<(
         }
     }
 
-    if args.print {
+    if args.print_syscalls {
         anyhow::ensure!(
             syscalls.level >= SyscallLevel::Calls,
-            "--print shows each call, which --syscalls {} does not keep: give --syscalls calls",
+            "--print-syscalls shows each call, which --syscalls {} does not keep: give --syscalls calls",
             syscalls.level
         );
         let renderer = super::Renderers::detect(super::terminal::ColorChoice::Auto, false).stderr;
@@ -709,21 +676,25 @@ fn syscall_options(args: &RecordArgs, syscalls: &mut SyscallOptions) -> Result<(
 
     syscalls
         .check()
-        .map_err(|error| anyhow::anyhow!("--syscalls: {error}"))?;
-    if let Some(note) = syscalls.resolve().map_err(anyhow::Error::msg)? {
-        eprintln!("microscope: {note}");
-    }
-
-    Ok(())
+        .map_err(|error| anyhow::anyhow!("--syscalls: {error}"))
 }
 
 fn record(args: &RecordArgs) -> Result<i32> {
     let options = options(args)?;
+    let attached = args
+        .attach
+        .as_deref()
+        .map(|target| {
+            let process = super::session::attached(target)?;
+            u32::try_from(process.get())
+                .map_err(|_| anyhow::anyhow!("process {process} is not a Linux process id"))
+        })
+        .transpose()?;
     let stop = Arc::new(AtomicBool::new(false));
     let trigger = Arc::new(AtomicBool::new(false));
 
     handle_signals(
-        args.pid.is_some().then(|| Arc::clone(&stop)),
+        attached.is_some().then(|| Arc::clone(&stop)),
         Arc::clone(&trigger),
     )?;
 
@@ -754,7 +725,7 @@ fn record(args: &RecordArgs) -> Result<i32> {
         );
     }
 
-    let mut announce = args.pid;
+    let mut announce = attached;
     let mut duration = args.duration;
     let mut watch = Watch {
         every: Duration::MAX,
@@ -779,12 +750,12 @@ fn record(args: &RecordArgs) -> Result<i32> {
         }),
     };
 
-    let (profile, code) = if let Some(pid) = args.pid {
+    let (profile, code) = if let Some(pid) = attached {
         let attachment = microscope::profiler::record_attached(pid, &options, &mut watch)?;
         (attachment.profile, 0)
     } else {
         let (program, arguments) = (args.command.split_first())
-            .ok_or_else(|| anyhow::anyhow!("profile needs a program to record, or --pid"))?;
+            .ok_or_else(|| anyhow::anyhow!("profile needs a program to record, or --attach"))?;
         let mut command = Command::new(program);
         command.args(arguments);
         let recording = microscope::profiler::record_watched(command, &options, &mut watch)?;
@@ -874,7 +845,7 @@ fn report_losses(profile: &Profile) {
     for (_, problem) in profile.probe_problems() {
         eprintln!("microscope: {problem}");
     }
-    for note in debug_information_notes(profile) {
+    for note in recording_notes(profile) {
         eprintln!("microscope: {note}");
     }
 }
@@ -1594,25 +1565,27 @@ fn cost(profile: &Profile, out: &mut impl std::io::Write) -> Result<()> {
         writeln!(out, "{behind}.")?;
     }
 
-    for note in debug_information_notes(profile) {
+    for note in recording_notes(profile) {
         writeln!(out, "{note}")?;
     }
 
     Ok(())
 }
 
-fn debug_information_notes(profile: &Profile) -> Vec<String> {
+fn recording_notes(profile: &Profile) -> Vec<String> {
     let settings = profile.settings();
-    let mut notes = settings
-        .iter()
-        .filter_map(|(key, value)| {
-            let module = key.strip_prefix("debug information ")?;
-            let reason = value.strip_prefix("incomplete: ")?;
-            Some(format!(
-                "{module}'s debug information is incomplete: {reason}."
-            ))
-        })
-        .collect::<Vec<_>>();
+    let unwalked = profile
+        .setting("interpreted frames")
+        .and_then(|value| value.strip_prefix("not walked: "))
+        .map(|why| format!("Python and JavaScript functions are unnamed: {why}."));
+    let mut notes = unwalked.into_iter().collect::<Vec<_>>();
+    notes.extend(settings.iter().filter_map(|(key, value)| {
+        let module = key.strip_prefix("debug information ")?;
+        let reason = value.strip_prefix("incomplete: ")?;
+        Some(format!(
+            "{module}'s debug information is incomplete: {reason}."
+        ))
+    }));
 
     let unkept = settings.iter().filter_map(|(key, value)| {
         let module = key.strip_prefix("image cache ")?;
@@ -2231,12 +2204,11 @@ impl Profiling {
                 let pid = u32::try_from(pid.get()).context("the program's process id")?;
 
                 let mut options = RecordOptions::default();
-                let note = options
-                    .syscalls
-                    .resolve()
-                    .map_err(anyhow::Error::msg)?
-                    .map(|note| format!("{note}\n"))
-                    .unwrap_or_default();
+                let note: String = options
+                    .resolve()?
+                    .into_iter()
+                    .flat_map(|note| [note, "\n".to_owned()])
+                    .collect();
                 if let [seconds] = window {
                     let seconds: f64 = seconds.parse().context("a window in seconds")?;
                     options.cuts = Cuts::Window(

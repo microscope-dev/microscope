@@ -5,10 +5,11 @@ use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use microscope::profiler::{
-    Granularity, Look, Profile, PythonEngine, Query, RecordOptions, SampledStack, Source,
-    StackEnding, Watch, record_watched,
+    Granularity, Look, Profile, Query, RecordOptions, SampledStack, Source, StackEnding, Watch,
+    record_watched,
 };
 
+use crate::support::profile::Snapshotting;
 use crate::support::truth::Report;
 use crate::support::{ScratchDir, node};
 use crate::truth::{Thread, threads};
@@ -164,10 +165,7 @@ fn parked(text: &str, checkpoint: &str) -> Vec<Thread> {
 
 #[test]
 fn stopped_snapshots_find_each_threads_javascript_lines() {
-    let options = RecordOptions {
-        python: Some(PythonEngine::Snapshot { every: EVERY }),
-        ..RecordOptions::default()
-    };
+    let options = Snapshotting::Stopped(EVERY).options();
     let ready = |profile: &Profile, reported: &[Thread]| {
         missing(
             &expected(reported),
@@ -243,7 +241,7 @@ fn profiling_and_tracing_write_nothing() {
     let (reader, mut writer) = std::io::pipe().expect("pipe");
     let mut record = Command::new(env!("CARGO_BIN_EXE_microscope"))
         .env("MICROSCOPE_FLIGHT_RECORDING", &recording)
-        .args(["record", "--python", "snapshot=0.1", "-o"])
+        .args(["record", "--snapshots", "0.1", "--allow-stopping", "-o"])
         .arg(scratch.path().join("profile.json"))
         .arg("--")
         .arg(node::node(ENTRY))
@@ -943,7 +941,7 @@ mod bpf {
         let mut command = Command::new(launcher);
         command
             .arg(env!("CARGO_BIN_EXE_microscope"))
-            .args(["record", "--python", "bpf", "--output"])
+            .args(["record", "--output"])
             .arg(&profile)
             .arg("--")
             .arg(fixture.get_program())
@@ -992,7 +990,7 @@ mod bpf {
         let profile = scratch.path().join("busy.usprof");
         let warmed = Command::new(&launcher)
             .arg(env!("CARGO_BIN_EXE_microscope"))
-            .args(["record", "--node", "bpf", "--output"])
+            .args(["record", "--output"])
             .arg(scratch.path().join("warm.usprof"))
             .arg("--")
             .arg(node::node(entry))
@@ -1008,7 +1006,7 @@ mod bpf {
         let (fixture, output) = busy_on(entry, &scratch, 5);
         let finished = Command::new(launcher)
             .arg(env!("CARGO_BIN_EXE_microscope"))
-            .args(["record", "--node", "bpf", "--output"])
+            .args(["record", "--output"])
             .arg(&profile)
             .arg("--")
             .arg(fixture.get_program())
@@ -1074,7 +1072,7 @@ mod bpf {
         let record = |output: &Path, arguments: &[&std::ffi::OsStr]| {
             let finished = Command::new(&launcher)
                 .arg(env!("CARGO_BIN_EXE_microscope"))
-                .args(["record", "--node", "bpf", "--output"])
+                .args(["record", "--output"])
                 .arg(output)
                 .arg("--")
                 .arg(node::node(ENTRY))
@@ -1118,7 +1116,7 @@ mod bpf {
         let profile = scratch.path().join("first.usprof");
         let finished = Command::new(&launcher)
             .arg(env!("CARGO_BIN_EXE_microscope"))
-            .args(["record", "--node", "bpf", "--output"])
+            .args(["record", "--output"])
             .arg(&profile)
             .arg("--")
             .arg(node::node(ENTRY))
@@ -1198,7 +1196,7 @@ mod bpf {
 
         let finished = Command::new(&launcher)
             .arg(env!("CARGO_BIN_EXE_microscope"))
-            .args(["record", "--node", "bpf", "--pid"])
+            .args(["record", "--attach"])
             .arg(spinning.0.id().to_string())
             .args(["--duration", "5"])
             .arg("--output")
@@ -1255,7 +1253,7 @@ mod bpf {
         let script = format!("{} & {}; wait", run(&outputs[0]), run(&outputs[1]));
         let finished = Command::new(launcher)
             .arg(env!("CARGO_BIN_EXE_microscope"))
-            .args(["record", "--node", "bpf", "--output"])
+            .args(["record", "--output"])
             .arg(&profile)
             .args(["--", "sh", "-c", &script])
             .env_remove("NODE_OPTIONS")

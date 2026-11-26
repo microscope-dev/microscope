@@ -13,7 +13,7 @@ test("a recording's calls are explored from their costs to one call's arguments 
 
   const traced = spawnSync(
     path.join(root, "target", "debug", "microscope"),
-    ["record", "--syscall-engine", "ptrace", "-o", file, "--", fixture("syscalls"), "files"],
+    ["record", "--allow-stopping", "-o", file, "--", fixture("syscalls"), "files"],
     { cwd: info.outputDir, stdio: "ignore" },
   );
   expect(traced.status).toBe(3);
@@ -158,7 +158,7 @@ test("calls and samples select each other, and a call's frames lead to the sampl
 
   const recorded = spawnSync(
     path.join(root, "target", "debug", "microscope"),
-    ["record", "--syscall-engine", "ptrace", "-o", file, "--", fixture("syscalls"), "work"],
+    ["record", "--allow-stopping", "-o", file, "--", fixture("syscalls"), "work"],
     { cwd: info.outputDir, stdio: "ignore" },
   );
   expect(recorded.status).toBe(0);
@@ -244,7 +244,7 @@ test("a family's processes are listed parents first, each with how it ended", as
   const file = info.outputPath("family.usprof");
   spawnSync(
     path.join(root, "target", "debug", "microscope"),
-    ["record", "--syscall-engine", "ptrace", "-o", file, "--", fixture("syscalls"), "family"],
+    ["record", "--allow-stopping", "-o", file, "--", fixture("syscalls"), "family"],
     { cwd: info.outputDir, stdio: "ignore" },
   );
   const served = await microscope.start([file]);
@@ -289,10 +289,11 @@ test("a recording made from the page shows what its program is blocked in, until
   await record.getByLabel("Arguments").fill("pause");
 
   await record.getByLabel("Preset").selectOption("production");
-  await record.getByLabel("Engine").selectOption("ptrace");
-  await expect(record.getByLabel("System calls")).toHaveValue("counts");
-  await expect(record.getByRole("button", { name: "Record" })).toBeDisabled();
-  await record.getByLabel("System calls").selectOption("calls");
+  await expect(record.getByLabel("Stopping")).toBeDisabled();
+  await expect(record.getByLabel("Stopping")).toHaveValue("never");
+  await record.getByLabel("Preset").selectOption("development");
+  await record.getByLabel("Stopping").selectOption("allowed");
+  await expect(record.getByLabel("System calls")).toHaveValue("calls");
   await record.getByRole("button", { name: "Record" }).click();
   await expect(page).toHaveURL(/\/profile\/[0-9a-f]{16}/u);
   await expect(page.getByTestId("recording")).toContainText("Recording syscalls");

@@ -41,3 +41,27 @@ fn context(profile: &Profile) -> String {
         profile.paused(GapReason::Behind).len(),
     )
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Snapshotting {
+    Stopped(std::time::Duration),
+
+    Live(std::time::Duration),
+}
+
+impl Snapshotting {
+    pub fn options(self) -> microscope::profiler::RecordOptions {
+        use microscope::profiler::{RecordOptions, Stopping, Walk};
+
+        let (every, stopping) = match self {
+            Self::Stopped(every) => (every, Stopping::Allowed),
+            Self::Live(every) => (every, Stopping::Never),
+        };
+        RecordOptions {
+            snapshots: Some(every),
+            stopping,
+            walk: Walk::Never,
+            ..RecordOptions::default()
+        }
+    }
+}

@@ -11,7 +11,7 @@ fn trace(directory: &Path, mode: &str) -> PathBuf {
     let path = directory.join(format!("{mode}.usprof"));
     let mut command = Command::new(env!("CARGO_BIN_EXE_microscope"));
     command
-        .args(["record", "--syscall-engine", "ptrace", "-o"])
+        .args(["record", "--allow-stopping", "-o"])
         .arg(&path)
         .arg("--")
         .arg(Scenario::fixture("syscalls"))
@@ -393,11 +393,11 @@ async fn a_live_trace_shows_what_its_program_is_blocked_in() {
     let refused = tab
         .request(
             "recordProfile",
-            json!({"program": program, "preset": "production", "syscallEngine": "ptrace"}),
+            json!({"program": program, "preset": "production", "allowStopping": true}),
         )
         .await;
     assert!(
-        format!("{refused:?}").contains("ptrace cannot count calls"),
+        format!("{refused:?}").contains("never stops the program"),
         "{refused:?}"
     );
     let started = tab
@@ -407,7 +407,7 @@ async fn a_live_trace_shows_what_its_program_is_blocked_in() {
                 "program": program,
                 "arguments": ["pause"],
                 "syscalls": "calls",
-                "syscallEngine": "ptrace",
+                "allowStopping": true,
             }),
         )
         .await;

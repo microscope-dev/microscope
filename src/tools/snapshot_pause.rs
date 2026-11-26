@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::profiler::{GapReason, PythonEngine, RecordOptions, Watch, record_watched};
+use crate::profiler::{GapReason, RecordOptions, Stopping, Walk, Watch, record_watched};
 
 pub const INTERPRETERS: [&str; 5] = ["3.12", "3.14", "3.14t", "3.15", "standalone-3.14"];
 
@@ -63,7 +63,9 @@ fn run(root: &std::path::Path, interpreter: &str, snapshots: u64) -> Result<Run>
 
     let debug = root.join(interpreter).join("debug/lib/debug");
     let options = RecordOptions {
-        python: Some(PythonEngine::Snapshot { every: EVERY }),
+        snapshots: Some(EVERY),
+        stopping: Stopping::Allowed,
+        walk: Walk::Never,
         debug_directories: debug.is_dir().then_some(debug).into_iter().collect(),
         ..RecordOptions::default()
     };

@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use object::{Object, ObjectSymbol};
+use support::profile::Snapshotting;
 
 const BASIC: &str = "build/test-programs/basic";
 const SEGV_CORE: &str = "build/test-programs/crash-gcc-o0-segv.core";
@@ -181,7 +182,7 @@ fn a_recording_without_bpf_records_no_calls_unless_they_were_asked_for() {
     let said = String::from_utf8_lossy(&recorded.stderr);
     assert!(
         said.contains("system calls not recorded: this process ")
-            && said.contains("--syscall-engine ptrace")
+            && said.contains("--allow-stopping")
             && said.contains("--syscalls off"),
         "{said}"
     );
@@ -220,7 +221,7 @@ fn a_recording_without_bpf_records_no_calls_unless_they_were_asked_for() {
     ]);
     assert!(!asked.status.success());
     let said = String::from_utf8_lossy(&asked.stderr);
-    assert!(said.contains("--syscall-engine ptrace"), "{said}");
+    assert!(said.contains("--allow-stopping"), "{said}");
 
     let unparsed = microscope(&[
         "record",
@@ -237,14 +238,25 @@ fn a_recording_without_bpf_records_no_calls_unless_they_were_asked_for() {
         "record",
         "--preset",
         "prod",
-        "--syscall-engine",
-        "ptrace",
+        "--allow-stopping",
         "--",
         "true",
     ]);
     assert!(!counted.status.success());
     let said = String::from_utf8_lossy(&counted.stderr);
-    assert!(said.contains("ptrace cannot count"), "{said}");
+    assert!(said.contains("--preset prod never does"), "{said}");
+
+    let counted = microscope(&[
+        "record",
+        "--syscalls",
+        "counts",
+        "--allow-stopping",
+        "--",
+        "true",
+    ]);
+    assert!(!counted.status.success());
+    let said = String::from_utf8_lossy(&counted.stderr);
+    assert!(said.contains("cannot count calls"), "{said}");
 }
 
 fn record_zones(scratch: &support::ScratchDir) -> PathBuf {
@@ -5863,7 +5875,7 @@ fn instrumentation_switches_itself_off_once_its_recorder_dies() {
     );
     let pid = program.process_id().get().to_string();
     let mut recorder = microscope_command()
-        .args(["record", "--pid", &pid, "--probe-timeout", "0.2", "-o"])
+        .args(["record", "--attach", &pid, "--probe-timeout", "0.2", "-o"])
         .arg(scratch.path().join("quiet.usprof"))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -5999,10 +6011,7 @@ fn snapshots_of_threads_alone_count_no_samples_that_ran_a_task() {
     let threads = snapshotted_python_report(
         &scratch,
         "threads.usprof",
-        &microscope::profiler::RecordOptions {
-            python: Some(microscope::profiler::PythonEngine::Snapshot { every }),
-            ..Default::default()
-        },
+        &Snapshotting::Stopped(every).options(),
         "import sys, time\nsys.stdin.readline()\n\
          end = time.process_time() + 0.5\nwhile time.process_time() < end: pass\n",
         |_| true,
@@ -6016,10 +6025,7 @@ fn snapshots_of_threads_alone_count_no_samples_that_ran_a_task() {
     let tasks = snapshotted_python_report(
         &scratch,
         "tasks.usprof",
-        &microscope::profiler::RecordOptions {
-            task_snapshots: Some(every),
-            ..Default::default()
-        },
+        &Snapshotting::Stopped(every).options(),
         "import asyncio, sys, time\n\
          async def spin():\n    end = time.process_time() + 0.5\n    \
          while time.process_time() < end: await asyncio.sleep(0)\n\
@@ -6050,12 +6056,7 @@ fn runtime_labels_stay_out_of_the_programs_zones() {
     let report = snapshotted_python_report(
         &scratch,
         "labels.usprof",
-        &microscope::profiler::RecordOptions {
-            python: Some(microscope::profiler::PythonEngine::Snapshot {
-                every: Duration::from_millis(50),
-            }),
-            ..Default::default()
-        },
+        &Snapshotting::Stopped(Duration::from_millis(50)).options(),
         program,
         support::released::probes_read,
     );

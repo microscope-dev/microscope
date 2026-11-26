@@ -536,12 +536,13 @@ fn load_error(error: impl std::fmt::Display) -> SamplerError {
 }
 
 const REMEDY: &str =
-    "  The BPF engine reads each thread's Python frames in the kernel as each sample is
+    "  The BPF engine reads each thread's Python and JavaScript frames in the kernel as each sample is
   taken, which needs both. To continue, one of:
     - run microscope from a unit with AmbientCapabilities=CAP_BPF CAP_PERFMON
     - on NixOS or system-manager, import microscope's bpf module and run through
       /run/wrappers/bin/microscope-bpf (docs/profiling.md#give-microscope-the-bpf-privileges)
-    - record with --python snapshot or --python live, which need no privilege";
+    - record with --snapshots 10ms, which reads them as the program runs and needs
+      no privilege";
 
 const INITIAL_PID_NAMESPACE: u64 = 0xefff_fffc;
 
@@ -556,9 +557,25 @@ pub fn check_namespace() -> Result<(), SamplerError> {
         .and_then(|namespace| initial_pid_namespace(&namespace));
     match observed {
         Ok(true) => Ok(()),
-        Ok(false) => Err(SamplerError::Unavailable("Python BPF sampling requires the recorder in the initial PID namespace; run it on the host, or use --python snapshot or --python live".into())),
-        Err(error) => Err(SamplerError::Unavailable(format!("cannot prove the Python BPF recorder uses the initial PID namespace: {error}; use --python snapshot or --python live"))),
+        Ok(false) => Err(SamplerError::Unavailable("walking Python and JavaScript frames with BPF requires the recorder in the initial PID namespace; run it on the host, or record with --snapshots 10ms".into())),
+        Err(error) => Err(SamplerError::Unavailable(format!("cannot prove the recorder uses the initial PID namespace, which walking Python and JavaScript frames with BPF requires: {error}; record with --snapshots 10ms"))),
     }
+}
+
+#[must_use]
+pub fn unwalkable() -> Option<String> {
+    if let Err(error) = check_namespace() {
+        return Some(error.to_string());
+    }
+
+    super::super::syscalls::bpf::Probe::read()
+        .lacks_privileges()
+        .map(|missing| {
+            format!(
+                "this process {missing}, which naming them needs; record with --snapshots 10ms \
+                 to read them as the program runs"
+            )
+        })
 }
 
 pub struct PythonLayouts(HashMap<MapData, u32, Bytes<LAYOUT_BYTES>>);
@@ -798,8 +815,8 @@ impl Sampler {
                 )));
             }
             return Err(SamplerError::Unavailable(format!(
-                "the BPF engine for Python stacks needs CAP_BPF and CAP_PERFMON, and this \
-                 process {missing}.\n{REMEDY}"
+                "walking Python and JavaScript frames with BPF needs CAP_BPF and CAP_PERFMON, \
+                 and this process {missing}.\n{REMEDY}"
             )));
         }
 

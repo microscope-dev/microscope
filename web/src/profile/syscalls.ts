@@ -112,7 +112,7 @@ export function unkept(settings: readonly Setting[]): { text: string; flag: stri
   }
   const why = setting("syscalls not recorded");
   return why
-    ? { text: `System calls were not recorded: ${why}.`, flag: "--syscall-engine ptrace" }
+    ? { text: `System calls were not recorded: ${why}.`, flag: "--allow-stopping" }
     : { text: "System calls were not recorded.", flag: "--syscalls calls" };
 }
 

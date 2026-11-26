@@ -4,10 +4,11 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use microscope::profiler::{
-    Granularity, Look, Profile, PythonEngine, Query, RecordError, RecordOptions, Source,
-    StackEnding, record,
+    Granularity, Look, Profile, Query, RecordError, RecordOptions, Source, StackEnding, Walk,
+    record,
 };
 
+use crate::support::profile::Snapshotting;
 use crate::support::python;
 
 const PROFILED: [&str; 5] = ["3.12", "3.14", "3.14t", "3.15", "standalone-3.14"];
@@ -65,7 +66,7 @@ fn names_dataclass_methods<'a>(frames: impl IntoIterator<Item = &'a String>) -> 
         .all(|method| frames.iter().any(|frame| frame.starts_with(method)))
 }
 
-fn snapshots_name_dataclass_methods_by_their_class(interpreter: &str, engine: PythonEngine) {
+fn snapshots_name_dataclass_methods_by_their_class(interpreter: &str, engine: Snapshotting) {
     let named = |profile: &Profile| {
         let paths = python_paths(profile);
         names_dataclass_methods(paths.keys().flatten())
@@ -83,54 +84,42 @@ fn snapshots_name_dataclass_methods_by_their_class(interpreter: &str, engine: Py
 
 #[test]
 fn snapshots_name_dataclass_methods_by_their_class_on_3_12() {
-    snapshots_name_dataclass_methods_by_their_class(
-        "3.12",
-        PythonEngine::Snapshot { every: EVERY },
-    );
+    snapshots_name_dataclass_methods_by_their_class("3.12", Snapshotting::Stopped(EVERY));
 }
 
 #[test]
 fn snapshots_name_dataclass_methods_by_their_class_on_3_14() {
-    snapshots_name_dataclass_methods_by_their_class(
-        "3.14",
-        PythonEngine::Snapshot { every: EVERY },
-    );
+    snapshots_name_dataclass_methods_by_their_class("3.14", Snapshotting::Stopped(EVERY));
 }
 
 #[test]
 fn snapshots_name_dataclass_methods_by_their_class_on_3_14t() {
-    snapshots_name_dataclass_methods_by_their_class(
-        "3.14t",
-        PythonEngine::Snapshot { every: EVERY },
-    );
+    snapshots_name_dataclass_methods_by_their_class("3.14t", Snapshotting::Stopped(EVERY));
 }
 
 #[test]
 fn snapshots_name_dataclass_methods_by_their_class_on_3_15() {
-    snapshots_name_dataclass_methods_by_their_class(
-        "3.15",
-        PythonEngine::Snapshot { every: EVERY },
-    );
+    snapshots_name_dataclass_methods_by_their_class("3.15", Snapshotting::Stopped(EVERY));
 }
 
 #[test]
 fn live_name_dataclass_methods_by_their_class_on_3_12() {
-    snapshots_name_dataclass_methods_by_their_class("3.12", PythonEngine::Live { every: EVERY });
+    snapshots_name_dataclass_methods_by_their_class("3.12", Snapshotting::Live(EVERY));
 }
 
 #[test]
 fn live_name_dataclass_methods_by_their_class_on_3_14() {
-    snapshots_name_dataclass_methods_by_their_class("3.14", PythonEngine::Live { every: EVERY });
+    snapshots_name_dataclass_methods_by_their_class("3.14", Snapshotting::Live(EVERY));
 }
 
 #[test]
 fn live_name_dataclass_methods_by_their_class_on_3_14t() {
-    snapshots_name_dataclass_methods_by_their_class("3.14t", PythonEngine::Live { every: EVERY });
+    snapshots_name_dataclass_methods_by_their_class("3.14t", Snapshotting::Live(EVERY));
 }
 
 #[test]
 fn live_name_dataclass_methods_by_their_class_on_3_15() {
-    snapshots_name_dataclass_methods_by_their_class("3.15", PythonEngine::Live { every: EVERY });
+    snapshots_name_dataclass_methods_by_their_class("3.15", Snapshotting::Live(EVERY));
 }
 
 fn spins(path: &[String], lines: &BTreeMap<String, u32>) -> bool {
@@ -286,7 +275,7 @@ fn gil_values(profile: &Profile) -> Vec<String> {
 
 fn record_until(
     interpreter: &str,
-    engine: PythonEngine,
+    engine: Snapshotting,
     ready: impl FnMut(&Profile) -> bool,
 ) -> Profile {
     record_until_with_args(interpreter, engine, "profiled.py", &[], ready)
@@ -294,7 +283,7 @@ fn record_until(
 
 fn record_until_with_args(
     interpreter: &str,
-    engine: PythonEngine,
+    engine: Snapshotting,
     fixture: &str,
     arguments: &[&str],
     ready: impl FnMut(&Profile) -> bool,
@@ -308,9 +297,8 @@ fn record_until_with_args(
         .stderr(Stdio::null());
 
     let options = RecordOptions {
-        python: Some(engine),
         debug_directories: python::debug_directory(interpreter).into_iter().collect(),
-        ..RecordOptions::default()
+        ..engine.options()
     };
 
     let recording = crate::support::released::record_released(
@@ -344,7 +332,7 @@ fn stopped_snapshots_find_each_python_thread_by_line_and_who_holds_the_gil(inter
             && gil_values(profile) == wanted
     };
 
-    let profile = record_until(interpreter, PythonEngine::Snapshot { every: EVERY }, ready);
+    let profile = record_until(interpreter, Snapshotting::Stopped(EVERY), ready);
     let (taken, paused, _) = profile.task_snapshots();
     assert!(taken > 0 && paused > 0, "{interpreter}: {taken} {paused}");
 
@@ -415,7 +403,7 @@ fn live_snapshots_read_each_python_thread_as_it_runs(interpreter: &str) {
         paths.keys().any(|path| spins(path, &lines)) && paths.keys().any(|path| naps(path, &lines))
     };
 
-    let profile = record_until(interpreter, PythonEngine::Live { every: EVERY }, ready);
+    let profile = record_until(interpreter, Snapshotting::Live(EVERY), ready);
     let (taken, paused, _) = profile.task_snapshots();
     let (live, _, _) = profile.live_snapshots();
     assert!(taken > 0, "{interpreter}");
@@ -479,7 +467,7 @@ fn live_snapshots_read_each_python_thread_as_it_runs_on_standalone_3_14() {
     live_snapshots_read_each_python_thread_as_it_runs("standalone-3.14");
 }
 
-fn arbitrary_kernel_names_preserve_python_profiles(interpreter: &str, engine: PythonEngine) {
+fn arbitrary_kernel_names_preserve_python_profiles(interpreter: &str, engine: Snapshotting) {
     let lines = lines();
     let ready = |profile: &Profile| {
         let paths = python_paths(profile);
@@ -509,7 +497,7 @@ fn arbitrary_kernel_names_preserve_python_profiles(interpreter: &str, engine: Py
             .collect::<Vec<_>>()
     );
 
-    if matches!(engine, PythonEngine::Snapshot { .. }) {
+    if matches!(engine, Snapshotting::Stopped(_)) {
         assert!(
             profile.task_snapshot_problems().is_empty(),
             "{interpreter}: {:?}",
@@ -524,15 +512,12 @@ fn arbitrary_kernel_names_preserve_python_profiles(interpreter: &str, engine: Py
 
 #[test]
 fn arbitrary_kernel_names_preserve_stopped_python_profiles_on_3_14() {
-    arbitrary_kernel_names_preserve_python_profiles(
-        "3.14",
-        PythonEngine::Snapshot { every: EVERY },
-    );
+    arbitrary_kernel_names_preserve_python_profiles("3.14", Snapshotting::Stopped(EVERY));
 }
 
 #[test]
 fn arbitrary_kernel_names_preserve_live_python_profiles_on_3_14() {
-    arbitrary_kernel_names_preserve_python_profiles("3.14", PythonEngine::Live { every: EVERY });
+    arbitrary_kernel_names_preserve_python_profiles("3.14", Snapshotting::Live(EVERY));
 }
 
 #[test]
@@ -919,7 +904,7 @@ fn the_bpf_engine_names_the_missing_requirement_and_starts_nothing() {
         .arg(&marker);
 
     let options = RecordOptions {
-        python: Some(PythonEngine::Bpf),
+        walk: Walk::Always,
         ..RecordOptions::default()
     };
 
@@ -937,12 +922,12 @@ fn the_bpf_engine_names_the_missing_requirement_and_starts_nothing() {
         }),
         "{why}"
     );
-    assert!(why.contains("--python snapshot"), "{why}");
+    assert!(why.contains("--snapshots 10ms"), "{why}");
     assert!(!marker.exists(), "the program started");
 }
 
 #[test]
-fn a_namespaced_bpf_recorder_refuses_unproven_kernel_keys() {
+fn a_namespaced_recorder_records_python_unnamed_and_says_why() {
     struct Reaped(std::process::Child);
     impl Drop for Reaped {
         fn drop(&mut self) {
@@ -967,7 +952,7 @@ fn a_namespaced_bpf_recorder_refuses_unproven_kernel_keys() {
                 "--mount-proc",
             ])
             .arg(env!("CARGO_BIN_EXE_microscope"))
-            .args(["record", "--python", "bpf", "--output"])
+            .args(["record", "--output"])
             .arg(scratch.path().join("capture.usprof"))
             .arg("--")
             .arg(python::interpreter("3.14"))
@@ -1002,10 +987,14 @@ fn a_namespaced_bpf_recorder_refuses_unproven_kernel_keys() {
         !error.trim_start().starts_with("unshare:"),
         "namespace test setup needs unprivileged user, PID and mount namespaces: {error}"
     );
-    assert!(!status.success(), "the mismatched engine started");
+    assert!(status.success(), "{error}");
+    assert!(
+        error.contains("Python and JavaScript functions are unnamed"),
+        "{error}"
+    );
     assert!(error.contains("initial PID namespace"), "{error}");
-    assert!(error.contains("--python snapshot"), "{error}");
-    assert!(!marker.exists(), "the target started");
+    assert!(error.contains("--snapshots 10ms"), "{error}");
+    assert!(marker.exists(), "the target never ran");
 }
 
 mod bpf {
@@ -1034,7 +1023,7 @@ mod bpf {
         release: usize,
         lines: impl FnMut(&Profile) -> usize,
     ) -> Profile {
-        held::recorded_until(held::bpf(), program, &["--python", "bpf"], release, lines).0
+        held::recorded_until(held::bpf(), program, &[], release, lines).0
     }
     fn recorded_when(program: &Command, mut ready: impl FnMut(&Profile) -> bool) -> Profile {
         recorded_until(program, 1, |window| usize::from(ready(window)))
@@ -1112,7 +1101,7 @@ mod bpf {
             let output = scratch.path().join(format!("{interpreter}.usprof"));
             let finished = Command::new(held::launcher())
                 .arg(env!("CARGO_BIN_EXE_microscope"))
-                .args(["record", "--python", "bpf", "--output"])
+                .args(["record", "--output"])
                 .arg(&output)
                 .arg("--")
                 .arg(python::interpreter(interpreter))

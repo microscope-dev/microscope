@@ -10,8 +10,8 @@ use microscope::capture_view::{
     AnswerOptions, CaptureView, ViewError, end_text, protocol as view_protocol,
 };
 use microscope::profiler::{
-    CodeLine, Cuts, LineCost, Preset, Profile, RecordOptions, SampleSource, SyscallEngine,
-    SyscallLevel, Watch, record_watched,
+    CodeLine, Cuts, LineCost, Preset, Profile, RecordOptions, SampleSource, Stopping, SyscallLevel,
+    Watch, record_watched,
 };
 use microscope::syscalls::ProcessEnd;
 use serde_json::{Value, json};
@@ -19,7 +19,7 @@ use tokio::sync::{oneshot, watch};
 
 use super::protocol::{
     self, ErrorKind, ProfileInfo, ProfileList, RecordPreset, RecordProfile, RecordStarted, Request,
-    Role, SyscallsEngine, SyscallsLevel,
+    Role, SyscallsLevel,
 };
 
 use super::session::Failure;
@@ -506,8 +506,14 @@ fn sampling(spec: &RecordProfile) -> Result<RecordOptions, Failure> {
         options.syscalls.asked = true;
     }
 
-    if spec.syscall_engine == Some(SyscallsEngine::Ptrace) {
-        options.syscalls.engine = SyscallEngine::Ptrace;
+    if spec.allow_stopping {
+        if spec.preset == RecordPreset::Production {
+            return Err(Failure::new(
+                ErrorKind::Invalid,
+                "the production preset never stops the program",
+            ));
+        }
+        options.stopping = Stopping::Allowed;
     }
 
     options

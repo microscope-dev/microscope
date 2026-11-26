@@ -126,7 +126,7 @@ mod wait_hub;
 mod watchpoints;
 mod writes;
 
-pub use follow::{Capacity, GroupNotice, Joined, Started};
+pub use follow::{Capacity, GroupNotice, Joined, Started, program_runtime};
 
 #[cfg(feature = "tools")]
 pub fn trace_on_exec(command: &mut std::process::Command) {

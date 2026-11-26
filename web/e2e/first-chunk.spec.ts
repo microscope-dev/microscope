@@ -13,6 +13,7 @@ import { type Services, skippedServices, skipServices, startServices } from "./s
 const hotCallsBinary = path.join(root, "build", "test-programs", "hot-calls");
 const nodeBinary = path.join(process.env.MICROSCOPE_NODE ?? "", "26", "node");
 const busyScript = path.join(root, "tests", "fixtures", "node", "busy.js");
+const bpfLauncher = "/run/wrappers/bin/microscope-bpf";
 
 const test = base.extend<{ services: Services }>({
   services: async ({ context }, provide, info) => {
@@ -64,10 +65,13 @@ function startAgent(
   processName: string,
   service: string,
   log: string[],
+  launcher?: string,
 ): ChildProcess {
+  const microscope = path.join(root, "target", "debug", "microscope");
+  const agent = ["agent", "run", "--config", "/dev/null"];
   const child = spawn(
-    path.join(root, "target", "debug", "microscope"),
-    ["agent", "run", "--config", "/dev/null"],
+    launcher ?? microscope,
+    launcher === undefined ? agent : [microscope, ...agent],
     {
       env: {
         ...process.env,
@@ -208,6 +212,39 @@ test("names a Node process's JIT-compiled JavaScript in the hosted flame graph",
   const running = startAgent(enroll, state, processName, "busy-node", agentLog);
   try {
     await expectHostedFrame(page, "JS:*'turbofanSpin");
+  } finally {
+    await stopChild(workload, "SIGKILL");
+    const agentCode = await stopChild(running, "SIGTERM");
+    await rm(state, { recursive: true, force: true });
+    if (info.status !== info.expectedStatus) {
+      await info.attach("agent.log", { body: agentLog.join("") });
+    }
+    expect(agentCode).toBe(0);
+  }
+});
+
+test("names an unflagged Node process's JavaScript in the hosted flame graph with BPF", async ({
+  page,
+  services,
+}, info) => {
+  test.skip(!existsSync(nodeBinary), `node is not at ${nodeBinary}`);
+  test.skip(!existsSync(bpfLauncher), `the BPF launcher is not at ${bpfLauncher}`);
+  test.setTimeout(60_000);
+  const enroll = await enrollKey(page, services);
+
+  const state = await mkdtemp(path.join(tmpdir(), "microscope-node-bpf-e2e-"));
+  const processName = `node-${randomBytes(4).toString("hex")}`;
+  const workloadBinary = path.join(state, processName);
+  await copyFile(nodeBinary, workloadBinary);
+  const agentLog: string[] = [];
+  const workload = spawn(
+    workloadBinary,
+    ["--allow-natives-syntax", "--sparkplug-filter=sparkplugSpin", busyScript, "--seconds", "60"],
+    { cwd: state, stdio: "ignore" },
+  );
+  const running = startAgent(enroll, state, processName, "busy-node", agentLog, bpfLauncher);
+  try {
+    await expectHostedFrame(page, "turbofanSpin");
   } finally {
     await stopChild(workload, "SIGKILL");
     const agentCode = await stopChild(running, "SIGTERM");

@@ -400,8 +400,6 @@ export type SyscallProcesses = { processes: Array<SyscallProcess>, };
 
 export type SyscallsLevel = "off" | "counts" | "calls" | "full";
 
-export type SyscallsEngine = "bpf" | "ptrace";
-
 export type SyscallInFlightQuery = { profile: string, revision?: number, };
 
 export type SyscallInFlight = { live: boolean, calls: Array<SyscallBlocked>, };
@@ -414,7 +412,7 @@ export type ProfileZoneAt = { thread: number, start: number, end: number, value:
 
 export type ProfileLabelValue = { value: string, total: number, count: number, };
 
-export type RecordProfile = { program: string, arguments: Array<string>, cwd?: string | null, environment: Array<[string, string]>, preset: RecordPreset, function?: string | null, window?: number | null, syscalls?: SyscallsLevel | null, syscallEngine?: SyscallsEngine | null, };
+export type RecordProfile = { program: string, arguments: Array<string>, cwd?: string | null, environment: Array<[string, string]>, preset: RecordPreset, function?: string | null, window?: number | null, syscalls?: SyscallsLevel | null, allowStopping: boolean, };
 
 export type RecordPreset = "production" | "development" | "maximum";
 

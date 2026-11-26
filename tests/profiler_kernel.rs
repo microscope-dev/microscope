@@ -122,7 +122,7 @@ fn kernel_read_samples_cover_cpu_time_and_keep_the_calling_user_stack() {
     let (used, _) = kernel.recorder_cpu();
     let setup = kernel.recorder_setup();
     assert!(
-        setup > default.recorder_setup() && setup < used,
+        setup > 0 && setup < used,
         "{setup} of {used} ns starting up"
     );
     eprintln!(

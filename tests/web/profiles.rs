@@ -8,6 +8,7 @@ use microscope::profiler::{
 };
 use serde_json::{Value, json};
 
+use crate::support::profile::Snapshotting;
 use crate::support::{Scenario, ScratchDir};
 use crate::web::{Client, Web};
 
@@ -447,10 +448,7 @@ fn record_waits(scratch: &ScratchDir) -> std::path::PathBuf {
     let (reader, mut writer) = std::io::pipe().expect("pipe");
     let mut command = Command::new(Scenario::fixture("profile-go-waits"));
     command.stdin(reader).stdout(Stdio::null());
-    let options = RecordOptions {
-        task_snapshots: Some(Duration::from_millis(50)),
-        ..RecordOptions::default()
-    };
+    let options = Snapshotting::Stopped(Duration::from_millis(50)).options();
 
     let (stop, mut released, mut labeled) = (AtomicBool::new(false), false, None);
 

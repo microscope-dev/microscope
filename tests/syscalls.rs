@@ -44,7 +44,7 @@ fn record(
     program_arguments: &[&str],
 ) -> (Option<i32>, String) {
     let output = microscope()
-        .args(["record", "--syscall-engine", "ptrace", "-o", "trace.usprof"])
+        .args(["record", "--allow-stopping", "-o", "trace.usprof"])
         .args(arguments)
         .arg("--")
         .arg(program)
@@ -737,13 +737,12 @@ fn a_ptrace_recording_detaches_and_leaves_the_process_running() {
         microscope()
             .args([
                 "record",
-                "--syscall-engine",
-                "ptrace",
+                "--allow-stopping",
                 "--syscalls",
                 "calls",
                 "-o",
                 "trace.usprof",
-                "--pid",
+                "--attach",
                 &pid,
             ])
             .current_dir(directory.path()),
@@ -769,14 +768,7 @@ fn a_ptrace_recording_holds_samples_and_calls_on_one_clock() {
     let directory = ScratchDir::new("syscalls-record-ptrace");
     let file = directory.path().join("ptrace.usprof");
     let recorded = Command::new(env!("CARGO_BIN_EXE_microscope"))
-        .args([
-            "record",
-            "--syscall-engine",
-            "ptrace",
-            "--syscalls",
-            "calls",
-            "-o",
-        ])
+        .args(["record", "--allow-stopping", "--syscalls", "calls", "-o"])
         .arg(&file)
         .arg("--")
         .arg(Scenario::fixture("syscall-load"))
@@ -860,7 +852,7 @@ fn a_saved_window_leaves_its_calls_to_the_next() {
     let (profile, stderr) = support::held::recorded_until(
         support::held::unprivileged(),
         &program,
-        &["--syscall-engine", "ptrace"],
+        &["--allow-stopping"],
         1,
         |window| {
             let shown = usize::from(!kept(window, ready).is_empty());
@@ -885,11 +877,10 @@ fn a_recordings_calls_print_live_and_in_its_report_alike() {
         directory.path(),
         &[
             "record",
-            "--syscall-engine",
-            "ptrace",
+            "--allow-stopping",
             "--syscalls",
             "calls",
-            "--print",
+            "--print-syscalls",
             "-o",
             "calls.usprof",
             "--",
@@ -976,8 +967,15 @@ fn printing_calls_needs_calls_to_print() {
     );
     for (arguments, wanted) in [
         (
-            &["record", "--syscalls", "counts", "--print", "--", "true"][..],
-            "--print shows each call, which --syscalls counts does not keep",
+            &[
+                "record",
+                "--syscalls",
+                "counts",
+                "--print-syscalls",
+                "--",
+                "true",
+            ][..],
+            "--print-syscalls shows each call, which --syscalls counts does not keep",
         ),
         (
             &["report", "off.usprof", "--syscalls"],
@@ -1080,12 +1078,7 @@ mod bpf {
         let scratch = ScratchDir::new("syscalls-engines");
         let directory = scratch.path();
         let program = [mode];
-        let ptrace_code = recorded(
-            directory,
-            &["--syscall-engine", "ptrace"],
-            &fixture(),
-            &program,
-        );
+        let ptrace_code = recorded(directory, &["--allow-stopping"], &fixture(), &program);
         let ptrace = log(directory, &[filter]);
         let bpf_code = recorded(directory, &[], &fixture(), &program);
         assert_eq!(ptrace_code, bpf_code, "exit codes differ");
@@ -1164,12 +1157,7 @@ mod bpf {
             .map(|(call, stats)| (call.display_name().into_owned(), stats.calls))
             .collect::<Vec<_>>();
         let ptrace = below(&scratch, "ptrace");
-        recorded(
-            &ptrace,
-            &["--syscall-engine", "ptrace"],
-            &fixture(),
-            &["files"],
-        );
+        recorded(&ptrace, &["--allow-stopping"], &fixture(), &["files"]);
         let traced = read(&ptrace)
             .syscalls()
             .stats()
@@ -1716,7 +1704,7 @@ mod bpf {
         let ptrace = below(&scratch, "ptrace");
         let ptrace_code = recorded(
             &ptrace,
-            &[&["--syscall-engine", "ptrace"][..], &filter].concat(),
+            &[&["--allow-stopping"][..], &filter].concat(),
             &fixture(),
             &["family"],
         );
@@ -2105,7 +2093,7 @@ mod bpf {
                 "calls",
                 "-o",
                 "attached.usprof",
-                "--pid",
+                "--attach",
             ])
             .arg(program.id().to_string())
             .current_dir(directory.path())
@@ -2406,7 +2394,7 @@ mod bpf {
                 stacks(&read(&directory), &names)
             };
 
-            let whole = by("ptrace", &["--syscall-engine", "ptrace"]);
+            let whole = by("ptrace", &["--allow-stopping"]);
             assert!(
                 whole
                     .values()
@@ -2546,12 +2534,7 @@ mod bpf {
             let scratch = ScratchDir::new("syscalls-counts");
             let ptrace = below(&scratch, "ptrace");
             let bpf = below(&scratch, "bpf");
-            let ptrace_code = recorded(
-                &ptrace,
-                &["--syscall-engine", "ptrace"],
-                &fixture(),
-                &[mode],
-            );
+            let ptrace_code = recorded(&ptrace, &["--allow-stopping"], &fixture(), &[mode]);
             let bpf_code = recorded(&bpf, &["--syscalls", "counts"], &fixture(), &[mode]);
             assert_eq!(bpf_code, ptrace_code);
             assert_eq!(read(&bpf).setting("syscalls"), Some("counts"));
@@ -2865,7 +2848,7 @@ mod bpf {
         let pid = target.process_id().get().to_string();
         let mut running = Running::spawn(
             privileged()
-                .args(["record", "-o", "trace.usprof", "--pid", &pid])
+                .args(["record", "-o", "trace.usprof", "--attach", &pid])
                 .current_dir(directory.path()),
         );
         running.line(|line| line.contains(&format!("recording process {pid}")));
@@ -3084,7 +3067,7 @@ mod bpf {
             let pid = target.process_id().get().to_string();
             let mut running = Running::spawn(
                 privileged()
-                    .args(["record", "-o", "trace.usprof", "--pid", &pid])
+                    .args(["record", "-o", "trace.usprof", "--attach", &pid])
                     .args(arguments)
                     .current_dir(directory.path()),
             );
