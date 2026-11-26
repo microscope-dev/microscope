@@ -73,6 +73,7 @@ function startAgent(
         ...process.env,
         MICROSCOPE_ENROLL: enroll,
         MICROSCOPE_STATE_DIR: state,
+        MICROSCOPE_TEST_DIE_WITH_PARENT: String(process.pid),
         MICROSCOPE_CLOUD_METADATA: "false",
         MICROSCOPE_RECORD_PROCESS: processName,
         MICROSCOPE_RECORD_SERVICE: "hot-calls",

@@ -869,12 +869,33 @@ impl Agent {
 
 pub fn run(path: Option<&Path>) -> Result<ExitCode> {
     let signals = Signals::block()?;
+    #[cfg(debug_assertions)]
+    die_with_test_parent()?;
     let config = config::load(path, &config::Process)?;
     let mut agent = Agent::start(config)?;
     agent.save_status(None);
     agent.run(&signals, path);
     agent.stop();
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(debug_assertions)]
+fn die_with_test_parent() -> Result<()> {
+    const PARENT: &str = "MICROSCOPE_TEST_DIE_WITH_PARENT";
+    let Some(parent) = std::env::var(PARENT).ok() else {
+        return Ok(());
+    };
+    let parent: i32 = parent
+        .parse()
+        .with_context(|| format!("{PARENT} is not a process id: {parent}"))?;
+
+    rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::TERM))?;
+    let now = rustix::process::getppid().map(|pid| pid.as_raw_nonzero().get());
+    anyhow::ensure!(
+        now == Some(parent),
+        "the process {parent} that {PARENT} names is no longer this agent's parent"
+    );
+    Ok(())
 }
 
 #[must_use]

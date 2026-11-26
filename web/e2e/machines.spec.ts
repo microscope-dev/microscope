@@ -62,6 +62,7 @@ function agent(enroll: string, state: string): ChildProcess {
         ...process.env,
         MICROSCOPE_ENROLL: enroll,
         MICROSCOPE_STATE_DIR: state,
+        MICROSCOPE_TEST_DIE_WITH_PARENT: String(process.pid),
         MICROSCOPE_CLOUD_METADATA: "false",
         MICROSCOPE_TAGS: "cluster=lab-1,team=search",
       },

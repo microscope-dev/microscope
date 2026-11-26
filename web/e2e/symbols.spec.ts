@@ -70,6 +70,7 @@ function startAgent(
       ...process.env,
       MICROSCOPE_ENROLL: enroll,
       MICROSCOPE_STATE_DIR: state,
+      MICROSCOPE_TEST_DIE_WITH_PARENT: String(process.pid),
       MICROSCOPE_CLOUD_METADATA: "false",
       MICROSCOPE_RECORD_CHUNK_MS: "1500",
       MICROSCOPE_RECORD_POST_MS: "1500",
