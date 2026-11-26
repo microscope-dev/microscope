@@ -181,6 +181,7 @@ impl Image {
         };
 
         validate::contents(&image)?;
+        image.bytes.release();
         Ok(image)
     }
 

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fmt;
-use std::io::{Read as _, Write as _};
+use std::io::Write as _;
 use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -387,7 +387,7 @@ impl ImageCache {
 }
 
 fn read_entry(path: &Path) -> std::io::Result<(AlignedBytes, FileStamp)> {
-    let mut file = std::fs::File::open(path)?;
+    let file = std::fs::File::open(path)?;
     let metadata = file.metadata()?;
     let unusable = |why| std::io::Error::new(std::io::ErrorKind::InvalidData, why);
 
@@ -399,8 +399,7 @@ fn read_entry(path: &Path) -> std::io::Result<(AlignedBytes, FileStamp)> {
         .ok()
         .filter(|length| *length as u64 <= Limits::default().bytes)
         .ok_or_else(|| unusable("too large"))?;
-    let mut bytes = AlignedBytes::zeroed(length).ok_or_else(|| unusable("too large"))?;
-    file.read_exact(bytes.as_mut_bytes())?;
+    let bytes = AlignedBytes::map(&file, length)?;
 
     Ok((bytes, FileStamp::of(&metadata)))
 }

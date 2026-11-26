@@ -11,10 +11,49 @@ struct Block([u8; TABLE_ALIGNMENT]);
 
 const _: () = assert!(align_of::<Block>() == TABLE_ALIGNMENT);
 
-#[derive(Clone)]
 pub struct AlignedBytes {
-    blocks: Vec<Block>,
+    storage: Storage,
     length: usize,
+}
+
+enum Storage {
+    Heap(Vec<Block>),
+    Mapped(Mapping),
+}
+
+struct Mapping {
+    start: std::ptr::NonNull<std::ffi::c_void>,
+    length: std::num::NonZeroUsize,
+}
+
+// SAFETY: the mapping is read-only and owned by one `Mapping`, which unmaps it
+// once, when dropped, so sharing or sending it is sharing a `&[u8]`.
+#[allow(unsafe_code, reason = "a read-only mapping is shared like a slice")]
+unsafe impl Send for Mapping {}
+
+// SAFETY: as for `Send`; nothing writes through the mapping.
+#[allow(unsafe_code, reason = "a read-only mapping is shared like a slice")]
+unsafe impl Sync for Mapping {}
+
+impl Drop for Mapping {
+    #[allow(unsafe_code, reason = "unmapping memory is unsafe")]
+    fn drop(&mut self) {
+        // SAFETY: `start` and `length` are the mapping `AlignedBytes::map`
+        // made, and every slice of it borrows `self`, so none outlives this.
+        let _ = unsafe { nix::sys::mman::munmap(self.start, self.length.get()) };
+    }
+}
+
+impl Clone for AlignedBytes {
+    fn clone(&self) -> Self {
+        match &self.storage {
+            Storage::Heap(blocks) => Self {
+                storage: Storage::Heap(blocks.clone()),
+                length: self.length,
+            },
+            Storage::Mapped(_) => self.to_heap(),
+        }
+    }
 }
 
 impl std::fmt::Debug for AlignedBytes {
@@ -31,7 +70,7 @@ impl AlignedBytes {
     pub fn zeroed(length: usize) -> Option<Self> {
         let blocks = length.div_ceil(TABLE_ALIGNMENT);
         Some(Self {
-            blocks: Block::new_vec_zeroed(blocks).ok()?,
+            storage: Storage::Heap(Block::new_vec_zeroed(blocks).ok()?),
             length,
         })
     }
@@ -44,21 +83,101 @@ impl AlignedBytes {
         Some(aligned)
     }
 
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "`zeroed`, the only constructor, allocates blocks for at least `length` bytes"
-    )]
+    #[allow(unsafe_code, reason = "mapping a file is unsafe")]
+    pub fn map(file: &std::fs::File, length: usize) -> std::io::Result<Self> {
+        use nix::sys::mman::{MapFlags, ProtFlags};
+
+        let Some(nonzero) = std::num::NonZeroUsize::new(length) else {
+            return Self::zeroed(0).ok_or_else(|| std::io::ErrorKind::OutOfMemory.into());
+        };
+
+        // SAFETY: a private, read-only mapping of a file aliases no Rust
+        // memory. The image cache writes each entry to a new file and renames
+        // it into place, so the mapped file never changes while it is mapped.
+        let start = unsafe {
+            nix::sys::mman::mmap(
+                None,
+                nonzero,
+                ProtFlags::PROT_READ,
+                MapFlags::MAP_PRIVATE,
+                file,
+                0,
+            )
+        }
+        .map_err(std::io::Error::from)?;
+        assert_eq!(start.as_ptr().cast::<u8>().align_offset(TABLE_ALIGNMENT), 0);
+
+        Ok(Self {
+            storage: Storage::Mapped(Mapping {
+                start,
+                length: nonzero,
+            }),
+            length,
+        })
+    }
+
+    #[allow(unsafe_code, reason = "advising the kernel about memory is unsafe")]
+    pub fn release(&self) {
+        let Storage::Mapped(mapping) = &self.storage else {
+            return;
+        };
+
+        // SAFETY: the mapping is private and read-only, so it holds no
+        // changed page to lose; the kernel reads dropped pages back from the
+        // file the next time they are touched.
+        let _ = unsafe {
+            nix::sys::mman::madvise(
+                mapping.start,
+                mapping.length.get(),
+                nix::sys::mman::MmapAdvise::MADV_DONTNEED,
+            )
+        };
+    }
+
     #[must_use]
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.blocks.as_bytes()[..self.length]
+    pub const fn is_mapped(&self) -> bool {
+        matches!(self.storage, Storage::Mapped(_))
+    }
+
+    fn to_heap(&self) -> Self {
+        let mut blocks = Block::new_vec_zeroed(self.length.div_ceil(TABLE_ALIGNMENT))
+            .unwrap_or_else(|_| std::alloc::handle_alloc_error(std::alloc::Layout::new::<Block>()));
+        blocks.as_mut_bytes()[..self.length].copy_from_slice(self.as_bytes());
+        Self {
+            storage: Storage::Heap(blocks),
+            length: self.length,
+        }
     }
 
     #[expect(
         clippy::indexing_slicing,
-        reason = "`zeroed`, the only constructor, allocates blocks for at least `length` bytes"
+        reason = "heap storage holds blocks for at least `length` bytes"
+    )]
+    #[allow(unsafe_code, reason = "a mapping is read through a raw pointer")]
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        match &self.storage {
+            Storage::Heap(blocks) => &blocks.as_bytes()[..self.length],
+            // SAFETY: the mapping covers `length` readable bytes, lives as long
+            // as `self`, and nothing writes to it.
+            Storage::Mapped(mapping) => unsafe {
+                std::slice::from_raw_parts(mapping.start.as_ptr().cast::<u8>(), self.length)
+            },
+        }
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "heap storage holds blocks for at least `length` bytes"
     )]
     pub fn as_mut_bytes(&mut self) -> &mut [u8] {
-        &mut self.blocks.as_mut_bytes()[..self.length]
+        if self.is_mapped() {
+            *self = self.to_heap();
+        }
+        let Storage::Heap(blocks) = &mut self.storage else {
+            unreachable!("a mapping was just copied to the heap");
+        };
+        &mut blocks.as_mut_bytes()[..self.length]
     }
 }
 

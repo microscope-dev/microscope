@@ -22,7 +22,7 @@ foldhash = "0.2"
 gimli = "0.34"
 memchr = "2.8"
 microscope-probes = { path = "../../sdk/rust-probes" }
-nix = { version = "0.31", features = ["fs", "resource", "time"] }
+nix = { version = "0.31", features = ["fs", "mman", "resource", "time"] }
 object = { version = "0.39", default-features = false, features = ["read", "std"] }
 rayon = "1.11"
 regex = "1.13"
