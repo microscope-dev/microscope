@@ -222,14 +222,18 @@ dev_enroll_key := "mse_nvuwg4tponrw64dffvsgk5rnmvxhe33mnrwwk3tufvvwk6jb2nwhedoh"
 
 [doc("Enrolls an agent with the key services' `just up` seeds and runs it, with its state under target/.")]
 [script]
-agent-dev SERVER="http://127.0.0.1:3000":
+agent-dev SERVER="http://127.0.0.1:3000" LAUNCHER="/run/wrappers/bin/microscope-bpf":
     cargo build --quiet --profile test --bin microscope
     export MICROSCOPE_ENROLL="${1%%://*}://{{dev_enroll_key}}@${1#*://}"
     export MICROSCOPE_STATE_DIR="$PWD/target/agent-dev" MICROSCOPE_CLOUD_METADATA=false
     export MICROSCOPE_RECORD_PROCESS="${MICROSCOPE_RECORD_PROCESS:-microscope-services}"
     export MICROSCOPE_RECORD_SERVICE="${MICROSCOPE_RECORD_SERVICE:-microscope-services}"
     export MICROSCOPE_RECORD_PROJECT="${MICROSCOPE_RECORD_PROJECT:-services}"
-    exec ./target/debug/microscope agent run --config /dev/null
+    launcher=()
+    if [[ -x "$2" ]]; then
+        launcher=("$2")
+    fi
+    exec "${launcher[@]}" ./target/debug/microscope agent run --config /dev/null
 
 web-build: web-deps
     cd web && ./node_modules/.bin/vite build --logLevel warn
