@@ -345,10 +345,10 @@ pub fn prepare_debug_payload(binary: &RecordedBinary, expected_build_id: &str) -
         match strip_to_debug_elf(&raw) {
             Ok(stripped) => stripped,
             Err(error) => {
-                eprintln!(
-                    "microscope agent: refusing to upload unstripped binary {} ({expected_build_id}): {error}",
+                crate::agent::log(format_args!(
+                    "refusing to upload unstripped binary {} ({expected_build_id}): {error}",
                     resolved_path.display()
-                );
+                ));
                 return PrepareOutcome::PermanentSkip;
             }
         }
@@ -373,9 +373,9 @@ pub fn prepare_debug_payload(binary: &RecordedBinary, expected_build_id: &str) -
         match strip_to_debug_elf(&found.data) {
             Ok(stripped) => stripped,
             Err(error) => {
-                eprintln!(
-                    "microscope agent: refusing to upload unstripped debug file for {expected_build_id}: {error}"
-                );
+                crate::agent::log(format_args!(
+                    "refusing to upload unstripped debug file for {expected_build_id}: {error}"
+                ));
                 return PrepareOutcome::PermanentSkip;
             }
         }
@@ -451,9 +451,9 @@ pub fn upload_compressed_symbol(
             SymbolPartReply::Unauthorized => return UploadOutcome::Unauthorized,
             SymbolPartReply::Refused { status, message } => {
                 if status == 400 || status == 413 || status == 422 {
-                    eprintln!(
-                        "microscope agent: server rejected symbol {build_id} ({status}): {message}"
-                    );
+                    crate::agent::log(format_args!(
+                        "server rejected symbol {build_id} ({status}): {message}"
+                    ));
                     return UploadOutcome::Done;
                 }
                 return UploadOutcome::RetryLater;

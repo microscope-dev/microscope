@@ -506,16 +506,16 @@ pub fn enqueue_multi_project_cut(
 
         match push_result {
             Some(Ok(0)) => {
-                eprintln!(
-                    "microscope agent: dropped oversized chunk {number} exceeding post limit"
-                );
+                crate::agent::log(format_args!(
+                    "dropped oversized chunk {number} exceeding post limit"
+                ));
                 any_failed = true;
             }
             Some(Ok(_)) => {
                 last_pushed = Some(number);
             }
             Some(Err(error)) => {
-                eprintln!("microscope agent: cannot spool chunk {number}: {error}");
+                crate::agent::log(format_args!("cannot spool chunk {number}: {error}"));
                 any_failed = true;
             }
             None => {

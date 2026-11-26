@@ -363,7 +363,7 @@ impl Pipeline {
             .filter(|&id| id > 0);
         let server = guard.server.clone();
         if let Err(error) = guard.spool.bind_owner(&server, parsed, false) {
-            eprintln!("microscope agent: cannot update spool owner: {error}");
+            crate::agent::log(format_args!("cannot update spool owner: {error}"));
             guard.agent_id = None;
             guard.token = None;
             drop(guard);
@@ -460,9 +460,9 @@ fn recorder_loop(
     let mut shared_bpf = match SharedBpfEngine::available() {
         Ok(engine) => Some(engine),
         Err(error) => {
-            eprintln!(
-                "microscope agent: syscall BPF unavailable ({error}); recording samples only"
-            );
+            crate::agent::log(format_args!(
+                "syscall BPF unavailable ({error}); recording samples only"
+            ));
             None
         }
     };
@@ -513,10 +513,10 @@ fn recorder_loop(
                     match policy::try_build_sanitizers(local_sanitize, pol.sanitizer.as_ref()) {
                         Ok(pair) => Some(pair),
                         Err(error) => {
-                            eprintln!(
-                                "microscope agent: rejecting remote sanitizer policy v{} ({error}); keeping previous sanitizer",
+                            crate::agent::log(format_args!(
+                                "rejecting remote sanitizer policy v{} ({error}); keeping previous sanitizer",
                                 pol.sanitizer_version
-                            );
+                            ));
                             None
                         }
                     }
@@ -623,10 +623,10 @@ fn recorder_loop(
         }
         let max_groups = max_concurrent_groups(limits);
         if max_groups == 0 {
-            eprintln!(
-                "microscope agent: limits.memory_mib ({:?}) is too small for minimum perf rings on this host; skipping recording",
+            crate::agent::log(format_args!(
+                "limits.memory_mib ({:?}) is too small for minimum perf rings on this host; skipping recording",
                 limits.memory_mib
-            );
+            ));
             sleep_interruptible(stop, Duration::from_secs(5));
             continue;
         }
@@ -792,9 +792,9 @@ fn recorder_loop(
                         Err(error) => {
                             complete_failed_cut(shared, idx);
                             if !stop.load(Ordering::Relaxed) {
-                                eprintln!(
-                                    "microscope agent: recording pids {pids:?} failed: {error}"
-                                );
+                                crate::agent::log(format_args!(
+                                    "recording pids {pids:?} failed: {error}"
+                                ));
                             }
                             Err(error)
                         }
@@ -821,7 +821,9 @@ fn recorder_loop(
         cvar.notify_all();
 
         if bpf_failed {
-            eprintln!("microscope agent: syscall BPF failed to load; falling back to samples only");
+            crate::agent::log(format_args!(
+                "syscall BPF failed to load; falling back to samples only"
+            ));
             shared_bpf = None;
             continue;
         }
@@ -1030,7 +1032,7 @@ fn poster_loop(
                     Ok(Some(batch)) => batch,
                     Ok(None) => continue,
                     Err(error) => {
-                        eprintln!("microscope agent: cannot read spool batch: {error}");
+                        crate::agent::log(format_args!("cannot read spool batch: {error}"));
                         machine.on(
                             PosterOutcome::Retry { retry_after: None },
                             now(),
@@ -1110,7 +1112,7 @@ fn poster_loop(
                         retry_after,
                         message,
                     } => {
-                        eprintln!("microscope agent: ingest refused ({status}): {message}");
+                        crate::agent::log(format_args!("ingest refused ({status}): {message}"));
                         if status == 413
                             || (status == 400 && error.as_deref() == Some("invalid_payload"))
                         {
@@ -1138,7 +1140,7 @@ fn poster_loop(
                         PosterOutcome::Retry { retry_after }
                     }
                     IngestReply::Unreachable(error) => {
-                        eprintln!("microscope agent: ingest failed: {error}");
+                        crate::agent::log(format_args!("ingest failed: {error}"));
                         PosterOutcome::Retry { retry_after: None }
                     }
                 };

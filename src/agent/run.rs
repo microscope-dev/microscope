@@ -370,7 +370,7 @@ struct Agent {
 }
 
 fn log(message: &str) {
-    eprintln!("microscope agent: {message}");
+    super::log(format_args!("{message}"));
 }
 
 fn jitter() -> f64 {
@@ -962,6 +962,11 @@ pub fn describe(status: &Status, alive: bool, now: i64) -> String {
     })
 }
 
+#[expect(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    reason = "`microscope agent status` answers on the terminal that ran it"
+)]
 pub fn status(path: Option<&Path>, json: bool) -> Result<ExitCode> {
     let dir: PathBuf = config::state_dir(path, &config::Process)?;
     let file = dir.join("status.json");

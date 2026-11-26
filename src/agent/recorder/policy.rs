@@ -89,9 +89,9 @@ pub fn build_sanitizers(
     match try_build_sanitizers(local, remote) {
         Ok(pair) => pair,
         Err(error) => {
-            eprintln!(
-                "microscope agent: invalid remote sanitizer policy ({error}); keeping local sanitizer only"
-            );
+            crate::agent::log(format_args!(
+                "invalid remote sanitizer policy ({error}); keeping local sanitizer only"
+            ));
             try_build_sanitizers(local, None).unwrap_or_else(|_| {
                 (
                     Arc::new(Sanitizer::new(

@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), deny(clippy::print_stderr, clippy::print_stdout))]
+
 use std::{path::PathBuf, process::ExitCode};
 
 pub mod client;
@@ -59,7 +61,16 @@ pub fn main(args: &AgentArgs) -> ExitCode {
         AgentCommand::Status { config, json } => run::status(config.as_deref(), *json),
     };
     result.unwrap_or_else(|error| {
-        eprintln!("error: {error:#}");
+        write_stderr(format_args!("error: {error:#}"));
         ExitCode::from(2)
     })
+}
+
+pub(crate) fn log(message: std::fmt::Arguments<'_>) {
+    write_stderr(format_args!("microscope agent: {message}"));
+}
+
+fn write_stderr(line: std::fmt::Arguments<'_>) {
+    use std::io::Write as _;
+    let _ = writeln!(std::io::stderr().lock(), "{line}");
 }
