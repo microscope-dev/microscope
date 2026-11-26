@@ -655,6 +655,9 @@ pub enum DecodeError {
 
     #[error("a capture of argument {0} is malformed")]
     Capture(u8),
+
+    #[error("a call record names call number {0:#x}")]
+    Number(u32),
 }
 
 fn read<T: FromBytes + KnownLayout + Immutable>(bytes: &[u8]) -> Result<T, DecodeError> {
@@ -816,6 +819,9 @@ fn stack_record(header: RawRecord, bytes: &[u8]) -> Result<Record, DecodeError> 
 fn call_record(header: RawRecord, bytes: &[u8]) -> Result<Record, DecodeError> {
     let raw: RawCallRecord = read(bytes)?;
     let abi = abi_of(raw.abi).ok_or(DecodeError::Abi(raw.abi))?;
+    if raw.nr >= 1024 {
+        return Err(DecodeError::Number(raw.nr));
+    }
     let mut captured = Vec::with_capacity(usize::from(raw.captures));
     let mut at = size_of::<RawCallRecord>();
     for _ in 0..raw.captures {
@@ -3565,6 +3571,11 @@ mod tests {
         bytes[header + 4] = 200;
         assert_eq!(decode(&bytes), Err(DecodeError::Capture(1)));
         assert!(decode(&bytes[..10]).is_err());
+
+        let mut bytes = call_bytes(RECORD_CALL, 0, &[]);
+        bytes[std::mem::offset_of!(RawCallRecord, nr)..][..4]
+            .copy_from_slice(&0xbfff_ffff_u32.to_ne_bytes());
+        assert_eq!(decode(&bytes), Err(DecodeError::Number(0xbfff_ffff)));
     }
 
     #[test]

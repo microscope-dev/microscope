@@ -1540,6 +1540,8 @@ static __always_inline int on_exit(void *ctx, struct pt_regs *regs, s64 ret, int
 
 		if ((settings->flags & CONFIG_SKIP_UNSEEN) && !known)
 			return 0;
+		if (id == (u64)-1)
+			return 0;
 		entry.flags = CALL_ENTRY_UNSEEN;
 		entry.abi = abi_of(id, &entry.flags);
 		entry.nr = entry.abi == ABI_X32 ? (id & ~X32_SYSCALL_BIT) : id;
