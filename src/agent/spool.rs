@@ -21,6 +21,8 @@ const WALL_CLOCK_MIN_NS: i64 = 1_000_000_000_000_000_000;
 
 pub const MAX_POST_BYTES: usize = 8 * 1024 * 1024;
 
+const SCANNED_PER_POSTED: usize = 4;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SpoolStats {
     pub queued_chunks: usize,
@@ -34,8 +36,20 @@ pub struct Batch {
     pub first_chunk: u64,
     pub last_chunk: u64,
     pub chunk_count: usize,
+    pub numbers: Vec<u64>,
     pub project: Option<String>,
     pub post: EncodedPost,
+}
+
+impl Batch {
+    #[must_use]
+    pub fn acked_by(&self, last_chunk: u64) -> Vec<u64> {
+        self.numbers
+            .iter()
+            .copied()
+            .filter(|number| *number <= last_chunk)
+            .collect()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -177,6 +191,12 @@ impl Spool {
                 agent_id
             }
         };
+
+        if purged {
+            crate::agent::log(format_args!(
+                "discarded spooled chunks another server or agent recorded"
+            ));
+        }
 
         let next_owner = SpoolOwner {
             server: server.to_owned(),
@@ -360,31 +380,33 @@ impl Spool {
         File::open(&self.dir)?.sync_all()
     }
 
-    pub fn ack(&mut self, owner_gen: u64, last_chunk: u64) -> io::Result<usize> {
+    pub fn ack(&mut self, owner_gen: u64, numbers: &[u64]) -> io::Result<usize> {
         if owner_gen != self.owner_gen {
             return Ok(0);
         }
-        let remove: Vec<u64> = self
-            .entries
-            .range(..=last_chunk)
-            .map(|(&number, _)| number)
-            .collect();
-        if remove.is_empty() {
-            return Ok(0);
-        }
 
-        for &number in &remove {
-            if let Some(size) = self.entries.remove(&number) {
-                self.total_bytes = self.total_bytes.saturating_sub(size);
-            }
-            let path = self.dir.join(chunk_file_name(number));
+        let mut removed = 0;
+        for number in numbers {
+            let Some(size) = self.entries.remove(number) else {
+                continue;
+            };
+            self.total_bytes = self.total_bytes.saturating_sub(size);
+            removed += 1;
+            let path = self.dir.join(chunk_file_name(*number));
             match fs::remove_file(&path) {
                 Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
                 _ => {}
             }
         }
-        File::open(&self.dir)?.sync_all()?;
-        Ok(remove.len())
+        if removed > 0 {
+            File::open(&self.dir)?.sync_all()?;
+        }
+        Ok(removed)
+    }
+
+    #[must_use]
+    pub fn holds_through(&self, number: u64) -> bool {
+        self.entries.range(..=number).next().is_some()
     }
 
     fn evict(&mut self) -> io::Result<()> {
@@ -432,14 +454,17 @@ pub fn build_batch_from_snapshot<'a>(
     let mut estimated = 0_usize;
     let mut batch_project: Option<String> = None;
     let mut has_project = false;
+    let mut read = 0_usize;
 
     for &(number, size) in &snapshot.candidates {
         let size_usize = usize::try_from(size).unwrap_or(usize::MAX);
         if chunks.len() >= chunk_cap
             || (!chunks.is_empty() && estimated.saturating_add(size_usize) > limit)
+            || read > limit.saturating_mul(SCANNED_PER_POSTED)
         {
             break;
         }
+        read = read.saturating_add(size_usize);
         let path = snapshot.dir.join(chunk_file_name(number));
         let raw = match fs::read(&path) {
             Ok(raw) => raw,
@@ -475,8 +500,8 @@ pub fn build_batch_from_snapshot<'a>(
         let project = normalize_project_dimension(&mut data);
         normalize_legacy_clock(&mut data);
         if has_project {
-            if batch_project.is_none() || batch_project != project {
-                break;
+            if batch_project != project {
+                continue;
             }
         } else {
             batch_project = project;
@@ -513,6 +538,7 @@ pub fn build_batch_from_snapshot<'a>(
                     first_chunk,
                     last_chunk,
                     chunk_count: chunks.len(),
+                    numbers,
                     project: batch_project,
                     post,
                 }),
@@ -535,6 +561,7 @@ pub fn build_batch_from_snapshot<'a>(
                 first_chunk,
                 last_chunk,
                 chunk_count: chunks.len(),
+                numbers,
                 project: batch_project,
                 post,
             }),
@@ -756,9 +783,9 @@ mod tests {
             (1, 2, 2)
         );
 
-        assert_eq!(reopened.ack(batch.owner_gen, 1).expect("ack 1"), 1);
+        assert_eq!(reopened.ack(batch.owner_gen, &[1]).expect("ack 1"), 1);
         assert_eq!(reopened.stats().queued_chunks, 1);
-        assert_eq!(reopened.ack(batch.owner_gen, 2).expect("ack 2"), 1);
+        assert_eq!(reopened.ack(batch.owner_gen, &[2]).expect("ack 2"), 1);
         assert!(reopened.is_empty());
     }
 
@@ -869,7 +896,7 @@ mod tests {
             (first.first_chunk, first.last_chunk, first.chunk_count),
             (1, 2, 2)
         );
-        spool.ack(first.owner_gen, first.last_chunk).expect("ack 1");
+        spool.ack(first.owner_gen, &first.numbers).expect("ack 1");
 
         let second = spool
             .peek_batch(MAX_POST_BYTES, 7, 500, &policy)
@@ -908,7 +935,7 @@ mod tests {
             .expect("push 8");
         assert_eq!(
             spool
-                .ack(old_batch.owner_gen, old_batch.last_chunk)
+                .ack(old_batch.owner_gen, &old_batch.numbers)
                 .expect("stale ack"),
             0
         );

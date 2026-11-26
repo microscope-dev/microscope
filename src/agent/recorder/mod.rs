@@ -1018,7 +1018,7 @@ fn poster_loop(
                                         machine.clear_flush(fid);
                                         None
                                     } else {
-                                        (b.first_chunk <= req && req <= b.last_chunk).then_some(fid)
+                                        b.numbers.contains(&req).then_some(fid)
                                     }
                                 },
                             )
@@ -1052,7 +1052,9 @@ fn poster_loop(
                     } => {
                         max_batch_chunks = usize::MAX;
                         let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-                        let _ = guard.spool.ack(batch.owner_gen, last_chunk);
+                        let _ = guard
+                            .spool
+                            .ack(batch.owner_gen, &batch.acked_by(last_chunk));
                         if symbols_upload_enabled
                             && !missing_symbols.is_empty()
                             && guard.symbol_queue.enqueue_missing(
@@ -1066,9 +1068,9 @@ fn poster_loop(
                         if let Some(fid) = post_flush_id
                             && guard.flush_requested.as_ref().is_some_and(|pf| {
                                 pf.id == fid
-                                    && pf
-                                        .required_chunk
-                                        .map_or(guard.spool.is_empty(), |req| last_chunk >= req)
+                                    && pf.required_chunk.map_or(guard.spool.is_empty(), |req| {
+                                        !guard.spool.holds_through(req)
+                                    })
                             })
                         {
                             guard.flush_completed = guard.flush_completed.max(fid);
@@ -1081,13 +1083,15 @@ fn poster_loop(
                     IngestReply::Overlap { last_chunk } => {
                         max_batch_chunks = usize::MAX;
                         let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
-                        let _ = guard.spool.ack(batch.owner_gen, last_chunk);
+                        let _ = guard
+                            .spool
+                            .ack(batch.owner_gen, &batch.acked_by(last_chunk));
                         if let Some(fid) = post_flush_id
                             && guard.flush_requested.as_ref().is_some_and(|pf| {
                                 pf.id == fid
-                                    && pf
-                                        .required_chunk
-                                        .map_or(guard.spool.is_empty(), |req| last_chunk >= req)
+                                    && pf.required_chunk.map_or(guard.spool.is_empty(), |req| {
+                                        !guard.spool.holds_through(req)
+                                    })
                             })
                         {
                             guard.flush_completed = guard.flush_completed.max(fid);

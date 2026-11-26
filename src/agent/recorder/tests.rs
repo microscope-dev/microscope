@@ -301,9 +301,7 @@ fn three_programs_records_two_into_two_projects_and_never_mentions_third() {
         .expect("batch 1");
     assert_eq!(batch1.first_chunk, 1);
     assert_eq!(batch1.last_chunk, 1);
-    spool
-        .ack(batch1.owner_gen, batch1.last_chunk)
-        .expect("ack 1");
+    spool.ack(batch1.owner_gen, &batch1.numbers).expect("ack 1");
 
     let batch2 = spool
         .peek_batch(MAX_POST_BYTES, 7, now_ns, &policy)
@@ -311,9 +309,7 @@ fn three_programs_records_two_into_two_projects_and_never_mentions_third() {
         .expect("batch 2");
     assert_eq!(batch2.first_chunk, 2);
     assert_eq!(batch2.last_chunk, 2);
-    spool
-        .ack(batch2.owner_gen, batch2.last_chunk)
-        .expect("ack 2");
+    spool.ack(batch2.owner_gen, &batch2.numbers).expect("ack 2");
 
     for (post, wanted_proj, forbidden_proj) in [
         (batch1.post.as_bytes(), "alpha", "beta"),

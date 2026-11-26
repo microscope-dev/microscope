@@ -1,4 +1,7 @@
-use std::{collections::BTreeSet, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::Duration,
+};
 
 use microscope_data::{
     capture::Capture,
@@ -44,9 +47,11 @@ impl Rng {
     }
 }
 
+const PROJECTS: [&str; 3] = ["sim-a", "sim-b", "sim-c"];
+
 struct MockServer {
-    last_chunk: u64,
-    delivered: Vec<u64>,
+    last_chunk: BTreeMap<String, u64>,
+    delivered: Vec<(String, u64)>,
     delivered_set: BTreeSet<u64>,
     token_gen: u64,
 }
@@ -54,7 +59,7 @@ struct MockServer {
 impl MockServer {
     const fn new() -> Self {
         Self {
-            last_chunk: 0,
+            last_chunk: BTreeMap::new(),
             delivered: Vec::new(),
             delivered_set: BTreeSet::new(),
             token_gen: 1,
@@ -74,9 +79,29 @@ impl MockServer {
             return PosterOutcome::Unauthorized;
         }
 
+        let outcome = self.accept(bytes);
+        if rng.pct(15) {
+            return PosterOutcome::Retry { retry_after: None };
+        }
+        outcome
+    }
+
+    fn accept(&mut self, bytes: &[u8]) -> PosterOutcome {
         let reader = ObjectReader::open(bytes).expect("valid USCOPEOB post");
         let sections = reader.part_sections(0, None).expect("sections");
         let decoded = decode_tables(&sections).expect("decode post");
+        let projects: BTreeSet<&str> = decoded
+            .dimensions
+            .iter()
+            .filter(|dim| dim.name == "microscope.project")
+            .map(|dim| dim.value.as_str())
+            .collect();
+        assert_eq!(
+            projects.len(),
+            1,
+            "a post carries one project: {projects:?}"
+        );
+        let project = projects.first().copied().expect("one project").to_owned();
         let min_chunk = decoded
             .chunks
             .iter()
@@ -90,15 +115,12 @@ impl MockServer {
             .max()
             .expect("non-empty batch");
 
-        if max_chunk <= self.last_chunk {
-            return PosterOutcome::Accepted {
-                last_chunk: self.last_chunk,
-            };
+        let last = self.last_chunk.get(&project).copied().unwrap_or(0);
+        if max_chunk <= last {
+            return PosterOutcome::Accepted { last_chunk: last };
         }
-        if min_chunk <= self.last_chunk {
-            return PosterOutcome::Overlap {
-                last_chunk: self.last_chunk,
-            };
+        if min_chunk <= last {
+            return PosterOutcome::Overlap { last_chunk: last };
         }
 
         for row in &decoded.chunks {
@@ -107,21 +129,28 @@ impl MockServer {
                 "duplicate chunk {} delivered",
                 row.number
             );
-            self.delivered.push(row.number);
+            self.delivered.push((project.clone(), row.number));
         }
-        self.last_chunk = max_chunk;
-
-        if rng.pct(15) {
-            return PosterOutcome::Retry { retry_after: None };
-        }
-
+        self.last_chunk.insert(project, max_chunk);
         PosterOutcome::Accepted {
-            last_chunk: self.last_chunk,
+            last_chunk: max_chunk,
         }
+    }
+
+    fn delivered_in_order(&self) -> bool {
+        let mut last: BTreeMap<&str, u64> = BTreeMap::new();
+        self.delivered.iter().all(|(project, number)| {
+            last.insert(project, *number)
+                .is_none_or(|before| before < *number)
+        })
     }
 }
 
-fn make_chunk(number: u64, sanitizer: &Sanitizer) -> microscope_data::sanitize::SanitizedChunk {
+fn make_chunk(
+    number: u64,
+    project: &str,
+    sanitizer: &Sanitizer,
+) -> microscope_data::sanitize::SanitizedChunk {
     let data = ChunkData {
         capture: Capture::default(),
         chunks: vec![ChunkRow {
@@ -144,7 +173,7 @@ fn make_chunk(number: u64, sanitizer: &Sanitizer) -> microscope_data::sanitize::
             DimensionRow {
                 process: microscope_data::capture::records::NONE,
                 name: "microscope.project".into(),
-                value: "sim-proj".into(),
+                value: project.into(),
             },
         ],
         sanitizer_counts: Vec::new(),
@@ -181,7 +210,16 @@ fn run_seed(seed: u64, max_spool_bytes: u64) {
             assert!(n > produced, "seed {seed}: non-monotonic chunk number {n}");
             produced = n;
             spool
-                .push(n, &make_chunk(n, &sanitizer), 42, 1_000_000_000)
+                .push(
+                    n,
+                    &make_chunk(
+                        n,
+                        PROJECTS[usize::try_from(rng.next_u64() % 3).expect("index")],
+                        &sanitizer,
+                    ),
+                    42,
+                    1_000_000_000,
+                )
                 .expect("push");
             total_dropped += spool.stats().dropped_chunks - before_drop;
             poster.chunk_queued(now, was_empty);
@@ -213,7 +251,9 @@ fn run_seed(seed: u64, max_spool_bytes: u64) {
                 match outcome {
                     PosterOutcome::Accepted { last_chunk }
                     | PosterOutcome::Overlap { last_chunk } => {
-                        let _ = spool.ack(batch.owner_gen, last_chunk).expect("ack");
+                        let _ = spool
+                            .ack(batch.owner_gen, &batch.acked_by(last_chunk))
+                            .expect("ack");
                     }
                     PosterOutcome::Unauthorized | PosterOutcome::Retry { .. } => {}
                 }
@@ -240,33 +280,13 @@ fn run_seed(seed: u64, max_spool_bytes: u64) {
                     .peek_batch(MAX_POST_BYTES, 42, 1_000_000_000, &sanitizer)
                     .expect("peek")
                     .expect("non-empty spool");
-                let reader = ObjectReader::open(batch.post.as_bytes()).expect("valid");
-                let sections = reader.part_sections(0, None).expect("sections");
-                let decoded = decode_tables(&sections).expect("decode");
-                let min_c = decoded.chunks.iter().map(|c| c.number).min().expect("min");
-                let max_c = decoded.chunks.iter().map(|c| c.number).max().expect("max");
-                let outcome = if max_c <= server.last_chunk {
-                    PosterOutcome::Accepted {
-                        last_chunk: server.last_chunk,
-                    }
-                } else if min_c <= server.last_chunk {
-                    PosterOutcome::Overlap {
-                        last_chunk: server.last_chunk,
-                    }
-                } else {
-                    for row in &decoded.chunks {
-                        assert!(server.delivered_set.insert(row.number));
-                        server.delivered.push(row.number);
-                    }
-                    server.last_chunk = max_c;
-                    PosterOutcome::Accepted {
-                        last_chunk: server.last_chunk,
-                    }
-                };
+                let outcome = server.accept(batch.post.as_bytes());
                 if let PosterOutcome::Accepted { last_chunk }
                 | PosterOutcome::Overlap { last_chunk } = outcome
                 {
-                    let _ = spool.ack(batch.owner_gen, last_chunk).expect("ack");
+                    let _ = spool
+                        .ack(batch.owner_gen, &batch.acked_by(last_chunk))
+                        .expect("ack");
                 }
                 poster.on(outcome, now, !spool.is_empty(), clean_rng.next_f64());
             }
@@ -275,8 +295,8 @@ fn run_seed(seed: u64, max_spool_bytes: u64) {
 
     assert!(spool.is_empty(), "seed {seed}: spool failed to drain");
     assert!(
-        server.delivered.windows(2).all(|w| w[0] < w[1]),
-        "seed {seed}: delivered chunks not strictly increasing: {:?}",
+        server.delivered_in_order(),
+        "seed {seed}: a project's chunks were not delivered in order: {:?}",
         server.delivered
     );
     if max_spool_bytes >= 10 * 1024 * 1024 {
@@ -292,6 +312,40 @@ fn run_seed(seed: u64, max_spool_bytes: u64) {
             "seed {seed}: lost chunks beyond evicted count"
         );
     }
+}
+
+#[test]
+fn interleaved_projects_drain_in_one_post_each() {
+    let scratch = Scratch::new();
+    let sanitizer = Sanitizer::new(&Builtin::DEFAULT, Vec::new(), HashKey::new(b"sim-key"));
+    let mut spool = Spool::open(&scratch.path().join("spool"), 64 * 1024 * 1024).expect("open");
+    let mut server = MockServer::new();
+    for index in 0..30 {
+        let n = spool.allocate_chunk().expect("alloc");
+        let project = PROJECTS[index % PROJECTS.len()];
+        spool
+            .push(n, &make_chunk(n, project, &sanitizer), 42, 1_000_000_000)
+            .expect("push");
+    }
+
+    let mut posts = 0;
+    while !spool.is_empty() && posts < 30 {
+        posts += 1;
+        let batch = spool
+            .peek_batch(MAX_POST_BYTES, 42, 1_000_000_000, &sanitizer)
+            .expect("peek")
+            .expect("batch");
+        let PosterOutcome::Accepted { last_chunk } = server.accept(batch.post.as_bytes()) else {
+            panic!("post {posts} was not accepted");
+        };
+        spool
+            .ack(batch.owner_gen, &batch.acked_by(last_chunk))
+            .expect("ack");
+    }
+
+    assert_eq!(posts, PROJECTS.len());
+    assert_eq!(server.delivered.len(), 30);
+    assert!(server.delivered_in_order());
 }
 
 #[test]
@@ -365,7 +419,7 @@ fn run_control_and_poster_seed(seed: u64) {
             let n = spool.allocate_chunk().expect("alloc");
             produced = n;
             spool
-                .push(n, &make_chunk(n, &sanitizer), 42, 1_000_000_000)
+                .push(n, &make_chunk(n, "sim-proj", &sanitizer), 42, 1_000_000_000)
                 .expect("push");
             poster.chunk_queued(now, was_empty);
         }
@@ -424,7 +478,12 @@ fn run_control_and_poster_seed(seed: u64) {
                                 let n = spool.allocate_chunk().expect("cut");
                                 produced = n;
                                 spool
-                                    .push(n, &make_chunk(n, &sanitizer), 42, 1_000_000_000)
+                                    .push(
+                                        n,
+                                        &make_chunk(n, "sim-proj", &sanitizer),
+                                        42,
+                                        1_000_000_000,
+                                    )
                                     .expect("push cut");
                                 poster.chunk_queued(now, true);
                             }
@@ -456,7 +515,9 @@ fn run_control_and_poster_seed(seed: u64) {
                 if let PosterOutcome::Accepted { last_chunk }
                 | PosterOutcome::Overlap { last_chunk } = outcome
                 {
-                    let _ = spool.ack(batch.owner_gen, last_chunk).expect("ack");
+                    let _ = spool
+                        .ack(batch.owner_gen, &batch.acked_by(last_chunk))
+                        .expect("ack");
                     if spool.is_empty()
                         && let Some(fid) = active_flush
                     {
@@ -495,33 +556,13 @@ fn run_control_and_poster_seed(seed: u64) {
                     .peek_batch(MAX_POST_BYTES, 42, 1_000_000_000, &sanitizer)
                     .expect("peek")
                     .expect("batch");
-                let reader = ObjectReader::open(batch.post.as_bytes()).expect("valid");
-                let sections = reader.part_sections(0, None).expect("sections");
-                let decoded = decode_tables(&sections).expect("decode");
-                let max_c = decoded.chunks.iter().map(|c| c.number).max().expect("max");
-                let min_c = decoded.chunks.iter().map(|c| c.number).min().expect("min");
-                let outcome = if max_c <= server.last_chunk {
-                    PosterOutcome::Accepted {
-                        last_chunk: server.last_chunk,
-                    }
-                } else if min_c <= server.last_chunk {
-                    PosterOutcome::Overlap {
-                        last_chunk: server.last_chunk,
-                    }
-                } else {
-                    for row in &decoded.chunks {
-                        assert!(server.delivered_set.insert(row.number));
-                        server.delivered.push(row.number);
-                    }
-                    server.last_chunk = max_c;
-                    PosterOutcome::Accepted {
-                        last_chunk: server.last_chunk,
-                    }
-                };
+                let outcome = server.accept(batch.post.as_bytes());
                 if let PosterOutcome::Accepted { last_chunk }
                 | PosterOutcome::Overlap { last_chunk } = outcome
                 {
-                    let _ = spool.ack(batch.owner_gen, last_chunk).expect("ack");
+                    let _ = spool
+                        .ack(batch.owner_gen, &batch.acked_by(last_chunk))
+                        .expect("ack");
                 }
                 poster.on(outcome, now, !spool.is_empty(), clean_rng.next_f64());
             }
