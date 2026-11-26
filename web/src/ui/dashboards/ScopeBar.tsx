@@ -520,7 +520,12 @@ export function ScopeBar() {
     return "";
   });
 
+  const versionLabel = (value: string) => dims()?.versions[value] ?? value;
+
   const filterDisplayValue = (dimension: string, value: string): string => {
+    if (dimension === "service.version") {
+      return versionLabel(value);
+    }
     if (dimension === "host.id") {
       const m = dims()?.machines.find((item) => String(item.id) === value);
       return m ? `${m.hostname} (#${value})` : `#${value}`;
@@ -628,7 +633,13 @@ export function ScopeBar() {
             onChange={(e) => setSingleScopeFilter("service.version", e.currentTarget.value || null)}
           >
             <option value="">version: all</option>
-            <For each={versions()}>{(v) => <option value={v}>{v}</option>}</For>
+            <For each={versions()}>
+              {(v) => (
+                <option value={v} title={v}>
+                  {versionLabel(v)}
+                </option>
+              )}
+            </For>
           </select>
 
           <select
@@ -645,7 +656,7 @@ export function ScopeBar() {
           <For each={scope().filters}>
             {(filter) => (
               <span class="scope-chip" data-testid="scope-filter-chip">
-                <span>
+                <span title={filter.value}>
                   {formatDimensionLabel(filter.dimension)}=
                   {filterDisplayValue(filter.dimension, filter.value)}
                 </span>

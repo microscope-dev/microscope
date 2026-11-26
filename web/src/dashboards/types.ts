@@ -244,6 +244,7 @@ export interface DimensionsResponse {
   machines: ScopeMachine[];
   indexed: Record<string, string[]>;
   adhoc: Record<string, string[]>;
+  versions: Record<string, string>;
   flush?: FlushReport;
 }
 

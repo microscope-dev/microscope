@@ -166,6 +166,9 @@ test("records a live process with the real agent and renders its hot function in
   const running = startAgent(enroll, state, processName, "hot-calls", agentLog);
   try {
     await expectHostedFrame(page, "hot_function");
+    const version = page.getByRole("combobox", { name: "Version filter" }).locator("option").nth(1);
+    await expect(version).toHaveText(/^[0-9a-f]{12}$/u);
+    await expect(version).toHaveAttribute("title", /^[0-9a-f]{40}$/u);
   } finally {
     await stopChild(workload, "SIGKILL");
     const agentCode = await stopChild(running, "SIGTERM");
