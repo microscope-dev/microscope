@@ -47,9 +47,7 @@ export interface ProfileLook {
   tf?: string[];
   invert?: "1";
 
-  native?: "1";
-
-  py?: "1";
+  stacks?: "tasks" | "native";
 
   by?: Exclude<ProfileGranularity, "function">;
 
@@ -161,11 +159,9 @@ export function validateProfileLook(search: Record<string, unknown>): ProfileLoo
   if (text("invert") === "1") {
     look.invert = "1";
   }
-  if (text("native") === "1") {
-    look.native = "1";
-  }
-  if (text("py") === "1") {
-    look.py = "1";
+  const stacks = text("stacks");
+  if (stacks === "tasks" || stacks === "native") {
+    look.stacks = stacks;
   }
   const by = text("by");
   if (by && GRANULARITIES.has(by)) {
@@ -401,7 +397,7 @@ export function queryOf(profile: string, look: ProfileLook): ProfileQuery {
       return transform ? [transform] : [];
     }),
     invert: look.invert === "1",
-    look: look.native === "1" ? "native" : look.py === "1" ? "python" : "logical",
+    look: look.stacks ?? "code",
     granularity: look.by ?? "function",
     ...(zones ? { zones } : {}),
     ...(base ? { base } : {}),
@@ -429,8 +425,7 @@ const OWN = [
   "z",
   "invert",
   "by",
-  "native",
-  "py",
+  "stacks",
   "bt",
   "ann",
   "lanes",

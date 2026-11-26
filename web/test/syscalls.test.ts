@@ -37,7 +37,7 @@ describe("the Syscalls view's address", () => {
       revision: 3,
       range: [10, 90],
       source: "samples",
-      look: "logical",
+      look: "code",
       granularity: "function",
       byTask: false,
       invert: false,

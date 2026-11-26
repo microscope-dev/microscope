@@ -449,7 +449,7 @@ fn an_async_tasks_samples_show_its_own_stack_of_awaits() {
         assert!(recorded > 0, "{variant}");
         assert_eq!(recorded + profile.lost_samples(), 20, "{variant}");
 
-        let logical_tree = profile.call_tree(StackView::Logical);
+        let logical_tree = profile.call_tree(StackView::Tasks);
         let logical = ending_paths(&logical_tree);
         assert_eq!(logical.len(), 1, "{variant}: {logical:?}");
         let (path, weight) = &logical[0];

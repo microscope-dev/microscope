@@ -111,9 +111,9 @@ pub enum TransformOp {
 #[serde(rename_all = "camelCase")]
 pub enum ProfileLook {
     #[default]
-    Logical,
+    Code,
+    Tasks,
     Native,
-    Python,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]

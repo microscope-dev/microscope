@@ -99,7 +99,7 @@ fn kernel_read_samples_cover_cpu_time_and_keep_the_calling_user_stack() {
             .all(|stack| stack.functions.iter().any(|name| name == "main")),
         "kernel samples lost main: {reads:?}"
     );
-    assert_eq!(kernel.top(StackView::Logical)[0].name, "[kernel: read]");
+    assert_eq!(kernel.top(StackView::Tasks)[0].name, "[kernel: read]");
     assert_eq!(kernel.top(StackView::Native)[0].name, "[kernel: read]");
     let sampled: u64 = stacks.iter().map(|stack| stack.weight).sum();
     let counted = kernel.counted();

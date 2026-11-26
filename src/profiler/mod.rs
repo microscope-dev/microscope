@@ -358,9 +358,9 @@ impl<'a> CommandIdentity<'a> {
 fn query(view: StackView) -> Query {
     Query {
         look: match view {
-            StackView::Logical => Look::Logical,
+            StackView::Tasks => Look::Tasks,
             StackView::Native => Look::Native,
-            StackView::Python => Look::Python,
+            StackView::Code => Look::Code,
         },
         ..Query::default()
     }
@@ -441,11 +441,11 @@ pub struct FunctionCost {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StackView {
     #[default]
-    Logical,
+    Code,
+
+    Tasks,
 
     Native,
-
-    Python,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

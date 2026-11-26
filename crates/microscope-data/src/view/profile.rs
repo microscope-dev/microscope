@@ -161,9 +161,9 @@ fn resolve_in(
         transforms,
         invert: query.invert,
         look: match query.look {
-            ProfileLook::Logical => Look::Logical,
+            ProfileLook::Tasks => Look::Tasks,
             ProfileLook::Native => Look::Native,
-            ProfileLook::Python => Look::Python,
+            ProfileLook::Code => Look::Code,
         },
         by_task: query.by_task,
         during: None,

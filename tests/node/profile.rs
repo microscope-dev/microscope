@@ -171,7 +171,7 @@ fn stopped_snapshots_find_each_threads_javascript_lines() {
     let ready = |profile: &Profile, reported: &[Thread]| {
         missing(
             &expected(reported),
-            &paths(profile, Source::Waits, Look::Python),
+            &paths(profile, Source::Waits, Look::Code),
         )
         .is_empty()
     };
@@ -192,7 +192,7 @@ fn stopped_snapshots_find_each_threads_javascript_lines() {
             &profile,
             &Query {
                 source: Source::Waits,
-                look: Look::Python,
+                look: Look::Code,
                 tasks: Some(rows),
                 ..Query::default()
             },
@@ -203,7 +203,7 @@ fn stopped_snapshots_find_each_threads_javascript_lines() {
 
     let waits = Query {
         source: Source::Waits,
-        look: Look::Python,
+        look: Look::Code,
         ..Query::default()
     };
     let code = profile.disassemble(&waits, "mainOuter");
@@ -962,7 +962,7 @@ mod bpf {
         let truth = spinning(&std::fs::read_to_string(&output).expect("the fixture's output"));
         assert_eq!(truth.len(), 2, "{truth:#?}");
         let profile = Profile::read(&profile).expect("read the profile").profile;
-        let paths = paths(&profile, Source::Samples, Look::Python);
+        let paths = paths(&profile, Source::Samples, Look::Code);
         let missing = missing(&truth, &paths);
         assert!(missing.is_empty(), "{}\n{paths:#?}", missing.join("\n"));
         let lines = called_lines(&std::fs::read_to_string(&output).expect("the fixture's output"));
@@ -1284,7 +1284,7 @@ mod bpf {
                 .filter(|thread| thread.pid == pid)
                 .map(|thread| thread.row)
                 .collect();
-            let paths = process_paths(&profile, rows, Look::Python);
+            let paths = process_paths(&profile, rows, Look::Code);
             let truth = spinning(&text);
             assert_eq!(truth.len(), 2, "{pid}: {truth:#?}");
             let functions = profile.keys(Granularity::Function);

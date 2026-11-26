@@ -67,6 +67,10 @@ function Popover() {
     const by = event.currentTarget.value as ProfileGranularity;
     focus().setLook((prev) => withLook(prev, "by", by === "function" ? undefined : by));
   };
+  const showStacks = (event: Event & { currentTarget: HTMLSelectElement }) => {
+    const stacks = event.currentTarget.value as ProfileLook["stacks"] | "code";
+    focus().setLook((prev) => withLook(prev, "stacks", stacks === "code" ? undefined : stacks));
+  };
   const rootByLabel = (event: Event & { currentTarget: HTMLSelectElement }) =>
     focus().setLook((prev) => withLook(prev, "bl", event.currentTarget.value || undefined));
   const collapsed = createMemo(() => (focus().look.tf ?? []).includes(COLLAPSE_CYCLES));
@@ -102,6 +106,18 @@ function Popover() {
           </select>
         </label>
       </Show>
+      <Show when={isSampled()}>
+        <label class="options-field">
+          Stacks
+          <select class="input" value={focus().look.stacks ?? "code"} onChange={showStacks}>
+            <option value="code">your code</option>
+            <Show when={focus().summary.interpreted}>
+              <option value="tasks">with the interpreter</option>
+            </Show>
+            <option value="native">native frames</option>
+          </select>
+        </label>
+      </Show>
       <Show when={focus().summary.labelKeys.length > 0}>
         <label class="options-field">
           Root by label
@@ -116,15 +132,6 @@ function Popover() {
       <Show when={isSampled()}>
         <LookCheck field="invert" checked={focus().look.invert === "1"} on="1" off={undefined}>
           Inverted
-        </LookCheck>
-        <LookCheck
-          field="native"
-          title="Show each async task's frames as a stack of its own"
-          checked={focus().look.native !== "1"}
-          on={undefined}
-          off="1"
-        >
-          Async stacks
         </LookCheck>
         <Show
           when={
@@ -141,17 +148,6 @@ function Popover() {
             off={undefined}
           >
             System calls as leaves
-          </LookCheck>
-        </Show>
-        <Show when={focus().summary.interpreted}>
-          <LookCheck
-            field="py"
-            title="Show Python frames only, without the interpreter's frames"
-            checked={focus().look.py === "1"}
-            on="1"
-            off={undefined}
-          >
-            Python stacks
           </LookCheck>
         </Show>
       </Show>

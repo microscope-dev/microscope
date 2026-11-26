@@ -1323,8 +1323,8 @@ it("sets how frames are drawn from Options, and puts it away on Escape or a pres
   expect(options.getByRole("combobox", { name: "View" }).query()).toBeNull();
 
   await options.getByRole("combobox", { name: "Frames" }).selectOptions("lines");
-  await options.getByRole("checkbox", { name: "Async stacks" }).click();
-  expect(lookShown()).toMatchObject({ by: "line", native: "1" });
+  await options.getByRole("combobox", { name: "Stacks" }).selectOptions("native frames");
+  expect(lookShown()).toMatchObject({ by: "line", stacks: "native" });
 
   const collapse = options.getByRole("checkbox", { name: "Collapse recursion" });
   await collapse.click();

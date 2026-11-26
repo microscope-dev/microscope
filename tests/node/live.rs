@@ -86,7 +86,7 @@ fn thread_paths(
         profile,
         &Query {
             source: Source::Waits,
-            look: Look::Python,
+            look: Look::Code,
             tasks: Some(rows),
             range: Some((since, until)),
             ..Query::default()

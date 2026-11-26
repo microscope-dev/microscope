@@ -260,7 +260,7 @@ export type TransformOp = "focus" | "merge" | "drop" | "collapseCycles";
 
 export type ProfileGranularity = "function" | "physical" | "line" | "address";
 
-export type ProfileLook = "logical" | "native" | "python";
+export type ProfileLook = "code" | "tasks" | "native";
 
 export type ProfileTimelineQuery = { buckets: number, taskLanes: boolean, profile: string, revision?: number, range?: [number, number] | null, threads?: Array<number> | null, source: ProfileSource, tasks?: Array<number | null> | null, byTask: boolean, labels: Array<string>, byLabel?: string | null, transforms: Array<ProfileTransform>, invert: boolean, look: ProfileLook, granularity: ProfileGranularity, zones?: ProfileZoneScope | null, base?: ProfileBase | null, during?: ProfileDuring | null, syscallLeaves: boolean, };
 

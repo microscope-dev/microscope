@@ -29,7 +29,7 @@ fn lines() -> BTreeMap<String, u32> {
 }
 
 fn python_paths(profile: &Profile) -> BTreeMap<Vec<String>, u64> {
-    paths(profile, Source::Waits, Look::Python)
+    paths(profile, Source::Waits, Look::Code)
 }
 
 fn paths(profile: &Profile, source: Source, look: Look) -> BTreeMap<Vec<String>, u64> {
@@ -1045,12 +1045,12 @@ mod bpf {
     fn the_bpf_engine_names_dataclass_methods_by_their_class() {
         for interpreter in PROFILED {
             let methods = |profile: &Profile| {
-                let python = paths(profile, Source::Samples, Look::Python);
+                let python = paths(profile, Source::Samples, Look::Code);
                 names_dataclass_methods(python.keys().flatten())
             };
             let profile =
                 recorded_when(&program(interpreter, "dataclass_methods.py", &[]), methods);
-            let python = paths(&profile, Source::Samples, Look::Python);
+            let python = paths(&profile, Source::Samples, Look::Code);
             assert!(
                 names_dataclass_methods(python.keys().flatten()),
                 "{interpreter}: {python:#?}"
@@ -1154,7 +1154,7 @@ mod bpf {
         let mut exec = program("3.12", "exec_profiled.py", &[]);
         exec.arg(python::interpreter("3.14"));
         let spinning = |profile: &Profile| {
-            paths(profile, Source::Samples, Look::Python)
+            paths(profile, Source::Samples, Look::Code)
                 .iter()
                 .any(|(path, _)| spins(path, &lines))
         };
@@ -1165,7 +1165,7 @@ mod bpf {
                 usize::from(profile.interpreted())
             }
         });
-        let python = paths(&profile, Source::Samples, Look::Python);
+        let python = paths(&profile, Source::Samples, Look::Code);
         let spinning: u64 = python
             .iter()
             .filter(|(path, _)| spins(path, &lines))
@@ -1181,7 +1181,7 @@ mod bpf {
         let lines = lines();
         for interpreter in PROFILED {
             let spinning = |profile: &Profile| {
-                let python = paths(profile, Source::Samples, Look::Python);
+                let python = paths(profile, Source::Samples, Look::Code);
                 let spinning: u64 = python
                     .iter()
                     .filter(|(path, _)| spins(path, &lines))
@@ -1190,7 +1190,7 @@ mod bpf {
                 spinning >= 1000 && spinning * 2 > python.values().sum()
             };
             let profile = recorded_when(&program(interpreter, "profiled.py", &[]), spinning);
-            let python = paths(&profile, Source::Samples, Look::Python);
+            let python = paths(&profile, Source::Samples, Look::Code);
             let spinning: u64 = python
                 .iter()
                 .filter(|(path, _)| spins(path, &lines))
@@ -1218,7 +1218,7 @@ mod bpf {
             assert!(mixed, "{interpreter}: no mixed stack of work");
 
             let python_look = Query {
-                look: Look::Python,
+                look: Look::Code,
                 ..Query::default()
             };
             let code = profile.disassemble(&python_look, "work");

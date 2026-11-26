@@ -41,6 +41,20 @@ pub enum SymbolsArg {
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum StacksArg {
+    /// Each stack as its code sees it: Python and JavaScript functions
+    /// without the interpreter's own frames, and each async task's own
+    /// stack.
+    Code,
+
+    /// Each async task's own stack, with the interpreter's frames.
+    Tasks,
+
+    /// The native frames each thread ran.
+    Native,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum OnOff {
     On,
     Off,
@@ -408,15 +422,9 @@ pub struct SymbolizeArgs {
 /// How a report sees each stack's frames.
 #[derive(Debug, clap::Args)]
 pub struct LookArgs {
-    /// The frames threads ran, not each async task's own stack.
-    #[arg(long, conflicts_with = "python")]
-    native: bool,
-
-    /// Each stack as its Python or JavaScript code sees it: from its
-    /// outermost Python or JavaScript frame in, without the interpreter's
-    /// own frames.
-    #[arg(long, visible_alias = "js")]
-    python: bool,
+    /// Which frames each stack shows.
+    #[arg(long, value_enum, default_value = "code")]
+    stacks: StacksArg,
 }
 
 impl ReportArgs {
@@ -433,12 +441,10 @@ impl ReportArgs {
 
 impl LookArgs {
     const fn view(&self) -> StackView {
-        if self.native {
-            StackView::Native
-        } else if self.python {
-            StackView::Python
-        } else {
-            StackView::Logical
+        match self.stacks {
+            StacksArg::Code => StackView::Code,
+            StacksArg::Tasks => StackView::Tasks,
+            StacksArg::Native => StackView::Native,
         }
     }
 }
@@ -1204,9 +1210,9 @@ fn ordinary_report(
 
 const fn look(view: StackView) -> microscope::profiler::Look {
     match view {
-        StackView::Logical => microscope::profiler::Look::Logical,
+        StackView::Tasks => microscope::profiler::Look::Tasks,
         StackView::Native => microscope::profiler::Look::Native,
-        StackView::Python => microscope::profiler::Look::Python,
+        StackView::Code => microscope::profiler::Look::Code,
     }
 }
 

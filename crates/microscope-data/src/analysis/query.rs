@@ -157,9 +157,9 @@ pub enum Look {
     #[default]
     Native,
 
-    Logical,
+    Tasks,
 
-    Python,
+    Code,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -736,10 +736,10 @@ impl<'a> Paths<'a> {
 
         match self.query.look {
             Look::Native => path.retain(|key| !self.keys.interpreted(*key)),
-            Look::Logical => logical(self.keys, path),
-            Look::Python => {
-                logical(self.keys, path);
-                python(self.keys, path);
+            Look::Tasks => tasks(self.keys, path),
+            Look::Code => {
+                tasks(self.keys, path);
+                code(self.keys, path);
             }
         }
 
@@ -800,7 +800,7 @@ impl<'a> Paths<'a> {
     }
 }
 
-fn logical(keys: &Keys<'_>, path: &mut Vec<u32>) {
+fn tasks(keys: &Keys<'_>, path: &mut Vec<u32>) {
     if let Some(dispatch) = path
         .iter()
         .position(|key| keys.role(*key) == CodeRole::Dispatch)
@@ -827,7 +827,7 @@ fn logical(keys: &Keys<'_>, path: &mut Vec<u32>) {
     path.retain(|key| keys.role(*key) != CodeRole::Wrapper);
 }
 
-fn python(keys: &Keys<'_>, path: &mut Vec<u32>) {
+fn code(keys: &Keys<'_>, path: &mut Vec<u32>) {
     let Some(outermost) = path.iter().rposition(|key| keys.interpreted(*key)) else {
         return;
     };

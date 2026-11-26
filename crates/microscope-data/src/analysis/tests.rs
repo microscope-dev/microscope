@@ -689,7 +689,7 @@ fn a_logical_stack_is_a_tasks_own_under_its_dispatch() {
         &capture,
         &keys,
         &Query {
-            look: Look::Logical,
+            look: Look::Tasks,
             ..Query::default()
         },
     );
@@ -804,14 +804,14 @@ fn python_mixed_and_native_looks_of_one_stack() {
 
     let plain = (names(&["start_thread", "work"]), 2);
     assert_eq!(
-        look(Look::Python),
+        look(Look::Code),
         BTreeMap::from([
             (names(&["<module>", "serve", "Server.handle", "decode"]), 1),
             plain.clone(),
         ])
     );
     assert_eq!(
-        look(Look::Logical),
+        look(Look::Tasks),
         BTreeMap::from([
             (
                 names(&[
@@ -999,7 +999,7 @@ fn an_anonymous_function_is_named_for_where_it_is_declared() {
     ]);
     let base_keys = Keys::new(&base, Granularity::Function);
     let everything = Query {
-        look: Look::Logical,
+        look: Look::Tasks,
         ..Query::default()
     };
     let mut paired: Vec<(String, u64, u64)> = diff_costs(
