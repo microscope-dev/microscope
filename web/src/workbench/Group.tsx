@@ -199,7 +199,7 @@ function Tab(props: { pane: PaneId; found: Pane; title: string; shown: boolean }
         aria-selected={props.shown ? "true" : "false"}
         aria-controls={panelId(props.pane)}
         tabindex={props.shown ? 0 : -1}
-        title={props.found.key || props.title}
+        title={kind().tooltip?.(props.found) || props.title}
         onClick={choose}
       >
         <span class={css("tab-title")} data-part="tab-title">

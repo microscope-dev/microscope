@@ -41,6 +41,9 @@ const KINDS = kinds([
   kind("broken", { Body: Throwing }),
   kind("needy", { needs: "stop" }),
   kind("fixed", { closable: () => false }),
+  kind("flame", { title: () => "Flame graph" }),
+  kind("tree", { title: () => "Call tree" }),
+  kind("file", { title: (pane) => pane.key.split("/").at(-1) ?? "", tooltip: (pane) => pane.key }),
 ]);
 
 const pane = (kindId: string, key: string): Pane => ({ kind: kindId as KindId, key, params: null });
@@ -80,6 +83,13 @@ it("shows one pane per group, keeping the others mounted and hidden", async () =
   await expect.element(page.getByText("Tasks shown")).toBeVisible();
   await expect.element(page.getByText("Threads hidden")).not.toBeVisible();
   await expect.element(tab("Tasks")).toHaveAttribute("aria-selected", "true");
+});
+
+it("titles each tab's tooltip by its pane, not by the key panes share", async () => {
+  await mount([pane("flame", "l0"), pane("tree", "l0"), pane("file", "/src/app/main.rs")]);
+  await expect.element(tab("Flame graph")).toHaveAttribute("title", "Flame graph");
+  await expect.element(tab("Call tree")).toHaveAttribute("title", "Call tree");
+  await expect.element(tab("main.rs")).toHaveAttribute("title", "/src/app/main.rs");
 });
 
 it("renders nothing outside the group whose tab is chosen", async () => {

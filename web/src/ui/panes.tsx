@@ -106,6 +106,7 @@ export const KINDS = kinds<Need>([
   {
     id: KIND.source,
     title: (pane) => (pane.key === "" ? "Source" : fileName(pane.key)),
+    tooltip: (pane) => pane.key,
     Body: deferred(() => SourceBody),
     needs: "session",
 

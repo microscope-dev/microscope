@@ -12,6 +12,8 @@ export interface PaneKind<Need extends string> {
   readonly id: KindId;
 
   title(pane: Pane): string;
+
+  tooltip?(pane: Pane): string;
   readonly Body: Component<PaneProps>;
 
   readonly Badge?: Component<PaneProps>;
