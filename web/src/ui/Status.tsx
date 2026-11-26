@@ -4,6 +4,7 @@ import type { Model } from "../model";
 import { commandName } from "../model";
 import { shallowEqual } from "../state";
 import { useModel } from "../store";
+import { remote, standalone } from "../target";
 import { threadLabel } from "./names";
 
 interface Shown {
@@ -24,7 +25,11 @@ export function shown(model: Model): Shown {
     case "unreachable":
       return { pill: "warn", label: "Can't reach microscope", detail: "still trying" };
     case "unauthorized":
-      return { pill: "warn", label: "Not connected", detail: null };
+      return {
+        pill: standalone && !remote() ? "idle" : "warn",
+        label: "Not connected",
+        detail: null,
+      };
     case "incompatible":
       return { pill: "warn", label: "Reload to update", detail: null };
     case "open":

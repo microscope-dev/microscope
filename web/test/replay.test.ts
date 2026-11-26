@@ -1,9 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { action } from "../src/actions";
 import { Connection, type TransportHandlers } from "../src/connection";
 import { commandName, initialModel, type Model, type ModelEvent, reduce } from "../src/model";
 import type { ServerMessage, State, Target } from "../src/protocol";
+import { setRemote } from "../src/target";
 import { shown } from "../src/ui/Status";
 import { POLL } from "./fake-server";
 import { binaries, received, transcript, transcriptNames } from "./transcripts";
@@ -80,15 +81,32 @@ describe("a link the server ended", () => {
     (model) => model.state?.inferior.state === "stopped",
   );
 
+  beforeEach(() => {
+    const stored = new Map<string, string>();
+    const area = {
+      getItem: (key: string) => stored.get(key) ?? null,
+      setItem: (key: string, value: string) => stored.set(key, value),
+    };
+    vi.stubGlobal("localStorage", area);
+    vi.stubGlobal("sessionStorage", area);
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
   it.each(["unauthorized", "incompatible"] as const)(
     "shows why it is %s, not the last state",
     (link) => {
+      setRemote({ server: "http://127.0.0.1:7341/", token: "c-1" });
       expect(stopped && shown(stopped).label).toBe("Stopped");
       const ended = reduce(stopped as Model, { type: "link", link });
       expect(shown(ended)).toMatchObject({ pill: "warn", detail: null });
       expect(shown(ended).label).not.toBe("Stopped");
     },
   );
+
+  it("stays quiet when the page has no microscope to connect to", () => {
+    const ended = reduce(stopped as Model, { type: "link", link: "unauthorized" });
+    expect(shown(ended).pill).toBe("idle");
+  });
 });
 
 describe("two tabs racing a stop", () => {
