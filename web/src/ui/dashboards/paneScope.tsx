@@ -8,7 +8,9 @@ import {
   buildQueryCommand,
   computeLagMs,
   type CopyQuerySpec,
+  type DataGap,
   DEFAULT_SCOPE,
+  describeGaps,
   formatDataLag,
   normalizeScope,
   scopeKey,
@@ -175,6 +177,22 @@ export function usePaneScope(id: () => PaneId, pane: () => Pane): PaneScopeResul
     streamActive,
     streamed,
   };
+}
+
+export function PaneGapsNote(props: { gaps: readonly DataGap[] | undefined }) {
+  return (
+    <Show when={describeGaps(props.gaps)}>
+      {(text) => (
+        <span
+          class={`pane-gaps ${props.gaps?.some((g) => g.reason === "lost") ? "pane-gaps-lost" : ""}`}
+          data-testid="pane-gaps"
+          title="Some recorded data could not be read from storage. Retrying gaps fill in once the object is readable again; lost gaps will not."
+        >
+          {text()}
+        </span>
+      )}
+    </Show>
+  );
 }
 
 export function PaneLagBadge(props: { linked: boolean; streamed: StreamedPaneData | null }) {

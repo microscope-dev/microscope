@@ -5607,6 +5607,19 @@ button.machines-row:hover,
   color: var(--accent);
 }
 
+.pane-gaps {
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--ink-2);
+  border-bottom: 1px dotted var(--warn-line);
+  white-space: nowrap;
+  cursor: help;
+}
+
+.pane-gaps-lost {
+  color: var(--error);
+}
+
 .fleet-pane-label {
   font-weight: 600;
   font-size: 12px;

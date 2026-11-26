@@ -13,6 +13,7 @@ import {
   LinkToggle,
   PaneAuthGate,
   PaneEmptyState,
+  PaneGapsNote,
   PaneLagBadge,
   PaneLockedState,
   usePaneScope,
@@ -82,6 +83,7 @@ export function ByMachinePane(props: PaneProps) {
                 </span>
               )}
             </Show>
+            <PaneGapsNote gaps={data()?.gaps} />
             <PaneLagBadge linked={ps.linked()} streamed={ps.streamed()} />
           </div>
           <div class="pane-body">

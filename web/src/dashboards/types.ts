@@ -130,6 +130,14 @@ export interface FlushReport {
   timedOut: TimedOutMachine[];
 }
 
+export interface DataGap {
+  projectId: number;
+  startTime: number;
+  endTime: number;
+  reason: "retrying" | "lost";
+  kind: string;
+}
+
 export interface FlameResponse {
   nodes: number;
   weight: number;
@@ -150,6 +158,7 @@ export interface FlameResponse {
   baseTotal?: number[];
   baseWeight?: number;
   flush?: FlushReport;
+  gaps?: DataGap[];
 }
 
 export interface OverTimeSeries {
@@ -166,6 +175,7 @@ export interface DeployMarker {
 }
 
 export interface OverTimeResponse {
+  gaps?: DataGap[];
   timestampsNs: number[];
   bucketNs: number;
   unit: string;
@@ -190,6 +200,7 @@ export interface MachineRow {
 }
 
 export interface ByMachineResponse {
+  gaps?: DataGap[];
   timestampsNs: number[];
   bucketNs: number;
   unit: string;
@@ -212,6 +223,7 @@ export interface BreakdownRow {
 }
 
 export interface BreakdownResponse {
+  gaps?: DataGap[];
   dimension: string;
   unit: string;
   total: number;

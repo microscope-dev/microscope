@@ -1,4 +1,5 @@
 import type {
+  DataGap,
   StreamDimensionsEvent,
   StreamHeartbeatEvent,
   StreamPaneEvent,
@@ -247,4 +248,19 @@ export function formatDataLag(lagMs: number | null): string | null {
   }
   const hours = Math.round(mins / 60);
   return `${hours}h behind`;
+}
+
+export function describeGaps(gaps: readonly DataGap[] | undefined): string | null {
+  if (!gaps || gaps.length === 0) {
+    return null;
+  }
+  const lost = gaps.filter((g) => g.reason === "lost").length;
+  const count = `${gaps.length} ${gaps.length === 1 ? "gap" : "gaps"}`;
+  if (lost === 0) {
+    return `${count} · retrying`;
+  }
+  if (lost === gaps.length) {
+    return `${count} · lost`;
+  }
+  return `${count} · ${lost} lost`;
 }

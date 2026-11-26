@@ -2,6 +2,7 @@ import { createMemo, createSignal, Match, Show, Switch } from "solid-js";
 
 import {
   dashboardsApi,
+  type DataGap,
   type FlameResponse,
   markViewFetched,
   setScopeSelection,
@@ -24,6 +25,7 @@ import {
   LinkToggle,
   PaneAuthGate,
   PaneEmptyState,
+  PaneGapsNote,
   PaneLagBadge,
   PaneLockedState,
   updatePaneParams,
@@ -38,6 +40,7 @@ interface LoadedFlame {
   truncated: boolean;
   locked: boolean;
   isDiff: boolean;
+  gaps: DataGap[];
 }
 
 function buildLoadedFlame(res: FlameResponse): LoadedFlame {
@@ -61,6 +64,7 @@ function buildLoadedFlame(res: FlameResponse): LoadedFlame {
     truncated: res.truncated,
     locked: res.locked,
     isDiff,
+    gaps: res.gaps ?? [],
   };
 }
 
@@ -208,6 +212,7 @@ export function FleetFlamePane(props: PaneProps) {
                 </span>
               )}
             </Show>
+            <PaneGapsNote gaps={current()?.gaps} />
             <PaneLagBadge linked={ps.linked()} streamed={ps.streamed()} />
           </div>
           <div class="pane-body">

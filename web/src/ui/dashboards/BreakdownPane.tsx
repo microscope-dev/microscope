@@ -16,6 +16,7 @@ import {
   LinkToggle,
   PaneAuthGate,
   PaneEmptyState,
+  PaneGapsNote,
   PaneLagBadge,
   PaneLockedState,
   updatePaneParams,
@@ -99,6 +100,7 @@ export function BreakdownPane(props: PaneProps) {
               scope={ps.scope()}
               sessionId={ps.sessionId()}
             />
+            <PaneGapsNote gaps={data()?.gaps} />
             <PaneLagBadge linked={ps.linked()} streamed={ps.streamed()} />
           </div>
           <div class="pane-body">

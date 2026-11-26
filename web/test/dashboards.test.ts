@@ -8,6 +8,7 @@ import {
   clearActiveView,
   computeLagMs,
   dashboardsApi,
+  describeGaps,
   dashboardsHash,
   DEFAULT_SCOPE,
   ensureSessionUrl,
@@ -31,6 +32,10 @@ import { updatePaneParams } from "../src/ui/dashboards/paneScope";
 import { emptyLayout, type GroupId, type PaneId } from "../src/workbench/layout";
 import { loadLayout, saveLayout } from "../src/workbench/saved";
 import { resetWorkbench, workbench } from "../src/workbench/store";
+
+function gap(reason: "retrying" | "lost") {
+  return { projectId: 1, startTime: 0, endTime: 60_000_000_000, reason, kind: "not_found" };
+}
 
 describe("dashboards URL and formatting helpers", () => {
   it("round-trips a full scope through query string parameters", () => {
@@ -259,6 +264,13 @@ describe("dashboards URL and formatting helpers", () => {
     expect(formatDataLag(4_800)).toBe("5s behind");
     expect(formatDataLag(125_000)).toBe("2m behind");
     expect(computeLagMs(1_000_000_000_000, 1_003_500_000_000, 10_000, 11_500)).toBe(5_000);
+  });
+
+  it("summarizes unreadable data as retrying or lost gaps", () => {
+    expect(describeGaps([])).toBeNull();
+    expect(describeGaps([gap("retrying")])).toBe("1 gap · retrying");
+    expect(describeGaps([gap("lost"), gap("lost")])).toBe("2 gaps · lost");
+    expect(describeGaps([gap("retrying"), gap("lost"), gap("retrying")])).toBe("3 gaps · 1 lost");
   });
 
   it("streams status, pane, dimensions, and heartbeat events over POST /api/query/stream", async () => {
