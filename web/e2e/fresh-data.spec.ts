@@ -178,7 +178,7 @@ test("at 5-second refresh, a 60s-cadence real agent delivers hot_function on scr
 
     await flame.getByRole("searchbox", { name: "Search frames" }).fill("hot_function");
     await expect(flame.getByTestId("matched")).toHaveText(
-      /^matched (?!0\.0%)\d+(\.\d+)?% of samples$/u,
+      /^matched (?!0(?:\.0+)?%)\d+(\.\d+)?% of samples$/u,
       { timeout: 5_000 },
     );
     await expect(flame.getByTestId("pane-lag")).toBeVisible();

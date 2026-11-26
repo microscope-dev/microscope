@@ -1,7 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm, symlink } from "node:fs/promises";
+import { copyFile, mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 
@@ -11,6 +11,8 @@ import { allowErrors, test as base, expect, menu, root } from "./server";
 import { type Services, skippedServices, skipServices, startServices } from "./services";
 
 const hotCallsBinary = path.join(root, "build", "test-programs", "hot-calls");
+const nodeBinary = path.join(process.env.MICROSCOPE_NODE ?? "", "26", "node");
+const busyScript = path.join(root, "tests", "fixtures", "node", "busy.js");
 
 const test = base.extend<{ services: Services }>({
   services: async ({ context }, provide, info) => {
@@ -31,7 +33,6 @@ const test = base.extend<{ services: Services }>({
 });
 
 test.skip(skipServices, skippedServices);
-test.skip(!existsSync(hotCallsBinary), `fixture is not built at ${hotCallsBinary}`);
 
 const account = (page: Page) => page.getByRole("tabpanel", { name: "Account" });
 
@@ -61,6 +62,7 @@ function startAgent(
   enroll: string,
   state: string,
   processName: string,
+  service: string,
   log: string[],
 ): ChildProcess {
   const child = spawn(
@@ -73,7 +75,7 @@ function startAgent(
         MICROSCOPE_STATE_DIR: state,
         MICROSCOPE_CLOUD_METADATA: "false",
         MICROSCOPE_RECORD_PROCESS: processName,
-        MICROSCOPE_RECORD_SERVICE: "hot-calls",
+        MICROSCOPE_RECORD_SERVICE: service,
         MICROSCOPE_RECORD_PROJECT: "services",
         MICROSCOPE_RECORD_PRESET: "dev",
         MICROSCOPE_RECORD_CHUNK_MS: "1500",
@@ -96,11 +98,7 @@ function stopChild(child: ChildProcess, signal: NodeJS.Signals): Promise<number 
   });
 }
 
-test("records a live process with the real agent and renders its hot function in the hosted flame graph", async ({
-  page,
-  services,
-}, info) => {
-  test.setTimeout(60_000);
+async function enrollKey(page: Page, services: Services): Promise<string> {
   await signUp(page, services);
 
   await menu(page, "File", "New project…");
@@ -119,6 +117,45 @@ test("records a live process with the real agent and renders its hot function in
   expect(enroll).toMatch(/^http:\/\/mse_[a-z0-9]{56}@127\.0\.0\.1:\d+$/u);
   await page.keyboard.press("Escape");
   await expect(add).toBeHidden();
+  return enroll;
+}
+
+async function expectHostedFrame(page: Page, name: string): Promise<void> {
+  await menu(page, "Dashboards", "Dashboards…");
+  const dashDialog = page.getByRole("dialog", { name: "Dashboards" });
+  await expect(dashDialog).toBeVisible();
+  await dashDialog.getByTestId("dashboard-item-fleet-overview").click();
+  await expect(dashDialog).toBeHidden();
+
+  const scopeBar = page.getByTestId("scope-bar");
+  await expect(scopeBar).toBeVisible();
+  const flame = page.getByTestId("fleet-flame-pane");
+  await expect(flame).toBeVisible();
+
+  await expect(async () => {
+    await scopeBar.getByRole("button", { name: "Refresh" }).click();
+    await expect(flame.getByRole("img", { name: "Flame graph" })).toBeVisible({
+      timeout: 1_000,
+    });
+  }).toPass({ timeout: 25_000 });
+
+  await expect(async () => {
+    await scopeBar.getByRole("button", { name: "Refresh" }).click();
+    await flame.getByRole("searchbox", { name: "Search frames" }).fill(name);
+    await expect(flame.getByTestId("matched")).toHaveText(
+      /^matched (?!0(?:\.0+)?%)\d+(\.\d+)?% of samples$/u,
+      { timeout: 1_000 },
+    );
+  }).toPass({ timeout: 25_000 });
+}
+
+test("records a live process with the real agent and renders its hot function in the hosted flame graph", async ({
+  page,
+  services,
+}, info) => {
+  test.skip(!existsSync(hotCallsBinary), `fixture is not built at ${hotCallsBinary}`);
+  test.setTimeout(60_000);
+  const enroll = await enrollKey(page, services);
 
   const state = await mkdtemp(path.join(tmpdir(), "microscope-first-chunk-e2e-"));
   const processName = `hot-${randomBytes(4).toString("hex")}`;
@@ -126,30 +163,48 @@ test("records a live process with the real agent and renders its hot function in
   await symlink(hotCallsBinary, workloadBinary);
   const agentLog: string[] = [];
   const workload = spawn(workloadBinary, [], { stdio: "ignore" });
-  const running = startAgent(enroll, state, processName, agentLog);
+  const running = startAgent(enroll, state, processName, "hot-calls", agentLog);
   try {
-    await menu(page, "Dashboards", "Dashboards…");
-    const dashDialog = page.getByRole("dialog", { name: "Dashboards" });
-    await expect(dashDialog).toBeVisible();
-    await dashDialog.getByTestId("dashboard-item-fleet-overview").click();
-    await expect(dashDialog).toBeHidden();
+    await expectHostedFrame(page, "hot_function");
+  } finally {
+    await stopChild(workload, "SIGKILL");
+    const agentCode = await stopChild(running, "SIGTERM");
+    await rm(state, { recursive: true, force: true });
+    if (info.status !== info.expectedStatus) {
+      await info.attach("agent.log", { body: agentLog.join("") });
+    }
+    expect(agentCode).toBe(0);
+  }
+});
 
-    const scopeBar = page.getByTestId("scope-bar");
-    await expect(scopeBar).toBeVisible();
-    const flame = page.getByTestId("fleet-flame-pane");
-    await expect(flame).toBeVisible();
+test("names a Node process's JIT-compiled JavaScript in the hosted flame graph", async ({
+  page,
+  services,
+}, info) => {
+  test.skip(!existsSync(nodeBinary), `node is not at ${nodeBinary}`);
+  test.setTimeout(60_000);
+  const enroll = await enrollKey(page, services);
 
-    await expect(async () => {
-      await scopeBar.getByRole("button", { name: "Refresh" }).click();
-      await expect(flame.getByRole("img", { name: "Flame graph" })).toBeVisible({
-        timeout: 1_000,
-      });
-    }).toPass({ timeout: 25_000 });
-
-    await flame.getByRole("searchbox", { name: "Search frames" }).fill("hot_function");
-    await expect(flame.getByTestId("matched")).toHaveText(
-      /^matched (?!0\.0%)\d+(\.\d+)?% of samples$/u,
-    );
+  const state = await mkdtemp(path.join(tmpdir(), "microscope-node-jit-e2e-"));
+  const processName = `node-${randomBytes(4).toString("hex")}`;
+  const workloadBinary = path.join(state, processName);
+  await copyFile(nodeBinary, workloadBinary);
+  const agentLog: string[] = [];
+  const workload = spawn(
+    workloadBinary,
+    [
+      "--perf-basic-prof",
+      "--allow-natives-syntax",
+      "--sparkplug-filter=sparkplugSpin",
+      busyScript,
+      "--seconds",
+      "60",
+    ],
+    { cwd: state, stdio: "ignore" },
+  );
+  const running = startAgent(enroll, state, processName, "busy-node", agentLog);
+  try {
+    await expectHostedFrame(page, "JS:*'turbofanSpin");
   } finally {
     await stopChild(workload, "SIGKILL");
     const agentCode = await stopChild(running, "SIGTERM");

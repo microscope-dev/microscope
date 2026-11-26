@@ -265,7 +265,7 @@ test("opens Fleet overview on live agent data, narrows scope into a session, and
     });
     await bobFlame.getByRole("searchbox", { name: "Search frames" }).fill("hot_function");
     await expect(bobFlame.getByTestId("matched")).toHaveText(
-      /^matched (?!0\.0%)\d+(\.\d+)?% of samples$/u,
+      /^matched (?!0(?:\.0+)?%)\d+(\.\d+)?% of samples$/u,
     );
 
     const sessionMeta = await alice.evaluate(async (id) => {
