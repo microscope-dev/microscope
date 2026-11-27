@@ -41,7 +41,6 @@ poll     src/backend/linux/cdp.rs                     std::thread::sleep(Duratio
 settle   src/backend/linux/perf/lease.rs              std::thread::sleep(RETRY * 3);
 poll     src/backend/linux/perf/mod.rs                std::thread::sleep(Duration::from_millis(1));
 workload src/backend/linux/perf/mod.rs                std::thread::sleep(Duration::from_millis(500));
-settle   src/backend/linux/proc_status.rs             std::thread::sleep(std::time::Duration::from_millis(20));
 settle   src/backend/linux/reaped.rs                  std::thread::sleep(Duration::from_millis(5));
 settle   src/backend/linux/reaped.rs                  std::thread::sleep(Duration::from_millis(5));
 settle   src/backend/linux/reaped.rs                  std::thread::sleep(Duration::from_millis(5));

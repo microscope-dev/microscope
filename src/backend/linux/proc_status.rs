@@ -458,22 +458,31 @@ mod tests {
     fn a_blocked_thread_is_asleep_in_its_system_call() {
         let process = std::process::id();
         let spin = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let (started, spinning) = std::sync::mpsc::channel();
+        let spinning = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
         let spinner = std::thread::spawn({
             let spin = std::sync::Arc::clone(&spin);
+            let spinning = std::sync::Arc::clone(&spinning);
             move || {
-                started
-                    .send(u32::try_from(nix::unistd::gettid().as_raw()).unwrap())
-                    .unwrap();
+                let id = u32::try_from(nix::unistd::gettid().as_raw()).unwrap();
+                spinning.store(id, std::sync::atomic::Ordering::Release);
                 while spin.load(std::sync::atomic::Ordering::Relaxed) {
                     std::hint::spin_loop();
                 }
             }
         });
-        let spinner_id = spinning
-            .recv_timeout(std::time::Duration::from_secs(20))
-            .unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let spinner_id = loop {
+            match spinning.load(std::sync::atomic::Ordering::Acquire) {
+                0 => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the spinner never ran"
+                    );
+                    std::thread::yield_now();
+                }
+                id => break id,
+            }
+        };
         let files = ThreadFiles::open(process, spinner_id).unwrap();
         for _ in 0..100 {
             assert_eq!(files.asleep().unwrap(), None, "spinning");
