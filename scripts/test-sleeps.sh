@@ -26,7 +26,6 @@ while read -r class file text; do
   fi
   classes["$file"$'\t'"$text"]=$class
 done <<'LIST'
-race     editors/nvim/uat.lua                         "  setTimeout(() => fs.appendFileSync(__filename, '// changed\\n'), 200);",
 poll     editors/vscode/test/run.sh                   sleep 0.1
 deadline editors/vscode/test/uat.js                   const timer = setTimeout(
 deadline editors/vscode/test/uat.js                   const timer = setTimeout(
@@ -122,7 +121,6 @@ workload tests/syscalls.rs                            std::thread::sleep(Duratio
 workload tests/syscalls.rs                            std::thread::sleep(Duration::from_millis(250));
 poll     tests/tokio/soak.rs                          tokio::time::sleep(Duration::from_millis(5)).await;
 poll     tests/web/terminal.rs                        std::thread::sleep(Duration::from_millis(10));
-race     web/e2e/node.spec.ts                         "  setTimeout(() => fs.appendFileSync(__filename, '// changed\\n'), 200);",
 deadline web/e2e/server.ts                            const timer = setTimeout(
 deadline web/e2e/services.ts                          const timer = setTimeout(() => reject(new Error(`mock-idp never listened: ${log}`)), 10_000);
 deadline web/e2e/services.ts                          const timer = setTimeout(() => reject(new Error(`services never listened: ${log}`)), 10_000);
