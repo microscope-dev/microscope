@@ -4,6 +4,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: "e2e",
+  globalSetup: "./e2e/setup.ts",
   fullyParallel: true,
   workers: Math.max(1, Math.floor(availableParallelism() / 3)),
   forbidOnly: true,

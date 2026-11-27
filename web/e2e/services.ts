@@ -1,6 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import {
   createServer,
@@ -66,7 +65,7 @@ export const servicesBinary =
 export const skipServices = process.env.MICROSCOPE_E2E_SKIP_SERVICES === "1";
 export const skippedServices = "MICROSCOPE_E2E_SKIP_SERVICES=1 skips the tests that run services";
 
-const mockIdpBinary = path.join(path.dirname(servicesBinary), "mock-idp");
+export const mockIdpBinary = path.join(path.dirname(servicesBinary), "mock-idp");
 
 export interface Mail {
   to: string;
@@ -237,11 +236,6 @@ async function mockIdp(log: string[]): Promise<{ base: string; stop: () => Promi
 export async function startServices(
   options: { sso?: boolean; localhost?: boolean; agents?: boolean; storage?: boolean } = {},
 ): Promise<Services> {
-  if (!existsSync(servicesBinary)) {
-    throw new Error(
-      `services is not built at ${servicesBinary}; build it, or set MICROSCOPE_E2E_SKIP_SERVICES=1 to skip the tests that run it`,
-    );
-  }
   const inbox: Mail[] = [];
   const waiting: (() => void)[] = [];
   const postmark = await fakePostmark((mail) => {
