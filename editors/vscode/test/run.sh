@@ -41,7 +41,8 @@ fi
 "$MICROSCOPE_UAT_XVFB" -displayfd 3 -nolisten tcp -screen 0 1920x1080x24 3>"$profile/display" 2>/dev/null &
 xvfb=$!
 trap 'kill "$xvfb" 2>/dev/null; rm -rf "$profile"' EXIT
-for _ in $(seq 100); do
+deadline=$((SECONDS + 10))
+while (( SECONDS < deadline )); do
     [[ -s $profile/display ]] && break
     sleep 0.1
 done

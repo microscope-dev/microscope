@@ -606,7 +606,8 @@ fn excluded_other_project_and_unmatched_descendants_are_not_recorded_under_paren
         parent,
         children: Vec::new(),
     };
-    for _ in 0..40 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while std::time::Instant::now() < deadline {
         let desc = crate::backend::perf::descendants(parent_pid);
         if desc.len() >= 3 {
             tree.children = desc;
