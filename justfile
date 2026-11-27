@@ -235,8 +235,22 @@ agent-dev SERVER="http://127.0.0.1:3000" LAUNCHER="/run/wrappers/bin/microscope-
     fi
     exec "${launcher[@]}" ./target/debug/microscope agent run --config /dev/null
 
+[script]
 web-build: web-deps
-    cd web && ./node_modules/.bin/vite build --logLevel warn
+    rm -rf build/web-next
+    (cd web && ./node_modules/.bin/vite build --logLevel warn --outDir ../build/web-next --emptyOutDir)
+    mkdir -p build/web
+    (cd build/web && find . -type f) | while read -r file; do
+        [[ -e "build/web-next/$file" ]] || rm "build/web/$file"
+    done
+    (cd build/web-next && find . -type f) | while read -r file; do
+        if ! cmp -s "build/web-next/$file" "build/web/$file"; then
+            mkdir -p "build/web/$(dirname "$file")"
+            mv "build/web-next/$file" "build/web/$file"
+        fi
+    done
+    find build/web -mindepth 1 -type d -empty -delete
+    rm -rf build/web-next
 
 web-test *ARGS: web-lint
     cd web && ./node_modules/.bin/tsc && ./node_modules/.bin/tsc -p ../sdk/web && ./node_modules/.bin/vitest run "$@"
