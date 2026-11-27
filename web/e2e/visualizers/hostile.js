@@ -13,14 +13,6 @@ async function attempt(present, run) {
   }
 }
 
-const settle = (promise, ms = 300) =>
-  Promise.race([
-    promise,
-    new Promise((resolve) => {
-      setTimeout(() => resolve("pending"), ms);
-    }),
-  ]);
-
 // oxlint-disable-next-line no-eval -- a way back to the global scope it tries
 const global = (0, eval)("this");
 const recovered = (name) =>
@@ -49,18 +41,18 @@ const probes = {
     attempt(recovered("EventSource"), () => new (recovered("EventSource"))(`${http}/events`)),
   importScripts: () =>
     attempt(recovered("importScripts"), () => recovered("importScripts")(`${http}/import-scripts`)),
-  dynamicImport: () => attempt(true, () => settle(import(`${http}/import.js`))),
+  dynamicImport: () => attempt(true, () => import(`${http}/import.js`)),
   worker: () => attempt(recovered("Worker"), () => new (recovered("Worker"))(`${http}/worker.js`)),
   font: () =>
     attempt(recovered("FontFace"), () =>
-      settle(new (recovered("FontFace"))("x", `url(${http}/font)`).load()),
+      new (recovered("FontFace"))("x", `url(${http}/font)`).load(),
     ),
   beacon: () =>
     attempt(recovered("navigator")?.sendBeacon, () =>
       recovered("navigator").sendBeacon(`${http}/beacon`, "x"),
     ),
   indexedDB: () => attempt(recovered("indexedDB"), () => recovered("indexedDB").open("x")),
-  caches: () => attempt(recovered("caches"), () => settle(recovered("caches").open("x"))),
+  caches: () => attempt(recovered("caches"), () => recovered("caches").open("x")),
   broadcast: () =>
     attempt(recovered("BroadcastChannel"), () =>
       // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a BroadcastChannel takes no target origin

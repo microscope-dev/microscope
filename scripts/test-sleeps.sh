@@ -124,7 +124,6 @@ deadline web/e2e/server.ts                            const timer = setTimeout(
 deadline web/e2e/services.ts                          const timer = setTimeout(() => reject(new Error(`mock-idp never listened: ${log}`)), 10_000);
 deadline web/e2e/services.ts                          const timer = setTimeout(() => reject(new Error(`services never listened: ${log}`)), 10_000);
 poll     web/e2e/services.ts                          setTimeout(wake, left);
-settle   web/e2e/visualizers/hostile.js               setTimeout(() => resolve("pending"), ms);
 workload web/test/live.test.tsx                       setTimeout(() => {
 workload web/test/sandbox.test.tsx                    "microscope.draw(() => { setTimeout(() => { throw new Error('later'); }); return new Promise(() => {}); });",
 workload web/test/sandbox.test.tsx                    "microscope.draw((input) => new Promise((resolve) => setTimeout(() => resolve(microscope.picture({ width: 1, height: 1, shapes: [] })), 300)));",
