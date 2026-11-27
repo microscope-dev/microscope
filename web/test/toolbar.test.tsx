@@ -3,7 +3,7 @@ import { page, userEvent } from "vitest/browser";
 
 import { tab } from "../src/tab";
 import { RunToolbar } from "../src/ui/RunToolbar";
-import { POLL } from "./fake-server";
+import { handled, POLL } from "./fake-server";
 import { mountPane, unmountPane } from "./pane";
 
 afterEach(unmountPane);
@@ -19,9 +19,7 @@ it("continues once for a double click", async () => {
   await userEvent.dblClick(button);
   await expect.poll(() => sent, POLL).toContain("continue");
 
-  await new Promise((resolve) => {
-    setTimeout(resolve, 20);
-  });
+  await handled();
   expect(sent.filter((method) => method === "continue")).toEqual(["continue"]);
   server.answer(await server.next("continue"), null);
 });

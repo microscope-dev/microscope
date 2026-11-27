@@ -2,6 +2,7 @@ import { afterEach, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";
 
 import { Share } from "../src/ui/Share";
+import { handled } from "./fake-server";
 import { mountPane, unmountPane } from "./pane";
 
 afterEach(unmountPane);
@@ -20,12 +21,10 @@ it("keeps the link for the access chosen last", async () => {
     .toHaveValue("http://x/join?control");
   server.answer(viewing, { url: "http://x/join?view" });
 
-  await new Promise((resolve) => {
-    setTimeout(resolve, 50);
-  });
-  await expect
-    .element(page.getByRole("textbox", { name: "Join link" }))
-    .toHaveValue("http://x/join?control");
+  await handled();
+  expect(page.getByRole("textbox", { name: "Join link" }).element()).toHaveValue(
+    "http://x/join?control",
+  );
 });
 
 it("shows a failure in place of the link it was making", async () => {

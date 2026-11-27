@@ -127,15 +127,8 @@ deadline web/e2e/services.ts                          const timer = setTimeout((
 poll     web/e2e/services.ts                          setTimeout(wake, left);
 settle   web/e2e/visualizers/hostile.js               setTimeout(() => resolve("pending"), ms);
 workload web/test/live.test.tsx                       setTimeout(() => {
-settle   web/test/orgs-panes.test.tsx                 setTimeout(resolve, 50);
-settle   web/test/orgs-panes.test.tsx                 setTimeout(settle, 50);
-settle   web/test/orgs-panes.test.tsx                 setTimeout(settle, 50);
-settle   web/test/orgs-panes.test.tsx                 setTimeout(settle, 50);
-settle   web/test/profile-views.test.tsx              setTimeout(done, 0);
 workload web/test/sandbox.test.tsx                    "microscope.draw(() => { setTimeout(() => { throw new Error('later'); }); return new Promise(() => {}); });",
 workload web/test/sandbox.test.tsx                    "microscope.draw((input) => new Promise((resolve) => setTimeout(() => resolve(microscope.picture({ width: 1, height: 1, shapes: [] })), 300)));",
-settle   web/test/share.test.tsx                      setTimeout(resolve, 50);
-settle   web/test/toolbar.test.tsx                    setTimeout(resolve, 20);
 LIST
 
 failed=0
@@ -147,7 +140,7 @@ while IFS= read -r hit; do
   text="${text#"${text%%[![:space:]]*}"}"
   text="${text%"${text##*[![:space:]]}"}"
 
-  [[ "$text" =~ ^(//|#|/\*|\*|--) || "$text" == *'asyncio.sleep(0)'* || "$text" == 'test.setTimeout('* ]] && continue
+  [[ "$text" =~ ^(//|#|/\*|\*|--) || "$text" == *'asyncio.sleep(0)'* || "$text" =~ setTimeout\([a-z]+,\ 0\)\; || "$text" == 'test.setTimeout('* ]] && continue
 
   key="$file"$'\t'"$text"
   class=${classes[$key]:-}

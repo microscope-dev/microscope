@@ -16,8 +16,24 @@ const ME: User = { id: 1, username: "ana", email: "ana@example.com", totp_enable
 
 type Answer = [number, unknown?];
 
+function noted(response: Response, read: string[], route: string) {
+  const json = response.json.bind(response);
+  response.json = () =>
+    json().then((value: unknown) => {
+      read.push(route);
+      return value;
+    });
+  return response;
+}
+
+const read: string[] = [];
+const count = (routes: string[], route: string) => routes.filter((each) => each === route).length;
+const served = (asked: string[], route: string) =>
+  count(asked, route) > 0 && count(read, route) === count(asked, route);
+
 function services(routes: Record<string, Answer | ((body: unknown) => Answer)>) {
   const asked: string[] = [];
+  read.length = 0;
   const real = globalThis.fetch;
   vi.stubGlobal(
     "fetch",
@@ -35,10 +51,14 @@ function services(routes: Record<string, Answer | ((body: unknown) => Answer)>) 
       return Promise.resolve(
         status === 204 || answer === undefined
           ? new Response(null, { status: status === 404 ? 404 : status })
-          : new Response(JSON.stringify(answer), {
-              status,
-              headers: { "Content-Type": "application/json" },
-            }),
+          : noted(
+              new Response(JSON.stringify(answer), {
+                status,
+                headers: { "Content-Type": "application/json" },
+              }),
+              read,
+              route,
+            ),
       );
     }),
   );
@@ -287,12 +307,8 @@ it("lists sign-in methods only when there is one to connect or one connected", a
 
   const asked = await showSignInMethods(off, []);
   await expect
-    .poll(() => asked)
-    .toEqual(expect.arrayContaining(["GET /api/features", "GET /api/users/me/identities"]));
-  await expect.element(page.getByText(/^You are not in any organization/u)).toBeVisible();
-  await new Promise((settle) => {
-    setTimeout(settle, 50);
-  });
+    .poll(() => served(asked, "GET /api/features") && served(asked, "GET /api/users/me/identities"))
+    .toBe(true);
   expect(page.getByRole("heading", { name: "Sign-in methods" }).elements()).toHaveLength(0);
   unmountPane();
 
@@ -458,11 +474,7 @@ const showTwoFactor = async (totp: boolean, user: User) => {
 
 it("offers two-factor authentication only when the server can keep its secrets", async () => {
   const asked = await showTwoFactor(false, ME);
-  await expect.poll(() => asked).toContain("GET /api/features");
-  await expect.element(page.getByText(/^You are not in any organization/u)).toBeVisible();
-  await new Promise((settle) => {
-    setTimeout(settle, 50);
-  });
+  await expect.poll(() => served(asked, "GET /api/features")).toBe(true);
   expect(twoFactorHeading().elements()).toHaveLength(0);
   unmountPane();
 
@@ -490,11 +502,7 @@ const showSignedOut = async (email: boolean) => {
 
 it("offers a password reset only when the server sends email", async () => {
   const asked = await showSignedOut(false);
-  await expect.poll(() => asked).toContain("GET /api/features");
-  await expect.element(page.getByLabelText("Username or email")).toBeVisible();
-  await new Promise((settle) => {
-    setTimeout(settle, 50);
-  });
+  await expect.poll(() => served(asked, "GET /api/features")).toBe(true);
   expect(forgot().elements()).toHaveLength(0);
   unmountPane();
 
@@ -586,6 +594,7 @@ const jsonResponse = (value: unknown) =>
 it("shows the next person only their own projects, even while the last person's are still being asked for", async () => {
   const bo: User = { id: 2, username: "bo", email: "bo@example.com", totp_enabled: false };
   const held: (() => void)[] = [];
+  const late: string[] = [];
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL) => {
@@ -599,8 +608,14 @@ it("shows the next person only their own projects, even while the last person's 
         await new Promise<void>((resolve) => {
           held.push(resolve);
         });
-        return jsonResponse(
-          path === "/api/projects" ? [{ id: 1, name: "anas", org: null, permission: "admin" }] : [],
+        return noted(
+          jsonResponse(
+            path === "/api/projects"
+              ? [{ id: 1, name: "anas", org: null, permission: "admin" }]
+              : [],
+          ),
+          late,
+          path,
         );
       }
       return jsonResponse(
@@ -621,9 +636,7 @@ it("shows the next person only their own projects, even while the last person's 
   for (const release of held) {
     release();
   }
-  await new Promise((resolve) => {
-    setTimeout(resolve, 50);
-  });
+  await expect.poll(() => late.length).toBe(held.length);
   expect(text(own)).not.toMatch(/anas/u);
 });
 

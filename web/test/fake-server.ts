@@ -6,6 +6,11 @@ import { createSession, type Session } from "../src/store";
 
 export const POLL = { interval: 2 };
 
+export const handled = () =>
+  new Promise<void>((done) => {
+    setTimeout(done, 0);
+  });
+
 export interface Asked {
   id: number;
   method: string;
