@@ -255,26 +255,11 @@ test("a family's processes are listed parents first, each with how it ended", as
   await expect(rows).toHaveCount(2);
   await expect(rows.nth(1)).toContainText("exited with 4");
 
-  const timeline = page.getByTestId("timeline").getByRole("img");
-  const box = await timeline.boundingBox();
-  if (!box) {
-    throw new Error("the timeline has no box");
-  }
-  const tip = page.getByTestId("zone-tip");
-  const found = async () => {
-    for (let top = 0; top + 30 <= box.height; top += 30) {
-      for (let x = 1; x < box.width; x += 4) {
-        await page.mouse.move(box.x + x, box.y + top + 24);
-        if ((await tip.count()) > 0 && /waited in wait4/u.test((await tip.textContent()) ?? "")) {
-          return true;
-        }
-      }
-    }
-    return false;
-  };
-  expect(await found()).toBe(true);
-  await page.mouse.down();
-  await page.mouse.up();
+  await page
+    .getByTestId("timeline")
+    .getByRole("button", { name: /^waited in wait4 for /u })
+    .first()
+    .click();
   await expect(page).toHaveURL(/range=\d+-\d+/u);
 });
 

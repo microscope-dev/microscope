@@ -58,6 +58,8 @@ const PLOT = 40;
 
 const KERNEL = 12;
 
+const WAIT_BUTTON = 3;
+
 const DRAG = 4;
 
 const MOST_TASK_LANES = 50;
@@ -956,6 +958,29 @@ export function Lanes() {
       : null;
   });
 
+  const waitSpots = createMemo(() => {
+    if (!kernel()) {
+      return [];
+    }
+    const [start, end] = shownView();
+    const currentPlot = plot();
+    const scale = currentPlot / Math.max(span(), 1);
+    const tops = laid().tops;
+    const currentAnswered = answered();
+    return lanes().flatMap((row, lane) => {
+      const answer = row.others ? undefined : currentAnswered.get(row.lane);
+      const top = (tops[lane] ?? 0) + STRIP;
+      return (answer?.waits ?? []).flatMap((wait) => {
+        const left = Math.max((wait.start - start) * scale, 0);
+        const right = Math.min((wait.end - start) * scale, currentPlot);
+        if (wait.end <= start || wait.start >= end || right - left < WAIT_BUTTON) {
+          return [];
+        }
+        return [{ wait, left, top, width: right - left }];
+      });
+    });
+  });
+
   const marked = createMemo(() => dragging() ?? instance()?.span ?? range());
   const rulerPointer = createMemo(() => (dragging() ? null : (pointer()?.time ?? null)));
   const cursorPointer = createMemo(() => (dragging() || panning() ? null : pointer()));
@@ -1030,6 +1055,22 @@ export function Lanes() {
               role="img"
               aria-label={`CPU${zoned() ? " and zones" : ""} over ${formatDuration(span())}`}
             />
+            <For each={waitSpots()}>
+              {(spot) => (
+                <button
+                  type="button"
+                  class="lane-wait"
+                  style={{
+                    left: `${spot.left}px`,
+                    top: `${spot.top}px`,
+                    width: `${spot.width}px`,
+                    height: `${KERNEL}px`,
+                  }}
+                  aria-label={`waited in ${spot.wait.call} for ${formatDuration(spot.wait.end - spot.wait.start)}`}
+                  onClick={() => chooseRange(spot.wait.start, spot.wait.end)}
+                />
+              )}
+            </For>
             <Show when={cursorPointer()}>
               {(current) => (
                 <Cursor

@@ -3331,6 +3331,19 @@ textarea.input {
   flex: none;
 }
 
+.lane-wait {
+  position: absolute;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.lane-wait:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
 .timeline-cursor {
   position: absolute;
   top: 0;
