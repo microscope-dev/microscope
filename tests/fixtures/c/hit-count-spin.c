@@ -1,4 +1,5 @@
 #define _GNU_SOURCE
+#include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -23,7 +24,7 @@ static void *worker(void *argument) {
 }
 
 int main(void) {
-    if (prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY) == -1) {
+    if ((prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY) == -1 && errno != EINVAL)) {
         return 1;
     }
     pthread_t workers[WORKERS];

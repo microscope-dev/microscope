@@ -1,4 +1,5 @@
 #define _GNU_SOURCE
+#include <errno.h>
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
@@ -48,7 +49,7 @@ static void on_signal(int signal) {
 int main(void) {
     struct sigaction action = {.sa_handler = on_signal};
     sigemptyset(&action.sa_mask);
-    if (prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY) == -1 ||
+    if ((prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY) == -1 && errno != EINVAL) ||
         sigaction(SIGUSR1, &action, NULL) != 0) {
         return 2;
     }

@@ -4,6 +4,7 @@
 
 
 #define _GNU_SOURCE
+#include <errno.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <sys/prctl.h>
@@ -37,7 +38,7 @@ int main(void) {
     pthread_t threads[SLEEPERS];
     char release;
 
-    if (prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY) == -1) {
+    if ((prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY) == -1 && errno != EINVAL)) {
         return 1;
     }
     for (int index = 0; index < SLEEPERS; ++index) {

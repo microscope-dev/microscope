@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 
+#include <errno.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -29,7 +30,7 @@ static void *writer(void *argument) {
 int main(void) {
     char release;
 
-    if (prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY) == -1) {
+    if ((prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY) == -1 && errno != EINVAL)) {
         return 1;
     }
     if (printf("READY %p\n", (void *)&attach_watched) < 0 || fflush(stdout) != 0) {

@@ -3,6 +3,7 @@
 
 
 #define _GNU_SOURCE
+#include <errno.h>
 #include <signal.h>
 #include <sys/prctl.h>
 #include <sys/wait.h>
@@ -26,7 +27,7 @@ int main(void) {
     char release;
     struct sigaction action = {.sa_handler = on_continue};
 
-    if (prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY) == -1 || sigaction(SIGCONT, &action, NULL) == -1) {
+    if ((prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY) == -1 && errno != EINVAL) || sigaction(SIGCONT, &action, NULL) == -1) {
         return 1;
     }
     if (write(STDOUT_FILENO, ready, sizeof(ready) - 1) != (ssize_t)(sizeof(ready) - 1)) {

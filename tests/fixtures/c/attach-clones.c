@@ -25,7 +25,7 @@ static void *worker(void *argument) {
 }
 
 int main(void) {
-    if (prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY) == -1) {
+    if ((prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY) == -1 && errno != EINVAL)) {
         return 1;
     }
     pthread_attr_t attributes;

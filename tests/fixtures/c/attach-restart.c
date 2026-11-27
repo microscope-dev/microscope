@@ -3,6 +3,7 @@
 
 
 #define _GNU_SOURCE
+#include <errno.h>
 #include <sys/prctl.h>
 #include <unistd.h>
 
@@ -20,7 +21,7 @@ __asm__(".text\n"
 
 int main(void) {
     static const char ready[] = "READY\n";
-    if (prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY) == -1) {
+    if ((prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY) == -1 && errno != EINVAL)) {
         return 1;
     }
     if (write(STDOUT_FILENO, ready, sizeof(ready) - 1) != (ssize_t)(sizeof(ready) - 1)) {
