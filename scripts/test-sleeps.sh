@@ -22,6 +22,7 @@ while read -r class file text; do
   [[ -n "$class" ]] || continue
   classes["$file"$'\t'"$text"]=$class
 done <<'LIST'
+poll     tests/agent.rs                               std::thread::sleep(Duration::from_millis(50));
 poll     tests/breakpoint_states.rs                   tokio::time::sleep(Duration::from_millis(1)).await;
 poll     tests/debugger/forks.rs                      tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 poll     tests/debugger/group.rs                      std::thread::sleep(Duration::from_millis(1));
