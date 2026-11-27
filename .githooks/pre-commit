@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+global="$(git config --global core.hooksPath || true)"
+global="${global/#\~/$HOME}"
+if [[ -n "$global" && -x "$global/pre-commit" ]]; then
+    exec "$global/pre-commit" "$@"
+fi

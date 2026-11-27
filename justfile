@@ -21,6 +21,10 @@ dev *ARGS="":
     exec ./scripts/dev.sh "$@"
 
 [script("bash")]
+install-hooks:
+    git config core.hooksPath .githooks
+
+[script("bash")]
 install-vscode-symlink:
     ln -s "$PWD/editors/vscode" ~/.vscode/extensions/microscope.microscope-0.1.0
 
