@@ -737,6 +737,7 @@ fn settings(
     stack_bytes: u32,
     stack_copy: String,
 ) {
+    processor.copies_stacks_of(stack_bytes);
     let builder = processor.builder();
     if let SampleSource::Function { .. } = options.source {
         builder.setting("function stacks", "sampled");

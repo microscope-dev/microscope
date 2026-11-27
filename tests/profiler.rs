@@ -172,7 +172,11 @@ fn a_function_breakpoint_records_its_exact_callers_in_every_build() {
                                 && stack.functions.iter().zip(&expected).all(|(a, b)| a == b),
                             "{context}: not a prefix"
                         );
-                        assert_eq!(reason, "stack copy exhausted", "{context}");
+                        assert!(
+                            reason == "stack copy exhausted"
+                                || reason == "unwinding could not read the stack",
+                            "{context}"
+                        );
                     }
                 }
 

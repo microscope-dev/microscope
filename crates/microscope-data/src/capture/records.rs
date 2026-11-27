@@ -237,10 +237,12 @@ pub enum Truncation {
     InterpretedUnplaced = 14,
 
     ChainLimit = 15,
+
+    StackShortened = 16,
 }
 
 impl Truncation {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::NoUnwindInfo,
         Self::FramePointerNotKept,
         Self::StackCopyExhausted,
@@ -256,6 +258,7 @@ impl Truncation {
         Self::InterpretedEnded,
         Self::InterpretedUnplaced,
         Self::ChainLimit,
+        Self::StackShortened,
     ];
 
     #[must_use]
@@ -281,6 +284,7 @@ impl Truncation {
             Self::InterpretedEnded => "interpreted frames ended early",
             Self::InterpretedUnplaced => "interpreted frames not placed among the native ones",
             Self::ChainLimit => "kernel call chain limit",
+            Self::StackShortened => "stack copy shortened while microscope caught up",
         }
     }
 }

@@ -342,6 +342,8 @@ pub struct Processor {
 
     paired_bytes: Vec<u8>,
     exact_pids: Option<BTreeSet<Pid>>,
+
+    stack_bytes: u64,
 }
 
 impl Processor {
@@ -404,7 +406,12 @@ impl Processor {
             paired: None,
             paired_bytes: Vec::new(),
             exact_pids: None,
+            stack_bytes: 0,
         }
+    }
+
+    pub const fn copies_stacks_of(&mut self, bytes: u32) {
+        self.stack_bytes = bytes as u64;
     }
 
     pub(super) fn restrict_pids(&mut self, pids: BTreeSet<Pid>) {
@@ -1626,6 +1633,20 @@ impl Processor {
             self.limit,
             frames,
         );
+
+        let end = match end {
+            StackEnd::Truncated(Truncation::StackCopyExhausted, module) => {
+                let reason = if sample.stack_asked < self.stack_bytes {
+                    Truncation::StackShortened
+                } else if (sample.stack.len() as u64) < sample.stack_asked {
+                    Truncation::Unreadable
+                } else {
+                    Truncation::StackCopyExhausted
+                };
+                StackEnd::Truncated(reason, module)
+            }
+            end => end,
+        };
         (end, modules)
     }
 
@@ -4122,9 +4143,7 @@ mod tests {
         assert_eq!(after.found.len(), 1, "{after:?}");
     }
 
-    #[test]
-    fn a_sample_allocates_nothing_once_its_stack_was_seen() {
-        const ROUNDS: usize = 4;
+    fn recorded_stacks() -> Vec<u8> {
         let options = perf::EventOptions {
             source: perf::Source::Clock {
                 period: std::time::Duration::from_millis(1),
@@ -4159,6 +4178,43 @@ mod tests {
 
         let mut records = Vec::new();
         events.drain(&mut records);
+        records
+    }
+
+    #[test]
+    fn a_stack_copied_short_by_the_kernel_or_the_reader_says_which_rather_than_exhausted() {
+        let mut records = recorded_stacks();
+        let mut at = 0;
+        while let Some(Ok((record, length))) = decode::next(&records[at..]) {
+            if let decode::Record::Sample(sample) = record
+                && sample.stack.len() > 64
+            {
+                let used = sample.stack.as_ptr().addr() - records.as_ptr().addr()
+                    + usize::try_from(sample.stack_asked).unwrap();
+                records[used..used + 8].copy_from_slice(&64_u64.to_le_bytes());
+            }
+            at += length;
+        }
+
+        for (configured, cause) in [
+            (16 * 1024, Truncation::Unreadable),
+            (32 * 1024, Truncation::StackShortened),
+        ] {
+            let mut processor = Processor::new(DebugFileSearch::default(), 64);
+            processor.copies_stacks_of(configured);
+            processor.ingest(&records, None);
+            let capture = processor.finish();
+            let truncated =
+                |why: Truncation| capture.account(AccountKind::Truncated as u32 + why as u32);
+            assert!(truncated(cause) > 0, "{cause:?}");
+            assert_eq!(truncated(Truncation::StackCopyExhausted), 0, "{cause:?}");
+        }
+    }
+
+    #[test]
+    fn a_sample_allocates_nothing_once_its_stack_was_seen() {
+        const ROUNDS: usize = 4;
+        let records = recorded_stacks();
         let (mut samples, mut times) = (Vec::new(), Vec::new());
         let mut rest = records.as_slice();
         while let Some(Ok((record, length))) = decode::next(rest) {
