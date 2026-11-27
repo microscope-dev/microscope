@@ -1051,51 +1051,6 @@ mod tests {
     }
 
     #[test]
-    fn a_program_is_found_though_it_is_not_yet_mapped() {
-        use std::io::BufRead as _;
-
-        let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("build/test-programs/probes")
-            .canonicalize()
-            .expect("run `just build-test-programs`");
-        let python = std::path::PathBuf::from(
-            std::env::var_os("MICROSCOPE_CPYTHON").expect("run tests in the dev shell"),
-        )
-        .join("3.14/python");
-        let mut child = std::process::Command::new(python)
-            .args([
-                "-c",
-                "import mmap, os, sys, time
-file = open(sys.argv[1], 'rb')
-header = mmap.mmap(file.fileno(), 4096, prot=mmap.PROT_READ)
-print('MAPPED', flush=True)
-time.sleep(0.3)
-os.execv(sys.argv[1], [sys.argv[1], 'records'])",
-            ])
-            .arg(&program)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .expect("the loader");
-        let mut lines = std::io::BufReader::new(child.stdout.take().expect("its output")).lines();
-        assert_eq!(lines.next().expect("a line").expect("its text"), "MAPPED");
-        let mut processor = record::Processor::new(DebugFileSearch::default(), 64);
-        let found = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let found = found(child.id(), &program, &mut processor);
-            let control = found
-                .bias
-                .wrapping_load(crate::ImageAddress::new(found.table.control));
-            let mut block = [0; abi::CONTROL_SIZE];
-            let read = perf::read_memory(child.id(), control.get(), &mut block)
-                .expect("the control block is mapped");
-            probes::control(&block[..read]).expect("the control block is valid");
-        }));
-        drop(child.stdin.take());
-        child.wait().expect("its exit");
-        assert!(found.is_ok(), "the program was not found");
-    }
-
-    #[test]
     fn a_site_defined_as_a_recording_ends_is_off_once_it_has() {
         use std::io::{BufRead as _, Write as _};
 

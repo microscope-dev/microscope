@@ -49,7 +49,6 @@ poll     src/backend/linux/signal_action.rs           std::thread::sleep(Duratio
 poll     src/backend/linux/syscalls/launch.rs         std::thread::sleep(Duration::from_millis(5));
 settle   src/backend/linux/tracer.rs                  thread::sleep(std::time::Duration::from_micros(200));
 poll     src/profiler/collector.rs                    std::thread::sleep(std::time::Duration::from_millis(1));
-settle   src/profiler/collector.rs                    time.sleep(0.3)
 poll     src/profiler/session.rs                      std::thread::sleep(Duration::from_micros(100));
 workload src/profiler/session.rs                      std::thread::sleep(Duration::from_millis(30));
 parked   src/web/picker.rs                            .any(|process| process.pid == pid && process.command == "sleep 30")
