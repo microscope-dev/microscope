@@ -85,15 +85,34 @@ impl AlignedBytes {
 
     #[allow(unsafe_code, reason = "mapping a file is unsafe")]
     pub fn map(file: &std::fs::File, length: usize) -> std::io::Result<Self> {
+        use std::os::unix::fs::MetadataExt as _;
+
         use nix::sys::mman::{MapFlags, ProtFlags};
+
+        let metadata = file.metadata()?;
+        let others_can_write = metadata.mode() & 0o022 != 0;
+        if !metadata.is_file()
+            || metadata.uid() != nix::unistd::geteuid().as_raw()
+            || others_can_write
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "only a regular file that no other user can write is mapped",
+            ));
+        }
+        if metadata.len() < length as u64 {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
 
         let Some(nonzero) = std::num::NonZeroUsize::new(length) else {
             return Self::zeroed(0).ok_or_else(|| std::io::ErrorKind::OutOfMemory.into());
         };
 
         // SAFETY: a private, read-only mapping of a file aliases no Rust
-        // memory. The image cache writes each entry to a new file and renames
-        // it into place, so the mapped file never changes while it is mapped.
+        // memory. The file holds at least `length` bytes, and only this
+        // process's user or root can change it, either of whom can already
+        // change this process's memory. Microscope itself only replaces an
+        // entry by renaming a new file over it, which leaves this one intact.
         let start = unsafe {
             nix::sys::mman::mmap(
                 None,
@@ -159,7 +178,7 @@ impl AlignedBytes {
         match &self.storage {
             Storage::Heap(blocks) => &blocks.as_bytes()[..self.length],
             // SAFETY: the mapping covers `length` readable bytes, lives as long
-            // as `self`, and nothing writes to it.
+            // as `self`, and `map` mapped only a file nothing else changes.
             Storage::Mapped(mapping) => unsafe {
                 std::slice::from_raw_parts(mapping.start.as_ptr().cast::<u8>(), self.length)
             },

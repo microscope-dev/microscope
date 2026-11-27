@@ -47,6 +47,16 @@ fn files(cache: &ImageCache) -> Vec<String> {
     names
 }
 
+fn write_entry(path: &Path, bytes: &[u8]) {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .and_then(|mut file| file.write_all(bytes))
+        .unwrap();
+}
+
 fn set_modified(path: &Path, seconds: i64) {
     let time = nix::sys::time::TimeSpec::new(seconds, 0);
     nix::sys::stat::utimensat(
@@ -121,6 +131,7 @@ fn live_images_share_validated_tables_and_replacements_leave_readers_intact() {
     assert!(!std::ptr::eq(first.as_ref(), replaced.as_ref()));
     assert_eq!(first.as_bytes(), second.as_bytes());
     assert_ne!(first.as_bytes(), replaced.as_bytes());
+    drop(replaced);
     std::fs::write(cache.path(key), b"damaged while the image is live").unwrap();
     assert!(matches!(cache.get(key), Lookup::Corrupt(_)));
     assert_eq!(first.as_bytes(), second.as_bytes());
@@ -142,7 +153,7 @@ fn a_damaged_entry_is_reported_and_removed() {
 
     for (name, bytes) in damaged {
         let key = Key::of(&[name.as_bytes()]);
-        std::fs::write(cache.path(key), bytes).unwrap();
+        write_entry(&cache.path(key), &bytes);
         assert!(matches!(cache.get(key), Lookup::Corrupt(_)), "{name}");
         assert!(!cache.path(key).exists(), "{name}");
         assert!(matches!(cache.get(key), Lookup::Miss), "{name}");
@@ -154,7 +165,7 @@ fn a_reader_removes_only_the_entry_it_found_unusable() {
     let dir = ScratchDir::new("cache-replaced");
     let cache = ImageCache::open(&dir.join("images"), DEFAULT_CAPACITY).unwrap();
     let key = Key::of(&[b"program"]);
-    std::fs::write(cache.path(key), b"damaged").unwrap();
+    write_entry(&cache.path(key), b"damaged");
     let (_, found) = crate::image::backing::read_input(&cache.path(key)).unwrap();
     let good = image(b"views");
     cache.put(key, &good).unwrap();
@@ -250,6 +261,23 @@ fn concurrent_writers_and_readers_see_whole_entries() {
         }
     });
     assert_eq!(files(&cache), [format!("{key}.image")]);
+}
+
+#[test]
+fn an_entry_another_user_can_write_is_not_read_until_it_is_written_again() {
+    let dir = ScratchDir::new("cache-writable-entry");
+    let cache = ImageCache::open(&dir.join("images"), DEFAULT_CAPACITY).unwrap();
+    let key = Key::of(&[b"program"]);
+    let good = image(b"views");
+
+    for mode in [0o620, 0o602] {
+        cache.put(key, &good).unwrap();
+        std::fs::set_permissions(cache.path(key), std::fs::Permissions::from_mode(mode)).unwrap();
+        assert!(matches!(cache.get(key), Lookup::Miss), "{mode:o}");
+
+        cache.put(key, &good).unwrap();
+        assert_eq!(bytes_of(cache.get(key)), good.as_bytes(), "{mode:o}");
+    }
 }
 
 #[test]
