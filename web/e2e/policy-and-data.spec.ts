@@ -31,7 +31,9 @@ const test = base.extend<{ services: Services }>({
 });
 
 test.skip(skipServices, skippedServices);
-test.skip(!existsSync(hotCallsBinary), `fixture is not built at ${hotCallsBinary}`);
+test.beforeEach(() => {
+  expect(existsSync(hotCallsBinary), `fixture is not built at ${hotCallsBinary}`).toBe(true);
+});
 
 const account = (page: Page) => page.getByRole("tabpanel", { name: "Account" });
 
@@ -115,6 +117,7 @@ test("records two of three programs into two projects, never mentions the third,
   let procC: ChildProcess | null = null;
   let agent: ChildProcess | null = null;
 
+  let failed = false;
   try {
     await signUp(page, services);
 
@@ -283,6 +286,9 @@ test("records two of three programs into two projects, never mentions the third,
     await dialog.getByRole("tab", { name: "Recording" }).click();
     await dialog.getByRole("button", { name: "Open session" }).first().click();
     await expect(page).toHaveURL(/\/s\/\d+/u);
+  } catch (error) {
+    failed = true;
+    throw error;
   } finally {
     if (procA) {
       await stopChild(procA, "SIGKILL");
@@ -295,10 +301,10 @@ test("records two of three programs into two projects, never mentions the third,
     }
     if (agent) {
       const code = await stopChild(agent, "SIGTERM");
-      expect(code).toBe(0);
+      expect.soft(code).toBe(0);
     }
     await rm(state, { recursive: true, force: true });
-    if (info.status !== info.expectedStatus) {
+    if (failed) {
       await info.attach("agent.log", { body: agentLog.join("\n") });
     }
   }

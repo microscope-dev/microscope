@@ -158,6 +158,7 @@ test("stripped binary shows addresses, then function names immediately after upl
   let agent: ChildProcess | null = null;
   let loginProc: ChildProcess | null = null;
 
+  let failed = false;
   try {
     await signUp(page, services);
 
@@ -313,6 +314,10 @@ test("stripped binary shows addresses, then function names immediately after upl
       env: { ...process.env, MICROSCOPE_CREDENTIALS_FILE: credsFile },
       stdio: ["ignore", "pipe", "pipe"],
     });
+    const login = loginProc;
+    const loginExited = new Promise<number | null>((resolve) => {
+      login.on("exit", (code) => resolve(code));
+    });
     loginProc.stderr?.on("data", (c: Buffer) => loginStderr.push(c.toString()));
 
     let verifyUrl = "";
@@ -334,9 +339,7 @@ test("stripped binary shows addresses, then function names immediately after upl
     await page.getByTestId("cli-login-approve-btn").click();
     await expect(page.getByTestId("cli-login-approved")).toBeVisible();
 
-    const loginExit = await new Promise<number | null>((resolve) => {
-      loginProc?.on("exit", (code) => resolve(code));
-    });
+    const loginExit = await loginExited;
     loginProc = null;
     expect(loginExit).toBe(0);
 
@@ -363,6 +366,9 @@ test("stripped binary shows addresses, then function names immediately after upl
       env: { ...process.env, MICROSCOPE_CREDENTIALS_FILE: credsFile },
       encoding: "utf8",
     });
+  } catch (error) {
+    failed = true;
+    throw error;
   } finally {
     if (loginProc) {
       await stopChild(loginProc, "SIGKILL");
@@ -373,7 +379,7 @@ test("stripped binary shows addresses, then function names immediately after upl
     if (agent) {
       await stopChild(agent, "SIGTERM");
     }
-    if (info.status !== info.expectedStatus && agentLog.length > 0) {
+    if (failed && agentLog.length > 0) {
       await info.attach("agent.log", { body: agentLog.join("") });
     }
     await rm(workDir, { recursive: true, force: true });

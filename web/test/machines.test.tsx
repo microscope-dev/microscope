@@ -98,14 +98,14 @@ afterEach(() => {
   history = null;
 });
 
-const NOW = Math.floor(Date.now() / 1000);
+const now = () => Math.floor(Date.now() / 1000);
 
 function overview(changes: Partial<Overview> = {}): Overview {
   return {
     org_id: 3,
     role: "owner",
     agents_on: true,
-    computed_at: NOW - 40,
+    computed_at: now() - 40,
     live_window_secs: 1500,
     newest_version: "0.4.2",
     total: { live: 55, quiet: 1, stopped: 30, revoked: 0 },
@@ -160,8 +160,8 @@ function machine(id: number, hostname: string, changes: Partial<Machine> = {}): 
     primary_ip: "10.0.3.17",
     tags: { environment: "prod", cluster: "checkout-us1" },
     agent_version: "0.4.2",
-    created_at: NOW - 3 * 86_400,
-    last_seen_at: NOW - 120,
+    created_at: now() - 3 * 86_400,
+    last_seen_at: now() - 120,
     stopped_at: null,
     revoked_at: null,
     key: { id: 9, name: "prod-eks" },
@@ -182,8 +182,8 @@ function detail(changes: Partial<Detail> = {}): Detail {
     agent_version: "0.4.2",
     primary_ip: "10.0.3.17",
     egress_ip: "203.0.113.24",
-    created_at: NOW - 3 * 86_400,
-    last_seen_at: NOW - 120,
+    created_at: now() - 3 * 86_400,
+    last_seen_at: now() - 120,
     stopped_at: null,
     revoked_at: null,
     key: { id: 9, name: "prod-eks" },
@@ -235,10 +235,10 @@ function key(id: number, name: string, changes: Partial<EnrollmentKey> = {}): En
     unrevoked: 120,
     uses: 2314,
     max_uses: null,
-    created_at: NOW - 90 * 86_400,
+    created_at: now() - 90 * 86_400,
     created_by: "ana",
     expires_at: null,
-    last_used_at: NOW - 60,
+    last_used_at: now() - 60,
     revoked_at: null,
     ...changes,
   };
@@ -464,7 +464,7 @@ it("searches every state, marks the match, and says which address matched when i
                 machine(2, "db-03.ams1", {
                   state: "stopped",
                   primary_ip: "192.168.40.3",
-                  stopped_at: NOW - 86_400,
+                  stopped_at: now() - 25 * 3_600,
                   matched: "bond0.30 10.0.3.5",
                   warnings: ["old_version"],
                 }),
@@ -646,7 +646,7 @@ it("revokes a key only once its name is typed, alone unless asked to take its ma
       200,
       [
         key(9, "prod-eks"),
-        key(4, "old-prod", { live: 0, uses: 41, revoked_at: NOW - 15 * 86_400 }),
+        key(4, "old-prod", { live: 0, uses: 41, revoked_at: now() - 15 * 86_400 }),
       ],
     ],
     "POST /api/fleet/keys/9/revoke": [200, { revoked_machines: 100 }],
@@ -691,7 +691,7 @@ it("revokes the machines of a key that is already revoked, once its name is type
     "GET /api/fleet": [200, overview()],
     "GET /api/fleet/keys": [
       200,
-      [key(4, "old-prod", { live: 3, unrevoked: 7, uses: 41, revoked_at: NOW - 15 * 86_400 })],
+      [key(4, "old-prod", { live: 3, unrevoked: 7, uses: 41, revoked_at: now() - 15 * 86_400 })],
     ],
     "POST /api/fleet/keys/4/revoke": [200, { revoked_machines: 7 }],
   });

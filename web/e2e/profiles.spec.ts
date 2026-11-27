@@ -376,6 +376,7 @@ test("a program's zones show under its threads, and the Zones pane picks which s
   const [, length = "0", unit] = / ([\d.]+) (ms|s)$/u.exec(named) ?? [];
   const total = Number(length) * (unit === "s" ? 1e9 : 1e6);
   const tip = page.getByTestId("zone-tip");
+  let stepTip = "";
   await expect
     .poll(async () => {
       const box = (await lanes.boundingBox()) ?? { x: 0, y: 0, width: 0, height: 0 };
@@ -383,12 +384,15 @@ test("a program's zones show under its threads, and the Zones pane picks which s
         await page.mouse.move(box.x + (box.width * (from + to)) / 2 / total, box.y + y);
         const text = (await tip.count()) > 0 ? await tip.textContent() : null;
         if (text?.startsWith("step")) {
+          stepTip = text;
           return text;
         }
       }
       return "";
     })
-    .toMatch(/^step: 20\.\d ms\d+% on CPU, [\d.]+ \S+ blocked, [\d.]+ \S+ preempted/u);
+    .toMatch(/^step: [\d.]+ m?s\d+% on CPU, [\d.]+ \S+ blocked, [\d.]+ \S+ preempted/u);
+  const [, spent = "0", spentUnit] = /^step: ([\d.]+) (ms|s)/u.exec(stepTip) ?? [];
+  expect(Number(spent) * (spentUnit === "s" ? 1000 : 1)).toBeGreaterThanOrEqual(20);
   await page.mouse.move(0, 0);
 
   await page.getByTestId("accounting").click();

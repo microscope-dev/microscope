@@ -32,7 +32,9 @@ const test = base.extend<{ services: Services }>({
 });
 
 test.skip(skipServices, skippedServices);
-test.skip(!existsSync(hotCallsBinary), `fixture is not built at ${hotCallsBinary}`);
+test.beforeEach(() => {
+  expect(existsSync(hotCallsBinary), `fixture is not built at ${hotCallsBinary}`).toBe(true);
+});
 
 const account = (page: Page) => page.getByRole("tabpanel", { name: "Account" });
 
@@ -120,6 +122,7 @@ test("opens Fleet overview on live agent data, narrows scope into a session, and
   let workload: ChildProcess | null = null;
   let running: ChildProcess | null = null;
 
+  let failed = false;
   try {
     await signUp(alice, services);
     const bobName = await signUp(bob, services);
@@ -287,19 +290,22 @@ test("opens Fleet overview on live agent data, narrows scope into a session, and
     await expect(outsider.getByRole("alert")).toContainText(/no such session/iu, {
       timeout: 10_000,
     });
+  } catch (error) {
+    failed = true;
+    throw error;
   } finally {
     if (workload) {
       await stopChild(workload, "SIGKILL");
     }
     if (running) {
       const agentCode = await stopChild(running, "SIGTERM");
-      expect(agentCode).toBe(0);
+      expect.soft(agentCode).toBe(0);
     }
     await ctxAlice.close();
     await ctxBob.close();
     await ctxOutsider.close();
     await rm(state, { recursive: true, force: true });
-    if (info.status !== info.expectedStatus) {
+    if (failed) {
       await info.attach("agent.log", { body: agentLog.join("") });
     }
   }

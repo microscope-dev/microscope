@@ -229,14 +229,12 @@ describe("dashboards URL and formatting helpers", () => {
       resolveGate();
       const url = await copyPromise;
       expect(url).toContain("/s/77");
-      await new Promise<void>((resolve) => {
-        setTimeout(resolve, 10);
-      });
-
-      expect(patched).toEqual([
-        { id: 77, refresh: "m1" },
-        { id: 77, refresh: "s5" },
-      ]);
+      await expect
+        .poll(() => patched)
+        .toEqual([
+          { id: 77, refresh: "m1" },
+          { id: 77, refresh: "s5" },
+        ]);
     } finally {
       unhook();
       updateSpy.mockRestore();

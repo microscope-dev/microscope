@@ -158,7 +158,7 @@ test("records a live process with the real agent and renders its hot function in
   page,
   services,
 }, info) => {
-  test.skip(!existsSync(hotCallsBinary), `fixture is not built at ${hotCallsBinary}`);
+  expect(existsSync(hotCallsBinary), `fixture is not built at ${hotCallsBinary}`).toBe(true);
   test.setTimeout(60_000);
   const enroll = await enrollKey(page, services);
 
@@ -169,19 +169,23 @@ test("records a live process with the real agent and renders its hot function in
   const agentLog: string[] = [];
   const workload = spawn(workloadBinary, [], { stdio: "ignore" });
   const running = startAgent(enroll, state, processName, "hot-calls", agentLog);
+  let failed = false;
   try {
     await expectHostedFrame(page, "hot_function");
     const version = page.getByRole("combobox", { name: "Version filter" }).locator("option").nth(1);
     await expect(version).toHaveText(/^[0-9a-f]{12}$/u);
     await expect(version).toHaveAttribute("title", /^[0-9a-f]{40}$/u);
+  } catch (error) {
+    failed = true;
+    throw error;
   } finally {
     await stopChild(workload, "SIGKILL");
     const agentCode = await stopChild(running, "SIGTERM");
     await rm(state, { recursive: true, force: true });
-    if (info.status !== info.expectedStatus) {
+    if (failed) {
       await info.attach("agent.log", { body: agentLog.join("") });
     }
-    expect(agentCode).toBe(0);
+    expect.soft(agentCode).toBe(0);
   }
 });
 
@@ -189,7 +193,7 @@ test("names a Node process's JIT-compiled JavaScript in the hosted flame graph",
   page,
   services,
 }, info) => {
-  test.skip(!existsSync(nodeBinary), `node is not at ${nodeBinary}`);
+  expect(existsSync(nodeBinary), `node is not at ${nodeBinary}`).toBe(true);
   test.setTimeout(60_000);
   const enroll = await enrollKey(page, services);
 
@@ -211,16 +215,20 @@ test("names a Node process's JIT-compiled JavaScript in the hosted flame graph",
     { cwd: state, stdio: "ignore" },
   );
   const running = startAgent(enroll, state, processName, "busy-node", agentLog);
+  let failed = false;
   try {
     await expectHostedFrame(page, "JS:*'turbofanSpin");
+  } catch (error) {
+    failed = true;
+    throw error;
   } finally {
     await stopChild(workload, "SIGKILL");
     const agentCode = await stopChild(running, "SIGTERM");
     await rm(state, { recursive: true, force: true });
-    if (info.status !== info.expectedStatus) {
+    if (failed) {
       await info.attach("agent.log", { body: agentLog.join("") });
     }
-    expect(agentCode).toBe(0);
+    expect.soft(agentCode).toBe(0);
   }
 });
 
@@ -228,8 +236,8 @@ test("names an unflagged Node process's JavaScript in the hosted flame graph wit
   page,
   services,
 }, info) => {
-  test.skip(!existsSync(nodeBinary), `node is not at ${nodeBinary}`);
   test.skip(!existsSync(bpfLauncher), `the BPF launcher is not at ${bpfLauncher}`);
+  expect(existsSync(nodeBinary), `node is not at ${nodeBinary}`).toBe(true);
   test.setTimeout(60_000);
   const enroll = await enrollKey(page, services);
 
@@ -244,15 +252,19 @@ test("names an unflagged Node process's JavaScript in the hosted flame graph wit
     { cwd: state, stdio: "ignore" },
   );
   const running = startAgent(enroll, state, processName, "busy-node", agentLog, bpfLauncher);
+  let failed = false;
   try {
     await expectHostedFrame(page, "turbofanSpin");
+  } catch (error) {
+    failed = true;
+    throw error;
   } finally {
     await stopChild(workload, "SIGKILL");
     const agentCode = await stopChild(running, "SIGTERM");
     await rm(state, { recursive: true, force: true });
-    if (info.status !== info.expectedStatus) {
+    if (failed) {
       await info.attach("agent.log", { body: agentLog.join("") });
     }
-    expect(agentCode).toBe(0);
+    expect.soft(agentCode).toBe(0);
   }
 });

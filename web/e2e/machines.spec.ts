@@ -154,7 +154,7 @@ test("adds a machine with a real agent, finds it, and revokes the key that let i
     await machines.getByRole("combobox", { name: "State" }).selectOption("any");
     await expect(machines.getByRole("button", { name: `${host}, revoked` })).toBeVisible();
   } finally {
-    expect(await stopped(running)).toBe(0);
+    expect.soft(await stopped(running)).toBe(0);
     await rm(state, { recursive: true, force: true });
   }
 });

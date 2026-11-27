@@ -157,6 +157,7 @@ test("workstation capture uploads sanitized, opens from a link in a colleague's 
   const localWebLog: string[] = [];
   const extraContexts: BrowserContext[] = [];
 
+  let failed = false;
   try {
     await signUp(page, services, "alice");
 
@@ -299,6 +300,10 @@ test("workstation capture uploads sanitized, opens from a link in a colleague's 
       env: { ...process.env, MICROSCOPE_CREDENTIALS_FILE: credsFile },
       stdio: ["ignore", "pipe", "pipe"],
     });
+    const login = loginProc;
+    const loginExited = new Promise<number | null>((resolve) => {
+      login.on("exit", (code) => resolve(code));
+    });
     loginProc.stderr?.on("data", (c: Buffer) => loginStderr.push(c.toString()));
 
     let verifyUrl = "";
@@ -320,9 +325,7 @@ test("workstation capture uploads sanitized, opens from a link in a colleague's 
     await page.getByTestId("cli-login-approve-btn").click();
     await expect(page.getByTestId("cli-login-approved")).toBeVisible();
 
-    const loginExit = await new Promise<number | null>((resolve) => {
-      loginProc?.on("exit", (code) => resolve(code));
-    });
+    const loginExit = await loginExited;
     loginProc = null;
     expect(loginExit).toBe(0);
 
@@ -475,6 +478,9 @@ test("workstation capture uploads sanitized, opens from a link in a colleague's 
     const flame = JSON.parse(flameJson) as { locked: boolean; nodes: number };
     expect(flame.locked).toBe(false);
     expect(typeof flame.nodes).toBe("number");
+  } catch (error) {
+    failed = true;
+    throw error;
   } finally {
     for (const ctx of extraContexts) {
       await ctx.close();
@@ -485,7 +491,7 @@ test("workstation capture uploads sanitized, opens from a link in a colleague's 
     if (localWeb) {
       await stopChild(localWeb, "SIGTERM");
     }
-    if (info.status !== info.expectedStatus && localWebLog.length > 0) {
+    if (failed && localWebLog.length > 0) {
       await info.attach("local-web.log", { body: localWebLog.join("") });
     }
     await rm(workDir, { recursive: true, force: true });
