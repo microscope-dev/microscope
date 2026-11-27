@@ -23,8 +23,6 @@ while read -r class file text; do
   classes["$file"$'\t'"$text"]=$class
 done <<'LIST'
 poll     tests/agent.rs                               std::thread::sleep(Duration::from_millis(50));
-poll     tests/breakpoint_states.rs                   tokio::time::sleep(Duration::from_millis(1)).await;
-poll     tests/debugger/forks.rs                      tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 poll     tests/debugger/group.rs                      std::thread::sleep(Duration::from_millis(1));
 poll     tests/debugger/group.rs                      tokio::time::sleep(Duration::from_millis(1)).await;
 workload tests/fixtures/c/kvstore.c                   nanosleep(&pause, NULL);
@@ -68,7 +66,6 @@ parked   tests/fixtures/rust/tokio/values/src/main.rs let mut registered = Box::
 parked   tests/fixtures/rust/tokio/values/src/main.rs let sleep = tokio::time::sleep(Duration::from_secs(90));
 parked   tests/fixtures/rust/tokio/values/src/main.rs tokio::time::sleep(Duration::from_secs(80))
 parked   tests/fixtures/rust/tokio/workers/src/main.rs tokio::time::sleep(Duration::from_secs(3600)).await; // AWAIT: sleep
-poll     tests/hit_counts.rs                          tokio::time::sleep(Duration::from_millis(1)).await;
 poll     tests/node/attach.rs                         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 poll     tests/node/debian.rs                         std::thread::sleep(Duration::from_millis(10));
 poll     tests/node/debian.rs                         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -84,12 +81,12 @@ poll     tests/python/profile.rs                      time.sleep(0.001)
 poll     tests/python/session.rs                      tokio::time::sleep(Duration::from_millis(10)).await;
 poll     tests/python/session.rs                      tokio::time::sleep(Duration::from_millis(20)).await;
 poll     tests/support/mod.rs                         std::thread::sleep(Duration::from_millis(1));
+poll     tests/support/mod.rs                         tokio::time::sleep(Duration::from_millis(1)).await;
 poll     tests/support/web.rs                         std::thread::sleep(Duration::from_millis(10));
 poll     tests/syscalls.rs                            std::thread::sleep(Duration::from_millis(10));
 workload tests/syscalls.rs                            std::thread::sleep(Duration::from_millis(200));
 workload tests/syscalls.rs                            std::thread::sleep(Duration::from_millis(250));
 poll     tests/tokio/soak.rs                          tokio::time::sleep(Duration::from_millis(5)).await;
-poll     tests/watch_conditions.rs                    tokio::time::sleep(Duration::from_millis(1)).await;
 poll     tests/web/terminal.rs                        std::thread::sleep(Duration::from_millis(10));
 LIST
 

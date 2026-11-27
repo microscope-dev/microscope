@@ -66,7 +66,7 @@ async fn attach_with_inspector(entry: &str, existing: bool) -> Vec<String> {
     )
     .expect("send an application signal after inspector activation");
     assert!(matches!(
-        tokio::time::timeout(std::time::Duration::from_secs(5), running)
+        tokio::time::timeout(crate::support::DEADLINE, running)
             .await.expect("the external SIGUSR1 must stop").expect("the run task").expect("the run"),
         StopReason::Exception(info) if info.code == 10
     ));
@@ -276,7 +276,7 @@ async fn shutdown_before_first_resume_does_not_leave_an_inspector() {
             .await;
         scenario.shutdown().await;
         child.release();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + crate::support::DEADLINE;
         while !report.exists() {
             assert!(
                 std::time::Instant::now() < deadline,
@@ -322,7 +322,7 @@ async fn shutdown_finishes_an_inspector_start_already_requested() {
         ));
         scenario.shutdown().await;
         child.release();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + crate::support::DEADLINE;
         while !report.exists() {
             assert!(
                 std::time::Instant::now() < deadline,
@@ -342,7 +342,7 @@ async fn detached_report(
     entry: &str,
     borrowed: bool,
 ) -> serde_json::Value {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + crate::support::DEADLINE;
     loop {
         let report: serde_json::Value =
             serde_json::from_slice(&std::fs::read(report).expect("live report"))

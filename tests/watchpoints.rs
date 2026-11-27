@@ -1401,13 +1401,10 @@ async fn attaching_clears_watchpoints_a_dead_tracer_left_armed() {
     let debugger = target.process.attach().await;
     target.process.release();
     assert_eq!(
-        tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            debugger.handle().resume()
-        )
-        .await
-        .expect("resume timed out")
-        .expect("resume attached target"),
+        tokio::time::timeout(support::DEADLINE, debugger.handle().resume())
+            .await
+            .expect("resume timed out")
+            .expect("resume attached target"),
         StopReason::Exited(ExitStatus::Code(0))
     );
     debugger.shutdown().await.expect("shut down");
@@ -1428,7 +1425,7 @@ async fn detaching_disarms_watchpoints_even_while_they_are_being_hit() {
 
         target.process.release();
         for expected in 1..=3_u64 {
-            let reason = tokio::time::timeout(std::time::Duration::from_secs(5), handle.resume())
+            let reason = tokio::time::timeout(support::DEADLINE, handle.resume())
                 .await
                 .expect("resume timed out")
                 .expect("resume attached target");
@@ -1850,7 +1847,7 @@ async fn attached_processes_arm_threads_they_create_later() {
     let mut writers = BTreeSet::new();
 
     loop {
-        let reason = tokio::time::timeout(std::time::Duration::from_secs(5), handle.resume())
+        let reason = tokio::time::timeout(support::DEADLINE, handle.resume())
             .await
             .expect("resume timed out")
             .expect("resume attached target");

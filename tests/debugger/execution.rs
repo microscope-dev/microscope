@@ -815,7 +815,7 @@ async fn a_thread_scoped_continue_stops_cleanly_when_its_thread_exits() {
         )
         .await;
 
-    let reason = timeout(Duration::from_secs(2), async {
+    let reason = timeout(support::DEADLINE, async {
         loop {
             if let microscope::DebuggerEvent::InferiorStopped {
                 execution_id: Some(event_execution),
@@ -1278,13 +1278,13 @@ async fn pause_during_launch_ends_the_launch_execution_in_a_coherent_stop() {
     let mut scenario = Scenario::new("pause during launch", Scenario::fixture("spin"));
     let run = scenario.start_launching().await;
 
-    let reason = timeout(Duration::from_secs(2), scenario.handle().pause())
+    let reason = timeout(support::DEADLINE, scenario.handle().pause())
         .await
         .expect("pause timed out")
         .expect("pause failed");
 
     assert_eq!(reason, StopReason::Pause);
-    let launched = timeout(Duration::from_secs(2), run)
+    let launched = timeout(support::DEADLINE, run)
         .await
         .expect("run timed out")
         .expect("run task panicked")
@@ -1372,7 +1372,7 @@ async fn pause_cancels_an_active_source_execution_plan() {
         )
         .await;
 
-    let reason = timeout(Duration::from_secs(2), scenario.handle().pause())
+    let reason = timeout(support::DEADLINE, scenario.handle().pause())
         .await
         .expect("pause timed out")
         .expect("pause failed");
@@ -1725,7 +1725,7 @@ async fn killing_a_running_or_attached_process_ends_it() {
     let process = child.process_id();
     let debugger = child.attach().await;
     let mut events = debugger.handle().subscribe();
-    timeout(Duration::from_secs(2), debugger.handle().kill())
+    timeout(support::DEADLINE, debugger.handle().kill())
         .await
         .expect("kill timed out")
         .expect("kill the attached process");
@@ -1771,7 +1771,7 @@ async fn terminating_asks_the_program_to_end_without_stopping_it() {
         .await;
 
     assert_eq!(
-        timeout(Duration::from_secs(5), running)
+        timeout(support::DEADLINE, running)
             .await
             .expect("no exit")
             .expect("resume task")
@@ -1792,7 +1792,7 @@ async fn terminating_asks_the_program_to_end_without_stopping_it() {
         .await;
 
     loop {
-        match timeout(Duration::from_secs(5), events.recv())
+        match timeout(support::DEADLINE, events.recv())
             .await
             .expect("no exit")
             .expect("events")

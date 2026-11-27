@@ -261,7 +261,7 @@ async fn debian_detach_closes_its_owned_inspector_and_preserves_a_borrowed_one()
             "Debian inspector listener after detach"
         );
         child.release();
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + crate::support::DEADLINE;
         let after = loop {
             let value: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(&report).expect("live report"))

@@ -1,7 +1,6 @@
 mod support;
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use microscope::{
     Condition, ConditionOwner, DebuggerEvent, Error, Evaluation, ExitStatus, HitCondition,
@@ -57,28 +56,20 @@ async fn watchpoint(scenario: &mut Scenario, id: WatchpointId) -> Watchpoint {
 }
 
 async fn wait_for_hits(scenario: &Scenario, id: WatchpointId, count: u64) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-
-    loop {
-        let snapshot = scenario
-            .operation("snapshot", scenario.handle().snapshot())
-            .await;
-        let hit_count = snapshot
-            .watchpoints
-            .iter()
-            .find(|watchpoint| watchpoint.id == id)
-            .expect("watchpoint exists")
-            .hit_count;
-        if hit_count >= count {
-            return;
-        }
-
-        assert!(
-            Instant::now() < deadline,
-            "watchpoint {id} reached {hit_count} of {count} hits"
-        );
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
+    scenario
+        .snapshot_until(
+            &format!("watchpoint {id} has {count} hits"),
+            |snapshot| {
+                snapshot
+                    .watchpoints
+                    .iter()
+                    .find(|watchpoint| watchpoint.id == id)
+                    .expect("watchpoint exists")
+                    .hit_count
+            },
+            |&hits| hits >= count,
+        )
+        .await;
 }
 
 async fn thread_hits(scenario: &mut Scenario) -> Vec<WatchpointHit> {

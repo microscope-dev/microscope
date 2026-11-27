@@ -2,12 +2,9 @@ mod support;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
 
 use expectrl::session::{OsSession, Session};
 use expectrl::{ControlCode, Eof, Expect};
-
-const TIMEOUT: Duration = Duration::from_secs(5);
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -32,7 +29,7 @@ fn command(executable: &Path, state: &Path) -> Command {
 
 fn spawn(command: Command) -> OsSession {
     let mut session = Session::spawn(command).expect("spawn microscope in a PTY");
-    session.set_expect_timeout(Some(TIMEOUT));
+    session.set_expect_timeout(Some(support::DEADLINE));
     session
 }
 

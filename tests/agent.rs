@@ -28,7 +28,6 @@ use serde_json::{Value, json};
 
 const KEY: &str = "mse_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaasnb47oni";
 const OTHER_KEY: &str = "mse_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbblgterh7w";
-const WAIT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug)]
 struct Seen {
@@ -216,13 +215,13 @@ impl Server {
     }
 
     fn next(&self, path: &str) -> Seen {
-        let deadline = Instant::now() + WAIT;
+        let deadline = Instant::now() + support::DEADLINE;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             let seen = self
                 .events
                 .recv_timeout(left)
-                .unwrap_or_else(|_| panic!("no {path} within {WAIT:?}"));
+                .unwrap_or_else(|_| panic!("no {path} within {:?}", support::DEADLINE));
             if seen.path == path {
                 return seen;
             }
@@ -280,7 +279,6 @@ impl Agent {
 
     fn exit_within(mut self, limit: Duration) -> (std::process::ExitStatus, String) {
         let mut child = self.child.take().unwrap();
-        let started = Instant::now();
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
             let status = child.wait();
@@ -291,7 +289,6 @@ impl Agent {
         let (status, stderr, _child) = receiver
             .recv_timeout(limit)
             .unwrap_or_else(|_| panic!("still running after {limit:?}"));
-        assert!(started.elapsed() <= limit, "took {:?}", started.elapsed());
         (status.unwrap(), stderr)
     }
 

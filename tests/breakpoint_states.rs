@@ -1,7 +1,6 @@
 mod support;
 
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
 
 use microscope::{
     Breakpoint, BreakpointHit, BreakpointId, BreakpointLocation, BreakpointOptions, BreakpointSpec,
@@ -94,25 +93,11 @@ async fn wait_for_watch_hits(scenario: &Scenario, id: WatchpointId, count: u64) 
 async fn wait_for(
     scenario: &Scenario,
     count: u64,
-    hit_count: impl Fn(&microscope::StateSnapshot) -> u64,
+    hit_count: impl Fn(&microscope::StateSnapshot) -> u64 + Sync,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-
-    loop {
-        let snapshot = scenario
-            .operation("snapshot", scenario.handle().snapshot())
-            .await;
-        let reached = hit_count(&snapshot);
-        if reached >= count {
-            return;
-        }
-
-        assert!(
-            Instant::now() < deadline,
-            "reached {reached} of {count} hits"
-        );
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
+    scenario
+        .snapshot_until(&format!("{count} hits"), hit_count, |&hits| hits >= count)
+        .await;
 }
 
 async fn global(scenario: &Scenario, name: &str) -> u64 {

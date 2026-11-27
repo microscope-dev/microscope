@@ -34,11 +34,9 @@ use tokio::time::timeout;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
-const EVENT_TIMEOUT: Duration = Duration::from_secs(60);
+pub const DEADLINE: Duration = Duration::from_mins(1);
 
 const STOP_CHECK_TIMEOUT: Duration = Duration::from_secs(20);
-
-const ATTACH_TIMEOUT: Duration = Duration::from_mins(1);
 
 pub type StopCheck =
     fn(DebuggerHandle) -> Pin<Box<dyn Future<Output = std::result::Result<(), String>> + Send>>;
@@ -115,7 +113,7 @@ impl ExternalProcess {
     }
 
     fn handshake(command: &mut Command) -> Self {
-        Self::spawn_within(command, ATTACH_TIMEOUT)
+        Self::spawn_within(command, DEADLINE)
     }
 
     pub fn spawn_within(command: &mut Command, timeout: Duration) -> Self {
@@ -184,7 +182,7 @@ impl ExternalProcess {
 
         let image = std::fs::canonicalize(path).expect("canonical fixture path");
         let pid = process.process_id().get();
-        let deadline = Instant::now() + EVENT_TIMEOUT;
+        let deadline = Instant::now() + DEADLINE;
 
         while std::fs::read_link(format!("/proc/{pid}/exe")).ok().as_ref() != Some(&image)
             || !std::fs::read_to_string(format!("/proc/{pid}/maps"))
@@ -210,7 +208,7 @@ impl ExternalProcess {
     }
 
     pub async fn attach(&self) -> Debugger {
-        timeout(ATTACH_TIMEOUT, Debugger::attach(self.process_id()))
+        timeout(DEADLINE, Debugger::attach(self.process_id()))
             .await
             .expect("attach timed out")
             .expect("attach debugger")
@@ -767,6 +765,30 @@ impl Scenario {
             .unwrap_or_else(|_| self.fail(&format!("{name} timed out")))
     }
 
+    pub async fn snapshot_until<T: std::fmt::Debug + Send>(
+        &self,
+        what: &str,
+        observe: impl Fn(&StateSnapshot) -> T + Sync,
+        done: impl Fn(&T) -> bool + Sync,
+    ) {
+        let deadline = Instant::now() + DEADLINE;
+
+        loop {
+            let snapshot = self.operation("snapshot", self.handle().snapshot()).await;
+            let seen = observe(&snapshot);
+            if done(&seen) {
+                return;
+            }
+
+            if Instant::now() >= deadline {
+                self.fail(&format!(
+                    "timed out waiting until {what}; last saw {seen:?}"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
     pub async fn shutdown(mut self) -> Option<ExitStatus> {
         let debugger = self.debugger.take().expect("scenario owns debugger");
         self.operation("shutdown", debugger.shutdown()).await;
@@ -777,7 +799,7 @@ impl Scenario {
 
     async fn wait_for(&mut self, predicate: impl Fn(&DebuggerEvent) -> bool) -> DebuggerEvent {
         loop {
-            let event = timeout(EVENT_TIMEOUT, self.events.recv())
+            let event = timeout(DEADLINE, self.events.recv())
                 .await
                 .unwrap_or_else(|_| self.fail("event timeout"))
                 .unwrap_or_else(|error| self.fail(&format!("event stream failed: {error}")));
@@ -865,7 +887,7 @@ pub fn assert_probes_read(profile: &microscope::profiler::Profile) {
 }
 
 pub fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
-    let deadline = Instant::now() + EVENT_TIMEOUT;
+    let deadline = Instant::now() + DEADLINE;
 
     while !condition() {
         assert!(Instant::now() < deadline, "timed out waiting until {what}");

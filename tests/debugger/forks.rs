@@ -83,9 +83,5 @@ async fn children_a_program_leaves_behind_run_their_inherited_traps_cleanly() {
     scenario.shutdown().await;
 
     let finished = || std::fs::read_dir(done.path()).map_or(0, Iterator::count);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while finished() < 8 && std::time::Instant::now() < deadline {
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    assert_eq!(finished(), 8, "every child ran past its trap");
+    support::wait_until("every child ran past its trap", || finished() == 8);
 }

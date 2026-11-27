@@ -8,9 +8,7 @@ use expectrl::session::Session;
 use expectrl::{ControlCode, Expect, Regex};
 use nix::sys::termios::LocalFlags;
 
-use crate::support::{Scenario, ScratchDir};
-
-const DEADLINE: Duration = Duration::from_secs(10);
+use crate::support::{DEADLINE, Scenario, ScratchDir};
 
 fn recording_browser(directory: &Path) -> PathBuf {
     let browser = directory.join("browser");

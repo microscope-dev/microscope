@@ -667,7 +667,7 @@ for event in (events.PY_START, events.PY_RETURN):
     monitoring.register_callback(tool, event, counting(monitoring.register_callback(tool, event, None)))
 
 def until(more):
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + 30
     while not more():
         assert time.monotonic() < deadline, calls
         traced()

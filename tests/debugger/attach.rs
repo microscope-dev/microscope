@@ -38,7 +38,7 @@ async fn attach_discovers_the_executable_and_detaches_without_harming_the_proces
         .expect("set attached breakpoint");
     child.release();
     assert!(matches!(
-        timeout(Duration::from_secs(5), handle.resume())
+        timeout(support::DEADLINE, handle.resume())
             .await
             .expect("attached resume timed out")
             .expect("resume attached process"),
@@ -66,9 +66,7 @@ async fn a_process_in_another_process_group_is_attached_and_stops() {
         "the fixture leads a group of its own"
     );
 
-    let debugger = timeout(Duration::from_secs(5), child.attach())
-        .await
-        .expect("the attach timed out");
+    let debugger = child.attach().await;
     let handle = debugger.handle();
     handle
         .add_breakpoint(microscope::BreakpointSpec::Function(
@@ -78,7 +76,7 @@ async fn a_process_in_another_process_group_is_attached_and_stops() {
         .expect("set attached breakpoint");
     child.release();
     assert!(matches!(
-        timeout(Duration::from_secs(5), handle.resume())
+        timeout(support::DEADLINE, handle.resume())
             .await
             .expect("attached resume timed out")
             .expect("resume attached process"),
@@ -99,7 +97,7 @@ async fn attached_group_stops_are_classified_and_resumable() {
     let stopping = scenario.start_resuming().await;
     kill(pid, Signal::SIGSTOP).expect("stop attached process");
     assert!(matches!(
-        timeout(Duration::from_secs(5), stopping)
+        timeout(support::DEADLINE, stopping)
             .await
             .expect("signal stop timed out")
             .expect("join resume")
@@ -242,7 +240,7 @@ async fn shutdown_detaches_a_running_attached_process_and_cancels_waiters() {
     let resuming = scenario.start_resuming().await;
     scenario.shutdown().await;
     assert!(matches!(
-        timeout(Duration::from_secs(5), resuming)
+        timeout(support::DEADLINE, resuming)
             .await
             .expect("resume waiter outlived the session")
             .expect("join resume waiter"),

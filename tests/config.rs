@@ -369,7 +369,7 @@ fn an_interactive_session_asks_once_whether_to_trust_a_project() {
         let mut command = project.command(&[fixture(BASIC).to_str().expect("UTF-8 path")]);
         command.env("TERM", "dumb");
         let mut session = expectrl::session::Session::spawn(command).expect("spawn in a PTY");
-        session.set_expect_timeout(Some(std::time::Duration::from_secs(5)));
+        session.set_expect_timeout(Some(support::DEADLINE));
         session
     };
 

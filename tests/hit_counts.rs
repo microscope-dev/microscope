@@ -1,7 +1,6 @@
 mod support;
 
 use std::collections::BTreeSet;
-use std::time::{Duration, Instant};
 
 use microscope::{
     Breakpoint, BreakpointHit, BreakpointId, BreakpointLocation, BreakpointSpec,
@@ -67,28 +66,20 @@ async fn breakpoint(scenario: &mut Scenario, id: BreakpointId) -> Breakpoint {
 }
 
 async fn wait_for_hits(scenario: &Scenario, id: BreakpointId, count: u64) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-
-    loop {
-        let snapshot = scenario
-            .operation("snapshot", scenario.handle().snapshot())
-            .await;
-        let hit_count = snapshot
-            .breakpoints
-            .iter()
-            .find(|breakpoint| breakpoint.id == id)
-            .expect("breakpoint exists")
-            .hit_count;
-        if hit_count >= count {
-            return;
-        }
-
-        assert!(
-            Instant::now() < deadline,
-            "breakpoint {id} reached {hit_count} of {count} hits"
-        );
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
+    scenario
+        .snapshot_until(
+            &format!("breakpoint {id} has {count} hits"),
+            |snapshot| {
+                snapshot
+                    .breakpoints
+                    .iter()
+                    .find(|breakpoint| breakpoint.id == id)
+                    .expect("breakpoint exists")
+                    .hit_count
+            },
+            |&hits| hits >= count,
+        )
+        .await;
 }
 
 async fn global(scenario: &Scenario, name: &str) -> u64 {

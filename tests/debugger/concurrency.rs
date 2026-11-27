@@ -299,7 +299,7 @@ async fn breakpoints_are_edited_while_running_without_publishing_a_stop() {
         )
         .await;
 
-    let reason = timeout(Duration::from_secs(5), run)
+    let reason = timeout(support::DEADLINE, run)
         .await
         .expect("the new breakpoint was not reached")
         .expect("run task")
@@ -348,7 +348,7 @@ async fn resume_from_hit(
     context: &str,
 ) {
     loop {
-        let event = timeout(Duration::from_secs(5), events.recv())
+        let event = timeout(support::DEADLINE, events.recv())
             .await
             .unwrap_or_else(|_| panic!("{context}: no stop"))
             .unwrap_or_else(|error| panic!("{context}: event stream failed: {error}"));
@@ -453,7 +453,7 @@ async fn breakpoints_edited_while_threads_hit_them_report_only_current_breakpoin
         }
     }
 
-    let reason = timeout(Duration::from_secs(2), handle.pause())
+    let reason = timeout(support::DEADLINE, handle.pause())
         .await
         .expect("pause timed out")
         .expect("pause");
@@ -487,7 +487,7 @@ async fn watchpoints_are_armed_and_disarmed_while_running() {
             ),
         )
         .await;
-    let reason = timeout(Duration::from_secs(5), run)
+    let reason = timeout(support::DEADLINE, run)
         .await
         .expect("the watchpoint did not fire")
         .expect("run task")
@@ -539,7 +539,7 @@ async fn watchpoints_are_armed_and_disarmed_while_running() {
         InferiorState::Running { .. }
     ));
     assert_eq!(
-        timeout(Duration::from_secs(2), handle.pause())
+        timeout(support::DEADLINE, handle.pause())
             .await
             .expect("pause timed out")
             .expect("pause"),

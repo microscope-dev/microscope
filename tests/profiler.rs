@@ -524,7 +524,7 @@ fn a_watched_recording_publishes_as_it_goes_and_stops_when_asked() {
         }
     });
 
-    let deadline = std::time::Duration::from_secs(10);
+    let deadline = support::DEADLINE;
     let (first, pid) = snapshots.recv_timeout(deadline).expect("the first profile");
     assert_eq!(first, 0);
     let pid = pid.expect("the program's pid");

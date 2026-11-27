@@ -14,9 +14,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-use crate::support::flight_recordings;
-
-pub const DEADLINE: Duration = Duration::from_secs(10);
+use crate::support::{DEADLINE, flight_recordings};
 
 type Transcript = Arc<Mutex<Vec<String>>>;
 
@@ -331,15 +329,20 @@ impl Web {
 
 impl Drop for Web {
     fn drop(&mut self) {
-        let failed = std::thread::panicking();
+        if std::thread::panicking() {
+            self.print_transcript();
+            if let Some(mut child) = self.child.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            return;
+        }
 
         if self.child.is_some() {
             self.interrupt();
         }
 
-        if failed {
-            self.print_transcript();
-        } else if let Some(recording) = &self.recording {
+        if let Some(recording) = &self.recording {
             flight_recordings::adapter_finished(recording);
         }
     }
