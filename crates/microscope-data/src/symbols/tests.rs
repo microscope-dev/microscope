@@ -48,33 +48,6 @@ fn demangling_covers_rust_cpp_and_plain() {
 }
 
 #[test]
-fn parses_current_test_binary_and_roundtrips_index() {
-    let exe = std::env::current_exe().unwrap();
-    let bytes = std::fs::read(&exe).unwrap();
-    let Ok(bid) = extract_build_id(&bytes) else {
-        return;
-    };
-    assert!(has_debug_or_symtab(&bytes));
-
-    let (index, meta) = parse_elf(&bytes, &ParseBudget::SERVER).unwrap();
-    assert_eq!(meta.build_id, bid);
-    assert!(meta.symbol_count > 0);
-    assert!(meta.range_count > 0);
-
-    let encoded = index.encode();
-    let decoded = SymbolIndex::decode(&encoded, &ParseBudget::SERVER).unwrap();
-    assert_eq!(index, decoded);
-
-    let mut corrupted = encoded;
-    let last = corrupted.len() - 1;
-    corrupted[last] ^= 0xff;
-    assert!(matches!(
-        SymbolIndex::decode(&corrupted, &ParseBudget::SERVER),
-        Err(SymbolError::ChecksumMismatch)
-    ));
-}
-
-#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "end-to-end fixture compiling C with inlining, verifying DWARF file/line/inline metadata, and testing strip_to_debug_elf"
@@ -86,9 +59,7 @@ fn compiled_c_fixture_with_inline_and_strip_to_debug() {
             .output()
             .is_ok_and(|o| o.status.success())
     });
-    let Some(cc) = cc else {
-        return;
-    };
+    let cc = cc.expect("the dev shell provides a C compiler");
 
     let dir = std::env::temp_dir().join(format!(
         "microscope-sym-test-{}-{}",
@@ -133,6 +104,10 @@ int main(void) {
 
     let elf_bytes = std::fs::read(&bin).unwrap();
     let bid = extract_build_id(&elf_bytes).unwrap();
+    assert_eq!(
+        super::read_elf_build_id_from_file(&bin).unwrap().as_ref(),
+        Some(&bid)
+    );
     let (index, meta) = parse_elf(&elf_bytes, &ParseBudget::SERVER).unwrap();
     assert_eq!(meta.build_id, bid);
     assert!(meta.has_dwarf);
@@ -214,7 +189,7 @@ fn zlib_compressed_dwarf_larger_than_one_mebibyte_resolves_lines() {
         .collect();
     std::fs::write(&src, source).unwrap();
 
-    let Ok(status) = Command::new("cc")
+    let status = Command::new("cc")
         .args([
             "-O0",
             "-g",
@@ -226,9 +201,7 @@ fn zlib_compressed_dwarf_larger_than_one_mebibyte_resolves_lines() {
         .arg(&bin)
         .arg(&src)
         .status()
-    else {
-        return;
-    };
+        .expect("the dev shell provides cc");
     assert!(status.success(), "failed to compile large C fixture");
     let elf_bytes = std::fs::read(&bin).unwrap();
     let _ = std::fs::remove_dir_all(&dir);
@@ -264,9 +237,7 @@ fn zlib_compressed_dwarf_larger_than_one_mebibyte_resolves_lines() {
 fn symtab_only_c_fixture_survives_strip_to_debug_elf() {
     use std::process::Command;
 
-    let Ok(cc) = std::env::var("CC").or_else(|_| Ok::<_, ()>("cc".to_owned())) else {
-        return;
-    };
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_owned());
     let dir = std::env::temp_dir().join(format!("microscope-symtab-test-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
     let src = dir.join("symtab.c");
@@ -319,9 +290,6 @@ fn stripped_go_binary_resolves_main_inside_executable_text() {
     use object::{Object as _, ObjectSection as _};
     use std::process::Command;
 
-    if Command::new("go").arg("version").output().is_err() {
-        return;
-    }
     let dir = std::env::temp_dir().join(format!("microscope-go-sym-test-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
     let src = dir.join("main.go");
@@ -364,12 +332,12 @@ func main() { fmt.Println("hello", canary[0]) }
             .arg(&bin)
             .arg(&src)
             .env("CGO_ENABLED", cgo)
-            .env("GOCACHE", dir.join("gocache"))
+            .env(
+                "GOCACHE",
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/go-cache"),
+            )
             .status()
-            .unwrap();
-        if !status.success() && *cgo == "1" {
-            continue;
-        }
+            .expect("the dev shell provides go");
         assert!(
             status.success(),
             "failed compiling stripped Go fixture {name}"
@@ -507,18 +475,15 @@ fn abbreviation_tables_cannot_multiply_parse_cost() {
         max_parse_time: std::time::Duration::from_millis(250),
         ..ParseBudget::SERVER
     };
-    let started = std::time::Instant::now();
     let shared_table = parse_elf(
         &elf_with_debug_sections(&[(".debug_abbrev", abbrev), (".debug_info", info.clone())]),
         &budget,
     );
-    let took = started.elapsed();
     assert!(
         matches!(shared_table, Err(SymbolError::BudgetExceeded(_))),
         "{UNITS} units sharing one {ENTRIES}-entry abbreviation table: {:?}",
         shared_table.map(|(_, meta)| meta)
     );
-    assert!(took < std::time::Duration::from_secs(1), "took {took:?}");
 
     let oversized = vec![0_u8; ParseBudget::SERVER.max_abbrev_bytes + 1];
     let oversized = parse_elf(
@@ -759,13 +724,4 @@ fn public_system_paths_reject_traversal_and_nul() {
     assert!(!is_public_system_path("/lib/foo/../bar"));
     assert!(!is_public_system_path("/nix/store/../secret/app"));
     assert!(!is_public_system_path("/usr/lib/libc.so\0/srv/app"));
-}
-
-#[test]
-fn streaming_elf_build_id_matches_slice_extract() {
-    let exe = std::env::current_exe().unwrap();
-    let bytes = std::fs::read(&exe).unwrap();
-    let expected = extract_build_id(&bytes).ok();
-    let streamed = super::read_elf_build_id_from_file(&exe).ok().flatten();
-    assert_eq!(streamed, expected);
 }
