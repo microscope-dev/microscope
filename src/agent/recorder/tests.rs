@@ -706,7 +706,9 @@ fn exact_agent_attach_samples_new_threads_started_after_attach() {
     let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
     let (ids_tx, ids_rx) = std::sync::mpsc::channel::<(u32, u32)>();
     let driver = thread::spawn(move || {
-        let _ = started_rx.recv();
+        if started_rx.recv().is_err() {
+            return;
+        }
         let child = Command::new("/bin/sh")
             .args(["-c", "while :; do :; done"])
             .stdout(std::process::Stdio::null())

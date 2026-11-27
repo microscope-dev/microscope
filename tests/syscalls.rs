@@ -1012,25 +1012,11 @@ mod bpf {
     use microscope::syscalls::{EventFlags, Outcome, ProcessEnd, SyscallEvent, TraceEvent};
 
     use super::*;
-
-    fn launcher() -> PathBuf {
-        std::env::var_os("MICROSCOPE_BPF_LAUNCHER").map_or_else(
-            || {
-                panic!(
-                    "MICROSCOPE_BPF_LAUNCHER names no launcher: run these with `just test-bpf`, \
-                     which starts microscope through the microscope-bpf wrapper"
-                )
-            },
-            PathBuf::from,
-        )
-    }
+    use support::held::launcher;
 
     fn privileged() -> Command {
-        let mut command = Command::new(launcher());
-        command
-            .env_clear()
-            .arg(env!("CARGO_BIN_EXE_microscope"))
-            .stdin(Stdio::null());
+        let mut command = support::held::bpf();
+        command.env_clear().stdin(Stdio::null());
         command
     }
 

@@ -105,15 +105,20 @@ async fn check(scenario: &Scenario, round: u64) {
     }
 }
 
+fn soak_seconds() -> u64 {
+    std::env::var("MICROSCOPE_SOAK_SECONDS")
+        .ok()
+        .map_or(60, |seconds| {
+            seconds
+                .parse()
+                .expect("MICROSCOPE_SOAK_SECONDS is a whole number of seconds")
+        })
+}
+
 #[tokio::test]
 #[ignore = "run through `SOAK_MINUTES=N just stress`"]
 async fn soak() {
-    let seconds = std::env::var("MICROSCOPE_SOAK_SECONDS")
-        .ok()
-        .and_then(|seconds| seconds.parse().ok())
-        .unwrap_or(60);
-
-    let deadline = Instant::now() + Duration::from_secs(seconds);
+    let deadline = Instant::now() + Duration::from_secs(soak_seconds());
     let server = ExternalProcess::spawn(&Scenario::fixture("tokio-server-o0"));
 
     let address = server
@@ -218,6 +223,11 @@ async fn soak() {
 
     let answered = load.finish();
     assert!(answered > 0, "the server answered nothing");
+    assert!(hits > 0, "the conditional breakpoint never fired");
+    assert!(
+        baseline.is_some(),
+        "the soak ran {round} rounds, fewer than the {WARM_UP_ROUNDS} it warms up for, so it never checked the heap"
+    );
 
     let mut quit = TcpStream::connect(&address).expect("connect to quit");
     writeln!(quit, "quit").expect("ask the server to quit");

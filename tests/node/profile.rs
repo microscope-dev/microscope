@@ -249,12 +249,14 @@ fn profiling_and_tracing_write_nothing() {
         .env_remove("NODE_OPTIONS")
         .stdin(reader)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
         .spawn()
         .expect("run microscope record");
 
     let mut text = String::new();
     crate::support::wait_until("three snapshots end", || {
+        if let Some(status) = record.try_wait().expect("poll microscope record") {
+            panic!("microscope record ended with {status} before three snapshots");
+        }
         text = std::fs::read_to_string(&recording).unwrap_or_default();
         text.matches("request shutdown").count() >= 3
     });

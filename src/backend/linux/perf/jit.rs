@@ -160,9 +160,7 @@ mod tests {
         let path = format!("/tmp/perf-{own}.map");
         if std::path::Path::new(&path).exists() {
             assert!(matches!(read_map(pid, 0, u64::MAX), Err(MapError::Stale)));
-            if std::fs::remove_file(&path).is_err() {
-                return;
-            }
+            std::fs::remove_file(&path).expect("remove a stale map");
         }
 
         std::fs::write(&path, b"1000 10 first\n2000 1").expect("write the map");
