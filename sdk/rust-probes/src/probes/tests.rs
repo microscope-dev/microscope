@@ -408,3 +408,23 @@ fn a_call_begun_while_the_thread_keeps_one_is_dropped_and_counted() {
     );
     assert_eq!(ring.header.signal_drops.load(Ordering::Relaxed), 1);
 }
+
+#[test]
+fn an_exiting_program_waits_for_a_live_recorder_past_a_second() {
+    let _serial = listen();
+    CONTROL.heartbeat.store(u64::MAX, Ordering::Relaxed);
+    CONTROL.flushed.store(0, Ordering::Release);
+
+    let flushing = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(1200));
+            flushing.store(true, Ordering::Release);
+            CONTROL.flushed.store(1, Ordering::Release);
+        });
+        exiting();
+        assert!(flushing.load(Ordering::Acquire));
+    });
+
+    assert_eq!(CONTROL.exiting.swap(0, Ordering::Relaxed), 1);
+}

@@ -741,9 +741,16 @@ extern "C" fn exiting() {
 
     CONTROL.exiting.store(1, Ordering::Release);
 
-    while CONTROL.flushed.load(Ordering::Acquire) == 0
-        && monotonic().saturating_sub(start) < abi::EXIT_WAIT_NANOSECONDS
-    {
+    let longest = match CONTROL.timeout.load(Ordering::Relaxed) {
+        0 => abi::STALE_NANOSECONDS,
+        milliseconds => u64::from(milliseconds) * 1_000_000,
+    };
+    while CONTROL.flushed.load(Ordering::Acquire) == 0 {
+        let now = monotonic();
+        if !fresh(now) || now.saturating_sub(start) >= longest {
+            break;
+        }
+
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
 }

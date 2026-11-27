@@ -116,8 +116,6 @@ pub mod abi {
     pub const STALE_NANOSECONDS: u64 = 10_000_000_000;
 
     pub const FRESH_NANOSECONDS: u64 = 1_000_000_000;
-
-    pub const EXIT_WAIT_NANOSECONDS: u64 = 1_000_000_000;
 }
 
 #[cfg(feature = "enabled")]

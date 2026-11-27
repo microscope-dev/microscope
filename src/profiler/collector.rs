@@ -108,6 +108,69 @@ pub struct Collector {
     gone: bool,
 
     finishing: bool,
+
+    heartbeat: Heartbeat,
+}
+
+const HEARTBEAT_EVERY: std::time::Duration = std::time::Duration::from_millis(100);
+
+struct Heartbeat {
+    controls: Arc<std::sync::Mutex<Vec<u64>>>,
+    beating: Option<(std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>)>,
+}
+
+impl Heartbeat {
+    fn new() -> Self {
+        Self {
+            controls: Arc::default(),
+            beating: None,
+        }
+    }
+
+    fn keep_alive(&mut self, pid: u32, control: u64) {
+        let mut controls = self
+            .controls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !controls.contains(&control) {
+            controls.push(control);
+        }
+        drop(controls);
+
+        if self.beating.is_some() {
+            return;
+        }
+        let (stop, stopped) = std::sync::mpsc::channel::<()>();
+        let controls = Arc::clone(&self.controls);
+        let spawned = std::thread::Builder::new()
+            .name("microscope-beat".into())
+            .spawn(move || {
+                while stopped.recv_timeout(HEARTBEAT_EVERY)
+                    == Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                {
+                    let now = monotonic().to_le_bytes();
+                    let controls = controls
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone();
+                    for control in controls {
+                        let _ = perf::write_memory(pid, control + 24, &now);
+                    }
+                }
+            });
+        if let Ok(thread) = spawned {
+            self.beating = Some((stop, thread));
+        }
+    }
+}
+
+impl Drop for Heartbeat {
+    fn drop(&mut self) {
+        if let Some((stop, thread)) = self.beating.take() {
+            drop(stop);
+            let _ = thread.join();
+        }
+    }
 }
 
 impl Collector {
@@ -129,6 +192,7 @@ impl Collector {
             decoder: Decoder::default(),
             buffer: Vec::new(),
             gone: false,
+            heartbeat: Heartbeat::new(),
         }
     }
 
@@ -505,7 +569,9 @@ impl Collector {
             instance.module
         );
         instance.on = on;
-        if !on {
+        if on {
+            self.heartbeat.keep_alive(self.pid, control);
+        } else {
             self.gone = true;
         }
     }
@@ -1212,10 +1278,14 @@ os.execv(sys.argv[1], [sys.argv[1], 'records'])",
         writeln!(names, "late").expect("name a site");
         assert_eq!(lines.next().expect("a line").expect("its text"), "RECORDED");
         let read = collector.read_instance(&mut processor, 0);
+        let events = processor.builder().account(AccountKind::ProbeEvents as u32);
         drop(names);
-        child.wait().expect("its exit");
+        while child.try_wait().expect("its state").is_none() {
+            collector.drain(&mut processor);
+        }
 
         assert!(read);
+        assert_eq!(events, 2);
         let builder = processor.builder();
         assert_eq!(builder.account(AccountKind::ProbeMalformed as u32), 0);
         assert_eq!(builder.account(AccountKind::ProbeEvents as u32), 2);
