@@ -1,3 +1,8 @@
+//! Walks `_PyRuntime` interpreters and their `PyThreadState` lists out of process.
+//!
+//! Accounts for the `cframe` indirection used before `CPython` 3.13 vs direct `current_frame`
+//! pointers on newer versions.
+
 use std::collections::HashSet;
 
 use super::objects::{Problem, Reader};

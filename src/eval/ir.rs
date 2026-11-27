@@ -1,3 +1,6 @@
+//! Parameterized by `O` (object handle) and `S` (navigation step) so debugger
+//! expressions and `.views` expressions share a single IR and interpreter.
+
 use std::sync::Arc;
 
 use super::number::{BitOperator, Exact, Float, FloatFormat, FloatOperator, IntType, Integer};
@@ -55,6 +58,10 @@ impl<O, S> Program<O, S> {
 }
 
 impl<O: Clone, S: Clone> Program<O, S> {
+    /// Recognizes `*(base + index)` where `index` satisfies the predicate.
+    ///
+    /// Views use this to detect contiguous stride indexing and avoid re-running
+    /// the full expression for every element in a range.
     pub fn indexed_pointer(
         &self,
         index: impl Fn(&O) -> bool,
@@ -251,8 +258,10 @@ pub enum Capacity {
 
 #[derive(Debug, Clone)]
 pub enum Op<O, S> {
+    /// Target place resolved via `Machine::locate`.
     Object(O),
 
+    /// Pre-computed value (e.g. a view `let` or generator variable) resolved via `Machine::bound`.
     Bound(O),
 
     Entry {

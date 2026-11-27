@@ -1,3 +1,9 @@
+//! Reader for the GDB JIT compilation interface (`__jit_debug_descriptor`).
+//!
+//! Walks the inferior's linked list of `jit_code_entry` structs to discover
+//! in-memory ELF images registered by JIT compilers, using cheap header outlines
+//! to avoid re-reading unchanged objects across stops.
+
 use std::hash::{Hash as _, Hasher as _};
 use std::ops::Range;
 use std::path::PathBuf;
@@ -48,6 +54,8 @@ pub struct Registered {
     pub problems: Vec<String>,
 }
 
+/// Captures the descriptor and entry-header bytes to detect JIT list changes
+/// between stops without reading the full ELF payloads.
 pub fn witness(
     descriptor: u64,
     mut read: impl FnMut(u64, usize) -> Option<Vec<u8>>,
@@ -98,6 +106,8 @@ pub fn registered(
     match version {
         Some(VERSION) => {}
 
+        // Version 0 with a null head pointer is a zero-initialized `.bss`
+        // descriptor before any JIT code has been registered.
         Some(0) if word(&header, 16) == Some(0) => return,
         _ => {
             problem(format!(
@@ -162,6 +172,8 @@ pub fn registered(
     registered.objects.extend(objects);
 }
 
+/// Builds a compact fingerprint (size, ELF header, and section header table)
+/// used to recognize previously loaded JIT ELF images without copying them again.
 pub fn outline(size: u64, mut read: impl FnMut(u64, usize) -> Option<Vec<u8>>) -> Option<Vec<u8>> {
     const HEADER: usize = 64;
     let mut outline = size.to_le_bytes().to_vec();

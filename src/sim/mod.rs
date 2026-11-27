@@ -1,3 +1,10 @@
+//! Deterministic simulation harness for the Linux debugger backend.
+//!
+//! Runs real compiled `x86_64` test programs on an in-process CPU and kernel
+//! model (`cpu`, `kernel`, `memory`), driven by the real debugger controller
+//! and a randomized async client under a single-threaded scheduler. Every run
+//! is reproducible from its `u64` seed and checked continuously by oracles.
+
 #![expect(
     clippy::indexing_slicing,
     reason = "the simulator is a test harness and reports a bug by panicking"

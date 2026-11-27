@@ -1,3 +1,9 @@
+//! Symbol, section, and GOT tables with precomputed overlap tie-breaking.
+//!
+//! Each [`SymbolRecord`] stores a total-order `extent_rank` and `storage_rank`
+//! baked at build time so `code_at` and `data_at` can pick the best symbol
+//! among overlapping ranges with a single `min_by_key`.
+
 use std::sync::Arc;
 
 use zerocopy::little_endian::{U32, U64};
@@ -246,6 +252,8 @@ fn add_symbols(
             .iter()
             .filter_map(|symbol| Some((symbol.storage?, symbol.id.get()))),
     );
+    // Zero-size data symbols get a 1-byte sentinel interval in a separate table
+    // so `data_at` always prefers any sized symbol covering the same address.
     let unsized_data = index::intervals(symbols.iter().filter_map(|symbol| {
         let storage = symbol.storage?;
         (storage.start == storage.end).then_some((

@@ -1,3 +1,9 @@
+//! Dynamic-language operator semantics for Python and JavaScript values.
+//!
+//! Operations that would require running debuggee code (such as `__bool__`,
+//! `valueOf`, or string-to-number coercion) are refused, and values from two
+//! different dynamic languages are never combined.
+
 use std::borrow::Cow;
 use std::cmp::Ordering;
 

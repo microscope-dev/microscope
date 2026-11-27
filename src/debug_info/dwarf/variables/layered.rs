@@ -1,3 +1,8 @@
+//! Copy-on-write layered collections (`Rows`, `Marks`, `Layered`) for parallel unit walks.
+//!
+//! A shared prefix is frozen into an `Arc` before fanning out across units so
+//! each worker records only its local delta (`own`) without cloning the base.
+
 use std::sync::Arc;
 
 use foldhash::HashMap;

@@ -1,9 +1,5 @@
-
-
-
-
-
-
+// In-kernel CPython frame walker shared by `sampler.bpf.c` and `syscalls.bpf.c`.
+// Walks `_PyInterpreterFrame` chains using version-specific offsets from `struct py_layout`.
 #pragma once
 
 #include "records.h"
@@ -98,6 +94,8 @@ static __always_inline u64 py_code(const struct py_layout *layout, u64 executabl
 		return executable;
 
 
+	// CPython 3.14+ stores tagged `_PyStackRef` values in `f_executable`: tag bits 0..=1
+	// encode deferred/owned heap pointers, while higher tags denote non-code immediates.
 	if ((executable & 3) > 1)
 		return 0;
 	return executable & ~(u64)1;

@@ -98,6 +98,8 @@ export function ProfilePaneBody(props: PaneProps) {
   const hosted = createMemo(() => isCaptureProfile(profile()));
   const addressed = createMemo(() => pathname() === `/profile/${profile()}`);
   const focused = useLayout((layout) => leadingPane(layout) === props.id);
+  // Only the focused standalone profile pane mirrors its `ProfileLook` into the
+  // browser URL; `/s/...` sessions and hosted captures own the URL themselves.
   const leads = createMemo(() => focused() && !inSession() && !hosted());
 
   const search = createMemo(() => (leads() ? parseSearch(location.search) : null));

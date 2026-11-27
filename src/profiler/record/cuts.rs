@@ -1,3 +1,6 @@
+//! Tracks accounting marks for whole, rolling-window, and segmented recordings
+//! so dropped and counted totals stay aligned with the retained time span.
+
 use std::collections::{BTreeMap, VecDeque};
 
 use crate::backend::perf;
@@ -12,9 +15,11 @@ pub(super) enum Cut {
     /// Everything is kept, and counts count as they are read.
     Whole,
 
-    /// Only the span since the newest mark at least `length` before the
+    /// Only the span since the newest mark at least `length` before the latest
+    /// mark is retained; older records and accounts are dropped as marks advance.
     Window { length: u64, observed: Observed },
 
+    /// Each save cuts at the latest ripe mark and advances `start` to it.
     Segments {
         start: Option<Mark>,
         observed: Observed,

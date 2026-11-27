@@ -1,3 +1,9 @@
+//! Proves the entry point, target-list offset, and call sites of
+//! `InspectorIoDelegate::GetTargetIds` for Node's inspector server.
+//!
+//! Used to distinguish target-listing callers (which hide microscope's internal
+//! session) from WebSocket upgrade validation (`TargetExists`).
+
 use std::sync::Arc;
 
 use iced_x86::{FlowControl, InstructionInfoFactory, Mnemonic, OpAccess, OpKind, Register};
@@ -19,6 +25,8 @@ fn body(object: &object::File<'_>, name: &str) -> Option<Vec<iced_x86::Instructi
     super::instructions(super::image_bytes(object, address, size, true)?, address)
 }
 
+/// Finds the unique `call qword ptr [reg + 0x20]` (`GetTargetIds` is at vtable
+/// slot 4, byte offset 32) in `name` and returns its return address (`next_ip`).
 fn caller(object: &object::File<'_>, name: &str) -> Option<ImageAddress> {
     let body = body(object, name)?;
     let mut calls = body.iter().filter(|instruction| {

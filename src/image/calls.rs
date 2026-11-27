@@ -1,3 +1,5 @@
+//! DWARF call-site metadata (`DW_TAG_call_site`) for entry-value recovery and tail-call chains.
+
 use std::sync::Arc;
 
 use zerocopy::little_endian::{U16, U32, U64};

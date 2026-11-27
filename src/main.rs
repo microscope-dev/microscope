@@ -41,6 +41,8 @@ fn main() -> ExitCode {
         microscope::timings::alloc::return_freed_memory_promptly();
     }
 
+    // Internal helper modes run before starting the Tokio runtime or flight
+    // recorder so they stay lightweight and don't inherit background threads.
     if std::env::args_os()
         .nth(1)
         .is_some_and(|command| command == "dap-launcher")
@@ -72,6 +74,7 @@ fn main() -> ExitCode {
         cli::config::take_environment();
     }
 
+    // Cap Tokio workers at 4; CPU-heavy debug-info loading runs on `pool`.
     let workers = std::thread::available_parallelism().map_or(1, |cpus| cpus.get().min(4));
     match tokio::runtime::Builder::new_multi_thread()
         .worker_threads(workers)

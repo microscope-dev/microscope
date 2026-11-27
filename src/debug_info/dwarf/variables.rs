@@ -1,3 +1,8 @@
+//! DWARF variable, type-graph, call-site, and return-value extraction and inspection.
+//!
+//! Indexes compilation units into compact `ModuleImage` tables at load time and
+//! implements `VariableInfo` (`DwarfVariableInfo`) for runtime inspection.
+
 use crate::debug_info::dwarf::DwarfSet;
 use crate::image::lines::Files;
 use std::collections::BTreeMap;

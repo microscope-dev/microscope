@@ -34,6 +34,8 @@ pub(super) struct Placed {
     pub(super) frame: InterpretedFrame,
 }
 
+/// Matches interpreted call-stack segments to the native interpreter-loop
+/// activations that drive them, falling back to `unplaced` when counts disagree.
 #[derive(Debug, Default)]
 pub(super) struct Placement {
     pub(super) placed: BTreeMap<usize, Vec<Placed>>,

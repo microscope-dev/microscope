@@ -1,3 +1,8 @@
+//! `glibc` `TLS` and thread-list traversal driven by `_thread_db_*` layout descriptors.
+//!
+//! Reading `glibc`'s own exported descriptors avoids hardcoding internal `pthread`/`link_map`
+//! offsets across `glibc` versions.
+
 use std::collections::BTreeSet;
 
 use nix::unistd::Pid;
@@ -19,6 +24,7 @@ const EXECUTABLE_MODULE: u64 = 1;
 const NO_TLS_OFFSET: u64 = 0;
 const FORCED_DYNAMIC_TLS_OFFSET: u64 = u64::MAX;
 
+/// Decoded 12-byte `glibc` `_thread_db` descriptor: `(bit_width, element_count, byte_offset)`.
 #[derive(Debug, Clone, Copy)]
 struct Field {
     name: &'static str,
@@ -196,6 +202,8 @@ impl Glibc<'_> {
         })
     }
 
+    /// Resolves a thread's `TLS` block base from its `DTV`, falling back to static `TLS`
+    /// (`thread_pointer - l_tls_offset`) when the `DTV` generation is stale or the slot is lazy.
     fn block(&self, thread_pointer: u64, module: u64) -> Result<u64, TlsError> {
         let entry = self.slotinfo(module)?;
         let map = self.fetch_named("_thread_db_dtv_slotinfo_map", entry, 0)?;
@@ -243,6 +251,8 @@ pub(super) fn target_thread_id(
 
 const MAX_THREADS: usize = 1 << 20;
 
+/// Walks `glibc`'s `_dl_stack_user` (caller-supplied stacks) and `_dl_stack_used`
+/// (`glibc`-allocated stacks) circular lists to collect `(tid, tcb_address)` for live threads.
 pub(super) fn thread_pointers(services: &dyn ProcessServices) -> Result<Vec<(u64, u64)>, TlsError> {
     let glibc = Glibc { services };
     let rtld_global = glibc.rtld_global()?.ok_or_else(|| {

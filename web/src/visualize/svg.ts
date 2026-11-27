@@ -110,6 +110,7 @@ function element(shape: Shape, building: Building): SVGElement {
     node.prepend(title);
   }
 
+  // Let pointer events pass through non-interactive shapes to selectable or titled shapes underneath.
   if (shape.type !== "group" && !owned) {
     node.style.pointerEvents = "none";
   }
@@ -162,6 +163,7 @@ function styled(node: SVGElement, shape: Style): void {
   }
 }
 
+/** Embeds a `<canvas>` via `<foreignObject>` to avoid base64-encoding raw RGBA buffers and to support pixel-level hover tips. */
 function image(shape: Extract<Shape, { type: "image" }>, tip: Tip | undefined): SVGElement {
   const holder = make("foreignObject", {
     x: shape.x,

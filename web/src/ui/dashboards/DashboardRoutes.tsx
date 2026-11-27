@@ -37,6 +37,12 @@ function applySavedLayout(raw: unknown): void {
   }
 }
 
+/**
+ * Bridges workbench layout mutations with session persistence.
+ * Ignores programmatic layout loads (`applyingLayout`) and focus-only changes so
+ * clicking between panes does not mark a dashboard dirty; `preserveOnSessionMove`
+ * keeps `activeView` intact across the `/d/<id>` -> `/s/<id>` promotion.
+ */
 function useViewLifecycle(preserveOnSessionMove: boolean) {
   const navigate = useNavigate();
   onCleanup(
@@ -214,6 +220,8 @@ export function RecordedSessionRoute(props: { sessionId: number }) {
         return;
       }
       const cur = activeView.getState();
+      // Skip reloading when arriving via a dashboard -> session promotion;
+      // `activeView` already holds the live layout and scope.
       if (cur.active && cur.sessionId === id && cur.movedToSession) {
         return;
       }

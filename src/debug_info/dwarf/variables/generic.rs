@@ -1,3 +1,8 @@
+//! Resolves Go generic `.shape` types to concrete runtime types.
+//!
+//! Reads the caller-supplied `.dict` pointer and maps its type-descriptor slot
+//! back to a DWARF `TypeId` via `runtime.firstmoduledata`'s types table.
+
 use crate::inspection::InspectionBudget;
 use crate::model::ValueStorage;
 use crate::{
@@ -119,6 +124,8 @@ impl DwarfVariableInfo {
             })
             .ok_or(ShapeUnresolvedReason::NoDictionary)?;
 
+        // Go emits a bare `DW_OP_call_frame_cfa` default location for `.dict` in
+        // frames where the dictionary pointer is not actually available on the stack.
         if let Some(location) = dictionary.location()
             && self
                 .locations()

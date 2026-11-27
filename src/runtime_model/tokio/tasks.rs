@@ -1,3 +1,10 @@
+//! Enumerates and locates Tokio tasks across sharded `OwnedTasks` lists,
+//! `LocalSet` lists, and blocking-pool queues.
+//!
+//! Each node walk checks shard locks, owner IDs, vtables, and doubly-linked
+//! `prev` pointers so concurrent mutation at a stop surfaces as a gap rather
+//! than corrupt task data.
+
 use std::sync::Arc;
 
 use super::layout::{Flavor, Pool, Queues};
@@ -451,6 +458,12 @@ impl TokioRuntime {
             })
     }
 
+    /// Classifies a thread's Tokio activity from its thread-local `Context`.
+    ///
+    /// `Flavor::MultiThread` workers are `Idle` between polls (`CurrentThread`
+    /// drivers return `Outside`); blocking-pool threads have `!worker && !entered`
+    /// (running a blocking closure when `task` is set); user threads inside
+    /// `Handle::enter` have `!worker && entered` and stay `Outside`.
     pub(super) fn activity(
         &self,
         stop: &dyn RuntimeStop,

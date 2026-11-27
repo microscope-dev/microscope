@@ -1,3 +1,6 @@
+//! Resolves Go interface values (`runtime.eface` and `runtime.iface`) to their
+//! concrete `internal/abi.Type` descriptor and data location.
+
 use std::sync::Arc;
 
 use super::layout::{Missing, constant, offset, symbol};
@@ -10,6 +13,9 @@ const MAX_MODULES: usize = 256;
 const EMPTY: &str = "runtime.eface";
 const METHODS: &str = "runtime.iface";
 
+/// Walks Go's `runtime.firstmoduledata` list to find the `types..etypes` base
+/// address for a type descriptor, needed to decode relative `abi.Name` and type
+/// offsets.
 #[derive(Debug, Clone)]
 pub struct TypeTables {
     first_module: ImageAddress,
@@ -147,6 +153,9 @@ impl Interfaces {
             )
             .ok_or("a type's flags are unreadable")?;
 
+            // Direct-interface types (pointer-shaped values) are stored inline
+            // in the interface's `data` word rather than behind an extra
+            // heap indirection.
             let place = match (flags & self.direct_bit != 0, value) {
                 (true, StoredValue::Memory(address)) => {
                     HeldPlace::Memory(VirtualAddress::new(address.get().wrapping_add(data)))

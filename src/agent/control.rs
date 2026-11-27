@@ -1,3 +1,7 @@
+//! Pure long-poll control-plane state machine (`ControlMachine`) tracking
+//! directive versions, deduplicating in-flight flushes and policy updates, and
+//! scheduling retry backoff.
+
 use std::time::Duration;
 
 use super::{

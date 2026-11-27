@@ -1,3 +1,9 @@
+//! Simulated Linux `PERF_RECORD_SAMPLE` generation for the sampling profiler.
+//!
+//! Emits wire-format records with a frame-pointer user callchain, `x86_64`
+//! register snapshot, and bounded user stack copy matching kernel `perf_event`
+//! layout and `u16::MAX` record-size clamping.
+
 use super::{Kernel, Tgid, Tid};
 use crate::sim::cpu::{RBP, RSP, Registers};
 use crate::sim::memory::AddressSpace;

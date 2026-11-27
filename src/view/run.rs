@@ -1,3 +1,5 @@
+//! Executes a [`BoundView`] against a target value to produce summaries, children, and drawings.
+
 use std::sync::Arc;
 
 use crate::eval::interp::{self, Outcome, Value};
@@ -120,6 +122,11 @@ pub enum Child {
     Raw,
 }
 
+/// [`Machine`] adapter for evaluating expressions inside a bound view.
+///
+/// Memoizes `let` bindings per inspected value, injects active generator loop
+/// variables, and refuses register or task reads so views depend only on value
+/// state and memory.
 pub struct ViewMachine<'m, M: Machine> {
     base: &'m mut M,
     this: M::Place,

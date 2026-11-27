@@ -1,3 +1,9 @@
+//! Mark-and-sweep compaction of a `Capture`, pruning unreferenced threads,
+//! stacks, frames, symbols, modules, and strings while remapping row IDs.
+//!
+//! Copies all existing events unconditionally; `window` only preserves idle
+//! `Process` and `Thread` rows overlapping `[start, end]`.
+
 use super::records::{FrameKind, NONE};
 use super::{
     Capture, Frame, Function, Line, Mapping, Marker, Module, Plot, Process, Range, Sample, Setting,
@@ -230,6 +236,8 @@ impl Capture {
     }
 
     fn mark_code(&self, marks: &mut Marks) {
+        // Stack parents always precede their children, so a single reverse pass
+        // marks all reachable ancestors.
         for (row, stack) in self.stacks.iter().enumerate().rev() {
             let row = u32::try_from(row).unwrap_or(NONE);
             if marks.stacks.has(row) {

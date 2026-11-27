@@ -1,3 +1,9 @@
+//! Locates Node's `SIGUSR1` inspector activation handler and agent registry.
+//!
+//! Uses anonymous-namespace symbols directly when present, and falls back to
+//! proving the handler, semaphore, watchdog thread, and `std::vector` append
+//! sequence from the exported `Agent::Start` on stripped builds.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 

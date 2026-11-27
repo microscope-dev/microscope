@@ -1,3 +1,8 @@
+//! Indexed, read-only debug information for a single binary or shared library.
+//!
+//! [`seal`] packs raw [`ModuleMetadata`] into a flat cacheable `Image`, and
+//! [`ModuleImage`] layers lazy secondary indices on top of it.
+
 use std::collections::{BTreeMap, HashMap};
 
 use rayon::slice::ParallelSliceMut as _;
@@ -105,6 +110,11 @@ struct RangeIndexEntry<T> {
     value: T,
 }
 
+/// Interval index for overlapping address ranges.
+///
+/// Entries are sorted by `start` and store a running `prefix_max_end`, so a
+/// backward scan from the insertion point stops as soon as no earlier interval
+/// can cover the queried address.
 #[derive(Debug)]
 struct RangeIndex<T> {
     entries: Arc<[RangeIndexEntry<T>]>,
@@ -254,6 +264,8 @@ pub fn seal(
     Ok(tables)
 }
 
+/// Offloads dropping large temporary structures to a background thread so
+/// sealing or unloading a big binary does not stall the caller.
 pub fn free<T: Send + 'static>(sealed: T, records: usize) {
     if records > 1_000 {
         std::thread::spawn(move || drop(sealed));

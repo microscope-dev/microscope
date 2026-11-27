@@ -1,3 +1,6 @@
+//! Coordinates the agent's three background workers (recorder, poster, and
+//! optional symbol uploader) around a shared `Spool` and control state.
+
 mod cut;
 mod policy;
 
@@ -122,6 +125,9 @@ impl PipelineControl {
         cvar.notify_all();
     }
 
+    /// Triggers an immediate cut on every active group and tracks `PendingFlush`
+    /// until all target cuts have been spooled and posted (or immediately acks
+    /// empty when unattached with an empty spool).
     pub fn request_flush(&self, flush_id: u64, deadline_ms: u64) {
         let (lock, cvar) = &*self.shared;
         let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);

@@ -1,3 +1,7 @@
+//! Hysteresis state machine that sheds syscall tracing detail one `Rung` at a
+//! time when over budget, and restores rungs in reverse only after `HOLD` of
+//! calm with call volume low enough to fit.
+
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

@@ -52,6 +52,8 @@ function buildLoadedFunctions(res: FlameResponse) {
     const name = nameOf(tree, i);
     const entry = agg.get(name) ?? { self: 0, total: 0, baseTotal: 0 };
     entry.self += tree.own[i] ?? 0;
+    // Only credit inclusive total when no ancestor has the same name,
+    // avoiding double-counting across recursive call frames.
     let ancestorSame = false;
     let p = tree.parent[i] ?? -1;
     while (p >= 0) {

@@ -1,3 +1,9 @@
+//! Signal queuing, synchronous-first delivery, job-control stops, and
+//! group-exit / `SIGKILL` teardown.
+//!
+//! Matches Linux's rule that `SIGKILL` or `exit_group` immediately pulls
+//! peer threads out of ptrace-stops into `State::Exiting`.
+
 use nix::errno::Errno;
 use nix::libc;
 

@@ -1,3 +1,8 @@
+//! Discovers variables visible in a stopped V8 frame across registers, arguments, and contexts.
+//!
+//! When V8's debugger supplies local names that `ScopeInfo` omits, `bind` verifies each reported
+//! value against its expected stack slot before attaching the name.
+
 use std::collections::BTreeSet;
 
 use std::sync::Arc;

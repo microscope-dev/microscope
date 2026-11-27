@@ -1,3 +1,10 @@
+//! Minimal user-mode `x86_64` interpreter for compiled golden test programs.
+//!
+//! Executes one instruction atomically on a register copy so architectural
+//! faults leave `Registers` untouched. Also reports control-flow transitions
+//! (`Flow`) and memory accesses (`Accesses`) for the kernel's shadow stack
+//! and hardware watchpoint checks.
+
 mod flags;
 mod ops;
 
@@ -158,7 +165,8 @@ enum Stop {
 
     Unsupported,
 
-    /// access at `address`, as `what` says.
+    /// A memory or branch operation whose real Linux behavior is outside the
+    /// simulator's model, described by `what`.
     Unmodeled {
         address: u64,
         what: &'static str,
@@ -174,6 +182,8 @@ impl From<MemoryError> for Stop {
     }
 }
 
+/// When `trap` is true, `RFLAGS.TF` is set in the execution snapshot so
+/// `syscall` captures it in `R11` as hardware does, then cleared on commit.
 pub fn execute(registers: &mut Registers, memory: &mut AddressSpace, trap: bool) -> Executed {
     let failed = |outcome| Executed {
         outcome,

@@ -1,9 +1,16 @@
+//! Bounded parallel decompression of `SHF_COMPRESSED` ELF sections (`zlib` and `zstd`).
+//!
+//! Validates per-section expansion ratios and total per-file size before allocating
+//! so crafted or corrupt debug sections cannot trigger OOM or decompression bombs.
+
 use std::borrow::Cow;
 use std::io::Read as _;
 
 use object::{CompressedData, CompressionFormat, ObjectSection as _};
 use rayon::prelude::*;
 
+/// Small sections compress very well (e.g. mostly zeros), so ratio checks only
+/// apply above this threshold.
 const SMALL_CLAIM: u64 = 1 << 20;
 
 const MOST_RATIO: u64 = 64;
@@ -170,6 +177,8 @@ fn decompress<'data>(
             Err(_) => return Err(wrong()),
         };
 
+        // Read at most one byte past the claimed length so overlong streams are
+        // detected without allocating unbounded output.
         let left = claimed - decompressed.len() as u64;
         decoder
             .take(left + 1)

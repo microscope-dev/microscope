@@ -1,3 +1,8 @@
+//! Specialized out-of-process decoders for C-backed standard-library types (`collections`,
+//! `datetime`, `decimal`) and `numpy.ndarray`.
+//!
+//! Each type is matched by module, name, and `tp_basicsize` before reading its internal C fields.
+
 use std::fmt::Write as _;
 use std::sync::Arc;
 

@@ -1,3 +1,9 @@
+//! Swarm testing configuration and coarse-grained shrinking moves.
+//!
+//! Each seed enables a random subset of debugger features, queue sizes, and
+//! scheduling policies so rare feature interactions are not drowned out by
+//! always-on complexity.
+
 use std::fmt;
 
 use super::choices::{Choices, Stream};

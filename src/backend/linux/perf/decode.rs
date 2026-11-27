@@ -73,6 +73,8 @@ pub struct Sample<'a> {
 }
 
 impl Sample<'_> {
+    /// Yields only userspace return addresses from `PERF_SAMPLE_CALLCHAIN`, switching mode at
+    /// kernel context-marker sentinels (`>= CONTEXT_MAX`).
     pub fn user_chain(&self) -> impl Iterator<Item = u64> + '_ {
         let mut user = !self.kernel;
         self.chain.iter().filter(move |address| {
@@ -406,6 +408,8 @@ fn decode_sample(body: &[u8], kernel: bool, period: Option<u64>) -> Result<Sampl
     })
 }
 
+/// Rewrites `PERF_SAMPLE_STACK_USER` payloads down to `keep` bytes under backpressure while
+/// keeping record framing valid and passing all other records through verbatim.
 pub fn shorten_stacks(bytes: &[u8], sampling: &[u64], keep: usize, out: &mut Vec<u8>) -> u64 {
     debug_assert!(
         keep > 0 && keep.is_multiple_of(8),

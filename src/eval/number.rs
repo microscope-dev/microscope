@@ -1,3 +1,10 @@
+//! Deterministic integer and floating-point arithmetic for expression evaluation.
+//!
+//! Integers use either exact 128-bit sign-magnitude values ([`Exact`]) or
+//! fixed-width two's-complement bit patterns ([`Bits`]). Floats are emulated via
+//! `rustc_apfloat` so results match target formats (`f16`, `bf16`, `f32`, `f64`,
+//! x87 `f80`, `f128`) independent of the host CPU.
+
 use std::cmp::Ordering;
 use std::fmt;
 
@@ -40,6 +47,11 @@ impl fmt::Display for NumberError {
     }
 }
 
+/// Sign-magnitude integer covering `[-2^127, 2^128 - 1]`.
+///
+/// This range holds every `i128` and `u128` value without loss so mixed-sign
+/// arithmetic and comparisons never wrap silently. Zero is always normalized to
+/// `negative = false`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Exact {
     negative: bool,
@@ -473,6 +485,8 @@ impl Bits {
     }
 }
 
+/// Preserving the distinction lets arithmetic stay exact while bitwise ops,
+/// shifts, and formatting respect target integer widths and signedness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Integer {
     Exact(Exact),
@@ -579,6 +593,8 @@ pub enum Float {
     Binary128(Quad),
 }
 
+/// Neither `Binary16` nor `BFloat16` can represent all values of the other, so
+/// mixed operations promote both to `Binary32`.
 fn wider(left: FloatFormat, right: FloatFormat) -> FloatFormat {
     match (left, right) {
         (FloatFormat::Binary16, FloatFormat::BFloat16)

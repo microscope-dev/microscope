@@ -1,9 +1,19 @@
+//! In-process runtime agent injection and control protocol.
+//!
+//! Interpreted runtimes that support managed breakpoints or stepping bootstrap
+//! an in-process helper library via a script request, then accept generation-stamped
+//! [`Arming`] updates through memory writes.
+
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use super::{Arming, RuntimeStop, RuntimeWrite};
 use crate::{ImageAddress, ThreadId, VirtualAddress};
 
+/// Process ID as observed inside the target's PID namespace.
+///
+/// Restricted to positive `i32` values because Linux PIDs are signed 32-bit
+/// integers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TargetProcessId(NonZeroU32);
 
@@ -50,6 +60,8 @@ impl From<&'static str> for AgentFailure {
     }
 }
 
+/// Evidence of how an in-flight agent injection request ended, required before
+/// clearing or reusing target memory slots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentRetirementProof {
     Acknowledged,
@@ -63,6 +75,8 @@ pub enum AgentRetirement {
     Unconfirmed,
 }
 
+/// Handle representing an injected remote-debugging request that must be
+/// retired before another request can overwrite the target's request slot.
 pub trait AgentRequestTicket: std::fmt::Debug + Send + Sync {
     fn retire(
         &self,
@@ -92,6 +106,11 @@ impl AgentRequestTicket for BootstrapTicket {
     }
 }
 
+/// Two-phase control interface for an in-process runtime debugging agent.
+///
+/// Phase one bootstraps the agent library via [`Self::script`] and
+/// [`Self::inject`]; once the agent's [`Self::control_symbol`] is loaded,
+/// subsequent state changes go directly through [`Self::command`] memory writes.
 pub trait RuntimeAgent: std::fmt::Debug + Send + Sync {
     fn library(&self) -> Vec<u8>;
     fn control_symbol(&self) -> &'static str;

@@ -1,3 +1,5 @@
+//! Sealing and structural validation of `USCOPEIM` containers for any `Format`.
+
 use std::fmt::Debug;
 
 use rayon::iter::{IndexedParallelIterator as _, IntoParallelIterator as _, ParallelIterator as _};
@@ -40,6 +42,8 @@ pub fn structure<F: Format, const N: usize>(
     checked_structure::<F, N>(bytes, limits, true)
 }
 
+/// Validates header and directory layout without recomputing the `xxHash3`
+/// trailer checksum; use only for bytes already verified or sealed in-process.
 pub fn sealed_structure<F: Format, const N: usize>(
     bytes: &[u8],
     limits: Limits,
@@ -170,6 +174,8 @@ fn check_directory<F: Format, const N: usize>(
             return Err(malformed(format!("{kind:?} is misplaced")));
         }
 
+        // Require zero padding between tables so identical inputs hash
+        // identically and no uninitialized bytes leak into the container.
         let padding = bytes
             .get(previous_end..offset)
             .ok_or(ImageError::Truncated)?;

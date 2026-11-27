@@ -1,3 +1,8 @@
+//! Direct memory decoding for `numpy.ndarray` (`PyArrayObject` and `PyArray_Descr`).
+//!
+//! Uses fixed `NumPy` C-ABI offsets relative to the `PyObject` header size to read shape, strides,
+//! and native-endian scalar elements without executing Python code.
+
 use std::sync::Arc;
 
 use super::instances::Class;

@@ -1,3 +1,7 @@
+//! Breakpoint, watchpoint, and runtime mutations cannot be applied while threads are running;
+//! when requested mid-run, they trigger an internal `StopBarrier`, execute once all threads
+//! settle, and transparently resume unless a visible stop occurred concurrently.
+
 use nix::unistd::Pid;
 
 use crate::protocol::StopReason;
@@ -292,6 +296,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
+    /// Re-evaluates pending thread stop reasons after deferred edits run at a barrier,
+    /// dropping hits for removed/disabled breakpoints or watchpoints and updating the barrier.
     pub(super) fn settle_edited_reasons(&mut self) -> Result<()> {
         let unchanged = self.unchanged_watchpoints(
             self.session

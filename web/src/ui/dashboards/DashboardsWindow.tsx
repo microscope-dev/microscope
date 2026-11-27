@@ -32,6 +32,11 @@ import { workbench } from "../../workbench/store";
 import { useDialogFocus } from "../dialog";
 import { useLoaded } from "../Orgs";
 
+/**
+ * Syncs the dashboards/sessions modal with `#dashboards` and `#sessions` URL hashes.
+ * Pushes a history entry on first open so browser Back closes the modal, and parks
+ * deep-linked hashes in `waiting` until account sign-in resolves.
+ */
 function useDashboardsUrl() {
   const history = useHistory();
   const open = useDashboardsWindow((w) => w.open);

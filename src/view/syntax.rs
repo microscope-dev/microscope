@@ -1,3 +1,7 @@
+//! Parser and AST for `.views` visualizer definition files (`microscope-views 1`).
+//!
+//! Embedded expressions are parsed with `eval::syntax::Dialect::View`.
+
 use std::sync::Arc;
 
 use crate::IntegerValue;
@@ -250,7 +254,7 @@ pub enum Statement {
         line: u32,
     },
 
-    /// makes of the value with the renderer `NAME`.
+    /// `visualize NAME { ... }`: custom drawing produced by renderer `NAME`.
     Visualize(Visualize),
 }
 
@@ -346,10 +350,10 @@ pub enum Generator {
     /// `range(N)`: 0, 1, …, N - 1.
     Range(Expr),
 
-    /// `list(HEAD, P => NEXT)`: HEAD, then each node's next, until a null
+    /// `list(HEAD, P => NEXT)`: walks `HEAD` and each node's `NEXT` until null or returning to `HEAD` (other cycles fail with `ViewProblem::Cycle`).
     List { head: Expr, next: Link },
 
-    /// empty tree.
+    /// `inorder(ROOT, P => LEFT, P => RIGHT)`: in-order traversal of a binary tree.
     Inorder { root: Expr, left: Link, right: Link },
 
     Kernel {
@@ -380,7 +384,7 @@ pub enum Shape {
     /// `value(EXPR)`: present the value as another.
     Value(Expr),
 
-    /// `empty("TEXT {EXPR} TEXT")`: a value that holds nothing, summarized
+    /// `empty("TEXT {EXPR} TEXT")`: a value that holds nothing, summarized by the template.
     Empty(Vec<Piece>),
 
     Sequence {
@@ -407,10 +411,10 @@ pub enum Shape {
         tuple: bool,
     },
 
-    /// be chosen as the program runs.
+    /// `dynamic(PTR, TYPE)`: dereferences `PTR` using a concrete type resolved at runtime.
     Dynamic { pointer: Expr, ty: DynamicType },
 
-    /// What a `match` with no `_` arm shows when no arm names its value:
+    /// Fallback emitted when a `match` has no `_` arm and no arm matches at runtime.
     Unmatched(Expr),
 }
 

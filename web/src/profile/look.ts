@@ -15,6 +15,16 @@ export type ProfileView = "flame" | "tree" | "functions" | "kernel" | "zones" | 
 
 export type SyscallTab = "log" | "files" | "network" | "processes";
 
+/**
+ * Compact URL query-parameter schema for profile views.
+ *
+ * Short keys keep shareable links small:
+ * - scope/filters (shared): `range`, `th` (threads), `tk` (tasks), `src` (waits), `lb` (labels), `bl` (root by label), `tf` (transforms), `fn` (selected function)
+ * - zones (shared): `zs` (site), `zb` (duration band), `zf` (scope: all/band), `zi` (single instance), `bz` (diff band vs rest)
+ * - diff (shared): `bp` (base profile), `br` (base range), `dm` (time vs share)
+ * - syscalls: `sf` (filter), `sl` (latency bucket), `du` (during), `sk` (syscall leaves) are shared; `st` (tab), `sg` (group), `sc` (selected call), `ev` (event) are view-local
+ * - display (view-local, except `view`): `view`, `z` (zoom path), `invert`, `by`, `stacks`, `bt`, `ann`, `lanes`
+ */
 export interface ProfileLook {
   view?: ProfileView;
 
@@ -311,6 +321,10 @@ export function withInstance(look: ProfileLook, instance: Instance | null): Prof
   return withLook(look, "zi", instance ? formatInstance(instance) : undefined);
 }
 
+/**
+ * Steps back one level of zone selection on Escape: single instance (`zi`) ->
+ * duration band (`zb`) -> zone site (`zs`).
+ */
 export function cleared(look: ProfileLook): ProfileLook {
   if (look.zi) {
     return withInstance(look, null);
@@ -377,6 +391,8 @@ export function queryOf(profile: string, look: ProfileLook): ProfileQuery {
   const baseRange = look.br ? parseRange(look.br) : null;
   const during = duringOf(look);
 
+  // Comparing a zone band against the rest of the same site (`outside: true`)
+  // takes precedence over profile/range diff baselines (`bp`/`br`).
   const rest = look.bz === "rest" && zones?.band ? { ...zones, outside: true } : null;
   const base = rest
     ? { profile, ...(range ? { range } : {}), zones: rest }
@@ -437,6 +453,11 @@ const OWN = [
 
 export type OwnLook = Pick<ProfileLook, (typeof OWN)[number]>;
 
+/**
+ * Splits a `ProfileLook` into shared query scope (stored on the `ProfileLink`)
+ * and view-local display state (`OWN`, stored per pane) so linked panes share
+ * filters/range without clobbering each other's zoom, inversion, or granularity.
+ */
 export function splitLook(look: ProfileLook): { shared: ProfileLook; own: OwnLook } {
   const { view: _view, ...rest } = look;
   const shared: Record<string, unknown> = { ...rest };

@@ -35,6 +35,7 @@ pub(super) fn describe(
     let marker = reader
         .word(fp.wrapping_add_signed(reader.constant(Constant::OffFpContextOrFrameType).ok()?))
         .ok()?;
+    // A non-heap-object marker (Smi frame type) identifies an internal/stub V8 frame.
     if reader.object(marker).ok()?.is_none() {
         return Some(DescribedFrame {
             functions: Vec::new(),
@@ -356,6 +357,7 @@ pub(super) fn bytecode_offset(
 ) -> Result<i64, Problem> {
     let header = i64::try_from(reader.offset(Field::BytecodeArrayBytes)?)
         .map_err(|_| "a bytecode header is out of range")?;
+    // V8 stores the bytecode offset relative to the tagged `BytecodeArray` pointer.
     let offset = raw - header + reader.constant(Constant::HeapObjectTag)?;
     let length = reader.smi_field(bytecode, Field::BytecodeArrayLength)?;
     if !(0..length).contains(&offset) {

@@ -1,3 +1,9 @@
+//! Randomized async debugger client driving `DebuggerHandle`.
+//!
+//! Polled manually by `World` on the simulation thread, it issues launches,
+//! attaches, steps, breakpoints, watchpoints, catchpoints, and inspections,
+//! recording `Observation`s for `World` to judge against kernel ground truth.
+
 #![expect(
     clippy::future_not_send,
     reason = "the world polls the client by hand on its one thread"
@@ -123,7 +129,8 @@ pub enum Observation {
     /// What the step ended with, when it ended without failing.
     StepEnded(Option<StopReason>),
 
-    /// The client continues a thread alone from a stop, or, with none,
+    /// The client continues a thread alone from a stop, or, with `None`,
+    /// ends single-thread continuation.
     Alone(Option<(StopId, ThreadId)>),
 
     ShortWrite {
@@ -172,7 +179,7 @@ pub enum Purpose {
     /// What the marker on the frame's line expects.
     Expected,
 
-    /// the name's address dereferenced.
+    /// A variable name evaluated directly (or its address dereferenced).
     Name(String),
 
     /// The address of a variable shown once, in memory.

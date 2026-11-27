@@ -1,3 +1,9 @@
+//! Parser for Go's `.gopclntab` function, line, inline, and stack-delta tables.
+//!
+//! Supports the Go 1.20+ (`0xffff_fff1`) 64-bit little-endian format and can locate
+//! tables in stripped or PIE binaries by scanning for `runtime.moduledata` when
+//! section names or `runtime.text` are absent.
+
 mod metadata;
 mod unwind;
 
@@ -82,6 +88,10 @@ pub enum SpecialFunction {
     Wrapper,
 }
 
+/// Version-specific mapping for Go's internal `abi.FuncID` enum.
+///
+/// Go renumbers `FuncID` across releases, so `SpecialFunction` is only decoded
+/// when `.go.buildinfo` matches a release with a verified table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FuncIdNumbering {
     Go125,
@@ -184,6 +194,8 @@ pub struct GoFunction {
 }
 
 impl GoFunction {
+    /// Go emits a non-zero `pcsp` table for every Go-compiled or Go-assembly
+    /// function; external C/cgo stubs leave `pcsp` at zero.
     pub const fn is_go(&self) -> bool {
         self.pcsp.0 != 0
     }
@@ -273,6 +285,8 @@ fn read_varint(data: &[u8], offset: &mut usize) -> Result<u32> {
     Err(malformed("a pc-value delta exceeds 32 bits"))
 }
 
+/// Per Go's `pcvalue` format, the running value starts at `-1`, each value delta
+/// is zig-zag encoded, and a zero delta terminates the table except at `entry`.
 #[derive(Debug, Clone)]
 pub struct PcRuns<'a> {
     data: &'a [u8],
@@ -838,6 +852,9 @@ pub struct Prologue {
 }
 
 impl GoTable {
+    /// `.gopclntab` records SP deltas but not frame-pointer saves, and stripped
+    /// binaries lack DWARF prologue markers; matching `push rbp; mov rbp, rsp`
+    /// (`0x55; 0x48 0x89 0xe5`) at the first non-zero SP delta recovers both.
     pub fn prologue<'code>(
         &self,
         function: &GoFunction,
@@ -978,6 +995,11 @@ pub fn load(object: &object::File<'_>) -> Result<Option<GoTable>> {
     Ok(Some(table))
 }
 
+/// Finds `.gopclntab` by section name, falling back to an 8-byte-aligned header
+/// scan of non-executable allocated sections when `.go.buildinfo` is present.
+///
+/// Stripped or custom-linked Go binaries may fold `.gopclntab` into `.rodata`
+/// without preserving its section name.
 fn find_table<'data>(object: &object::File<'data>) -> Result<Option<FoundTable<'data>>> {
     use object::{Object, ObjectSection};
 
@@ -1127,6 +1149,9 @@ impl<'data> ModuleWords<'data> {
         read_u64(data, usize::try_from(address - start).ok()?)
     }
 
+    /// Go 1.20+ stores function entries relative to `text` and inline trees
+    /// relative to `gofunc`, neither of which lives in `.gopclntab` itself in
+    /// stripped PIE binaries; cross-checking five fields avoids false matches.
     fn find_moduledata(
         &self,
         found: &FoundTable<'_>,

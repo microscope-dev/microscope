@@ -1,14 +1,7 @@
-
-
-
-
-
-
-
-
-
-
-
+// BPF syscall tracer attached via raw_syscalls/sched/signal tracepoints, fentry/fexit,
+// kprobe, tp_btf, and iter/task programs. Uses a PID bitmap (`TARGETS`), task-local
+// `ENTRIES` for in-flight calls, reentrancy-safe per-CPU scratch slots (`CLAIMS`/`BUFFER`),
+// and `TAIL_CALLS` to stay within the verifier's instruction limit.
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_core_read.h>
@@ -160,6 +153,8 @@ struct {
 
 
 
+// Never referenced in BPF C; userspace updates FENCE to force synchronize_rcu()
+// on live STATS flips and teardown.
 struct fence_token {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
 	__uint(max_entries, 1);
@@ -383,6 +378,7 @@ static __always_inline struct scratch *scratch(u32 which)
 
 
 
+// Inline asm barrier prevents LLVM from optimizing away the mask so the verifier keeps a tight upper bound.
 static __always_inline u32 bounded(u32 value, u32 mask)
 {
 	asm volatile("" : "+r"(value));
@@ -392,10 +388,8 @@ static __always_inline u32 bounded(u32 value, u32 mask)
 
 #define SPARE (SCRATCH - 8)
 
-
-
-
-
+// Spills through a volatile scratch slot so the verifier forgets stale register relations
+// and re-derives bounds from the mask.
 static __always_inline u32 forget(struct scratch *buffer, u32 value, u32 mask)
 {
 	volatile u32 *spare = (volatile u32 *)(buffer->data + SPARE);
@@ -907,6 +901,7 @@ static __always_inline int send_call(u32 tid, u32 tgid, struct entry *entry, u32
 				      s64 ret, u64 exited)
 {
 
+	// Linux rewrites a non-leader thread's pid to tgid across execve; emit a handoff so userspace links entry and exit.
 	if (kind == RECORD_CALL && entry->exec_tid && entry->exec_tid != tid) {
 		u64 wake = 0;
 		struct handoff_record *handoff = reserve(sizeof(*handoff), BPF_RB_NO_WAKEUP, &wake);

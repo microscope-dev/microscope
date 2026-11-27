@@ -1,3 +1,9 @@
+//! Target traits decoupling expression binding and execution from debugger backends.
+//!
+//! [`Scope`] supplies compile-time name/type lookup and navigation planning for
+//! `bind`. [`Machine`] supplies runtime memory/register reads, budgeting, and
+//! value presentation for `interp`.
+
 use std::fmt;
 use std::sync::Arc;
 
@@ -331,6 +337,8 @@ fn tuple_matches_in<M: Machine>(
         )));
     }
 
+    // Do not short-circuit on `Stop::Missing`: a definitive mismatch in a later
+    // element overrides an earlier unreadable element so map scans can continue.
     let mut unequal = false;
     let mut unreadable = None;
     for (wanted, element) in key.iter().zip(&elements) {
@@ -404,7 +412,7 @@ pub enum LoadedValue {
         length: u64,
     },
 
-    /// Any other value, which is neither compared nor computed with, since
+    /// Any other runtime object, which cannot be compared or computed with without running target code.
     Object,
 }
 
@@ -414,6 +422,11 @@ pub struct TextSpan {
     pub length: u64,
 }
 
+/// Why a [`Machine`] operation stopped before producing a value.
+///
+/// `Missing` is normal target unavailability (e.g. null dereference, unmapped
+/// page) and becomes an `InspectedValue` with a cause span; `Refused` is a
+/// user-facing expression error; `Failed` is an internal debugger error.
 #[derive(Debug)]
 pub enum Stop {
     Missing(Box<VariableState>),

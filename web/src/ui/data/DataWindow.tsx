@@ -22,6 +22,10 @@ import { ServicesView } from "./ServicesView";
 import { StorageView } from "./StorageView";
 import { SymbolsView } from "./SymbolsView";
 
+/**
+ * Bidirectional sync between `dataWindow` and the URL hash: opening pushes one history entry,
+ * tab/org changes replace it, closing pops it back if pushed, and deep links wait for auth.
+ */
 function useDataUrl() {
   const history = useHistory();
   const open = useDataWindow((w) => w.open);

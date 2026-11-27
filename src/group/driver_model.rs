@@ -434,7 +434,7 @@ enum Op {
     },
     Exit(usize),
 
-    /// A client moves a stopped member on through its own session, as a
+    /// A client steps a stopped member through its own session.
     Step(usize),
 
     Lose(usize),

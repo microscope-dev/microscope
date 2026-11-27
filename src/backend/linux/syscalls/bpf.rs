@@ -1,3 +1,8 @@
+//! Userspace driver for `syscalls.bpf.c`.
+//!
+//! Loads the BPF tracing programs, drives progressive load shedding (`Shed`),
+//! and decodes ring-buffer records into `TraceEvent`s.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::fd::{AsFd, OwnedFd};
 use std::sync::Arc;
@@ -139,6 +144,8 @@ const fn per_call(flags: u32, shed: Shed) -> u64 {
     }
 }
 
+/// Progressive load-shedding flags (`STACKS` -> `STRINGS` -> `SAMPLED` -> `STREAM`) applied
+/// to keep BPF overhead bounded under high syscall rates.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Shed(pub u8);
 

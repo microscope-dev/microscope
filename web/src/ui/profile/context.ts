@@ -56,6 +56,12 @@ function captureIdOfParams(params: unknown, fallbackProfile: string | null): num
   return parseCaptureProfileId(fallbackProfile);
 }
 
+/**
+ * Routes profile RPC queries transparently between the live WebSocket (`useRequest`)
+ * and the HTTP capture cache (`captureCache`) when viewing an uploaded capture.
+ * Retains the previous settled data (`keptWs` / `keptCaptureData`) while a new
+ * query is in flight so panes dim as stale instead of flickering to a loading state.
+ */
 export function useAnswer<M extends Method>(
   method: M,
   params: () => (ParamsOf<M> extends undefined ? undefined : ParamsOf<M>) | null,

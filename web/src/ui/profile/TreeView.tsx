@@ -31,6 +31,7 @@ export function TreeView() {
   );
 }
 
+/** Siblings arrive sorted by descending weight, so node + 1 is the hottest child; auto-expand down the spine until it drops below 50% of its parent. */
 function opening(tree: CallTree): Set<number> {
   const open = new Set<number>();
   for (let root = 0; root < tree.count; root = tree.end[root] ?? tree.count) {

@@ -1,3 +1,9 @@
+//! Coordinates `waitpid(-1)` reaping between the tracer and other in-process child owners.
+//!
+//! Because `waitpid(-1)` can reap any child of this process, `REAPED` lets callers register
+//! watched children so their exit status is handed back if the waiter thread reaps them
+//! first, and hold a child so its owner does not reap it while the debugger still needs it.
+
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 

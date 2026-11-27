@@ -100,6 +100,8 @@ impl CLibrary {
                 let mut modules = BTreeMap::new();
                 let mut id = NonZeroU64::MIN;
 
+                // `musl` assigns 1-based DTV module IDs sequentially only to loaded modules that
+                // have a `PT_TLS` segment, so stop as soon as a module's TLS status is unknown.
                 for load_bias in order {
                     match has_tls.get(&load_bias) {
                         None => break,
@@ -158,6 +160,10 @@ pub(in crate::backend) fn running_thread_pointers(pid: Pid) -> Result<Vec<(u64, 
         .collect())
 }
 
+/// Resolves `glibc` `TLS` addresses in a running process via `process_vm_readv`.
+///
+/// Caches `_thread_db` descriptors, `link_map` addresses, and verified static `TLS` offsets,
+/// flushing all caches and retrying once on lookup failure (e.g. after `dlopen`/`dlclose`).
 pub struct RunningTls {
     pid: Pid,
     symbols: std::cell::RefCell<BTreeMap<SymbolKey, Option<u64>>>,
@@ -309,6 +315,7 @@ fn thread_pointer(services: &dyn ProcessServices, thread: Pid) -> Result<u64, Tl
         return Err(TlsError::Deferred);
     }
 
+    // On `x86_64` (variant II TLS), `%fs:0` holds a self-pointer to the TCB; reject anything else.
     if read_word(services, Some(thread_pointer))? != thread_pointer {
         return Err(failed(format!(
             "the thread pointer {thread_pointer:#x} does not address a thread control block"

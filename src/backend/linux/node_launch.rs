@@ -1,3 +1,8 @@
+//! Launch-time `Node.js` inspector bootstrap via `NODE_OPTIONS=--require`.
+//!
+//! Injects a small preload script that opens or attaches to the `V8` inspector and reports
+//! ownership back over the inspector console channel using a per-launch random nonce.
+
 use std::ffi::OsString;
 use std::io::Read as _;
 use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
@@ -17,6 +22,8 @@ const ORIGINAL_OPTIONS: &str = "MICROSCOPE_NODE_OPTIONS";
 const FOLLOW: &str = "MICROSCOPE_NODE_FOLLOW";
 const OWNERSHIP: &str = "MICROSCOPE_NODE_OWNERSHIP";
 
+/// Whether the preload opened a new inspector (`Created`) or reused an existing one (`Borrowed`),
+/// which determines whether teardown should close the inspector on detach.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Ownership {
     #[default]
@@ -177,6 +184,8 @@ impl NodeLaunch {
         use ring::digest::{SHA256, digest};
         use std::fmt::Write as _;
 
+        // Followed descendants inherit `NODE_OPTIONS` and may outlive this launch, so persist the
+        // preload in a content-addressed cache directory rather than a per-launch `/tmp` directory.
         let cached = if follows {
             let root = std::env::var_os("XDG_CACHE_HOME")
                 .filter(|path| Path::new(path).is_absolute())

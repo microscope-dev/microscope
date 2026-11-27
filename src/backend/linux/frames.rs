@@ -782,6 +782,9 @@ fn variable_cfa_error(termination: &UnwindTermination) -> VariableRuntimeError {
     }
 }
 
+/// For caller frames (non-zero level and not a signal frame), subtracts 1 so a
+/// `call` at the end of a range resolves inside the call site rather than the
+/// adjacent block or function.
 pub(super) fn frame_lookup_address(level: u32, context: &FrameContext) -> Option<VirtualAddress> {
     if level == 0 || context.signal_frame {
         Some(context.instruction)
@@ -823,6 +826,9 @@ pub(super) fn make_presentation(
     })
 }
 
+/// Stopping right at an inlined call's entry hides that inline frame unless
+/// `reveal_new_inline` is set (e.g. stepping into source), except for inlined
+/// loop bodies which are always shown.
 pub(super) fn default_inline_visible_count(
     module_image: &ModuleImage,
     inline_chain: &[CodeInstanceId],
@@ -1617,6 +1623,7 @@ impl RoleCallerProvider<'_, '_> {
                         CallerResult::Finished(UnwindTermination::Complete)
                     }
 
+                    // Stop once unwinding crosses out of a dispatched task back into the scheduler.
                     Some(Ok(Crossing::Resume(_) | Crossing::Continue(_))) if self.dispatched => {
                         CallerResult::Finished(UnwindTermination::Complete)
                     }
@@ -1734,6 +1741,8 @@ impl DwarfCallerProvider<'_> {
     }
 
     fn zero_return_address(&self, cfa: VirtualAddress) -> UnwindTermination {
+        // A zero return address above the thread's stack start is a normal thread
+        // bottom; inside the thread's own stack it signals broken unwind state.
         let floor = self
             .registers
             .get(crate::unwind::STACK_POINTER)

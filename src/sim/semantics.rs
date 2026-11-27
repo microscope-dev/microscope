@@ -1,3 +1,9 @@
+//! Semantic oracles for unwinding, stepping, registers, and expression
+//! evaluation.
+//!
+//! Compares debugger responses against ground-truth `Shadow` call stacks,
+//! precomputed DWARF `Facts`, and inline source `Marker` invariants.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use iced_x86::{Decoder, DecoderOptions, Mnemonic};

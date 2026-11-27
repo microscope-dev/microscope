@@ -1,3 +1,9 @@
+//! Per-process cache of decoded `PyCodeObject` metadata, local names, and line tables.
+//!
+//! Cached entries are validated against a `CodeProof` fingerprint on each lookup to catch address
+//! reuse after garbage collection, and the whole arena resets at `MAX_ROWS` to keep `CodeId` and
+//! `NameId` spans compact.
+
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::Arc;

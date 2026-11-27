@@ -46,6 +46,10 @@ struct DwarfRanges {
     chains: InlineChains,
 }
 
+/// Interned parent-pointer trie of inline chains shared across DWARF address ranges.
+///
+/// Avoids cloning a `Vec<InlineFrame>` for every range during DIE traversal;
+/// chains are materialized into the flat `inlines` table only for winning spans.
 #[derive(Default)]
 struct InlineChains {
     nodes: Vec<ChainNode>,
@@ -466,6 +470,7 @@ fn parse_unit_lines(
 
     let file_entries = header.file_names();
     let mut unit_files = Vec::with_capacity(file_entries.len() + 1);
+    // DWARF v2-v4 file indices are 1-based; DWARF v5 is 0-based.
     if header.version() < 5 {
         unit_files.push(NO_INDEX);
     }
@@ -740,6 +745,11 @@ fn attr_file_index(val: AttributeValue<DwarfReader<'_>>) -> Option<usize> {
     }
 }
 
+/// Scans writable sections and `RELATIVE` relocations for Go's `runtime.moduledata` to recover `textStart`.
+///
+/// PIE and cgo Go binaries often leave `textStart == 0` in the `.gopclntab`
+/// header, so we locate `moduledata` by its pointer to the `pcHeader` and
+/// cross-check neighboring fields (`funcnametab`, `ftab`, `minpc`).
 fn find_go_moduledata_text(
     file: &object::File<'_>,
     table_addr: u64,
@@ -1098,6 +1108,11 @@ fn read_word_le(data: &[u8], offset: usize, ptr_size: usize) -> Option<u64> {
     }
 }
 
+/// Flattens overlapping DWARF subprogram and inline ranges into disjoint, sorted `SymbolSpan`s.
+///
+/// Uses a sweep line over range endpoints; at each interval the deepest active
+/// inline chain wins (ties broken by traversal `order`), and adjacent intervals
+/// sharing a chain are merged.
 fn flatten_dwarf_spans(
     dwarf: &DwarfRanges,
     budget: &ParseBudget,

@@ -1,3 +1,9 @@
+//! Structural diffing of two `CallTree`s or `Costs` tables across captures.
+//!
+//! Because two captures have independent `Keys` tables, nodes are matched by
+//! formatted name rather than raw key ID, and each output row records which
+//! `Side` owns its `key`.
+
 use std::collections::{BTreeMap, VecDeque};
 
 use super::{CallTree, Costs, Keys, index};
@@ -201,6 +207,8 @@ impl Names {
     }
 }
 
+/// Matches in two passes so module/file-qualified collisions stay accurate while
+/// still pairing functions whose source path shifted between captures.
 fn pair(ours: &[(String, String)], theirs: &[(String, String)]) -> (Vec<Option<usize>>, Vec<bool>) {
     let mut taken = vec![false; theirs.len()];
     #[expect(

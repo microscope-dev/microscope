@@ -1,3 +1,8 @@
+//! On-disk and in-process cache for sealed debug-info [`Image`]s.
+//!
+//! Entries are content-addressed by build digest, schema revisions, and input
+//! bytes, and evicted by LRU order using file modification times.
+
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fmt;
@@ -251,6 +256,9 @@ impl ImageCache {
         self.directory.join(format!("{key}{SUFFIX}"))
     }
 
+    /// Looks up `key`, reusing an already-mapped [`Image`] when its on-disk
+    /// [`FileStamp`] still matches (without touching mtime, which would
+    /// invalidate the stamp); cold hits bump mtime to maintain LRU order.
     #[must_use]
     pub fn get(&self, key: Key) -> Lookup {
         let path = self.path(key);
@@ -299,6 +307,8 @@ impl ImageCache {
         }
     }
 
+    /// Removes a corrupt cache entry only if the path still refers to the same
+    /// `(dev, ino)`, avoiding deletion of a concurrent writer's replacement.
     pub fn discard(&self, key: Key, stamp: &FileStamp) {
         let path = self.path(key);
         let same = std::fs::symlink_metadata(&path)

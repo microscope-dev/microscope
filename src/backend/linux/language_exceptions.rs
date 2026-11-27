@@ -1,3 +1,7 @@
+//! Synchronizes runtime-owned exception and internal hook breakpoints (such as
+//! panic/throw hooks and interpreter agent entry/report hooks) and selects the
+//! user frame to blame when a hook stops execution.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 

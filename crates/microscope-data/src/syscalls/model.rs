@@ -121,6 +121,7 @@ pub enum Outcome {
 }
 
 impl Outcome {
+    /// Decodes a raw Linux syscall return register (`-4095..=-1` are negated errnos).
     #[must_use]
     pub fn of_return(value: i64) -> Self {
         if (-MAX_ERRNO..0).contains(&value) {
@@ -179,6 +180,11 @@ pub struct Capture {
     pub bytes: Arc<[u8]>,
 }
 
+/// Per-event bitflags recording tracing caveats and outlier sampling state.
+///
+/// `KEPT_FAILED` and `KEPT_SLOW` mark individual outlier calls kept alongside
+/// kernel-aggregated `syscall_stats`; summary totals skip them to avoid
+/// double-counting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct EventFlags(pub u8);
 

@@ -1,3 +1,10 @@
+//! Type visualizer DSL (`.views`), built-in visualizers, Wasm kernels, and JS renderers.
+//!
+//! Views are indexed by base type name in [`ViewSet`], matched against
+//! normalized `TypeIdentity`s in `pattern`, compiled once per type into typed
+//! expression programs in `bind`, and executed lazily in `run`, `scan`, and
+//! `kernel`.
+
 pub mod bind;
 pub mod embedded;
 pub mod format;
@@ -352,6 +359,11 @@ pub fn choose<S: Scope>(views: &ViewSet, ty: TypeReference, scope: &S) -> Choice
     choose_among(&[views], ty, scope)
 }
 
+/// Selects and binds the best matching view (plus any `extend` views) for `ty`.
+///
+/// Walks typedef and qualifier wrappers from outermost to innermost so a view
+/// targeting a typedef beats one targeting its underlying record. If only
+/// `extend` views match, synthesizes an empty base view so extensions still run.
 pub fn choose_among<S: Scope>(sets: &[&ViewSet], ty: TypeReference, scope: &S) -> Choice<S::Step> {
     let mut choice = Choice::default();
 

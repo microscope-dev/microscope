@@ -1,3 +1,9 @@
+//! Single-threaded simulation loop that interleaves simulated
+//! threads, ptrace waiters, debugger controllers, and scripted clients.
+//!
+//! Each step chooses one enabled `Action`, runs it, absorbs kernel happenings
+//! into the trace, and checks all active invariants and oracles.
+
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -67,6 +73,7 @@ struct Alone {
     retired: BTreeMap<Tid, u64>,
 }
 
+/// Deliberate defects injected in self-tests to verify each oracle catches bugs.
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sabotage {

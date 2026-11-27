@@ -1,3 +1,7 @@
+//! Every live inferior moves through `Idle` -> `Running` -> `Gathering` -> `Stopped`.
+//! Separating `Gathering` from `Stopped` keeps half-stopped states unrepresentable to
+//! callers and holds breakpoint/watchpoint edits until all threads have settled.
+
 use nix::unistd::Pid;
 
 use crate::protocol::{ExecutionId, StopReason};
@@ -178,6 +182,9 @@ impl RunPhase {
     }
 }
 
+/// Tracks `paused` and `ended` separately from `reason` so that if a deferred edit deletes
+/// or disables the breakpoint/watchpoint that triggered the barrier, `settle_dropped_hit`
+/// still falls back to a visible stop instead of silently turning the barrier internal.
 pub(super) struct StopBarrier {
     triggering_thread: Pid,
 

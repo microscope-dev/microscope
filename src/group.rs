@@ -1,3 +1,9 @@
+//! Multi-process debugging session coordinator.
+//!
+//! Follows forks and execs according to [`FollowPolicy`], mirrors root
+//! breakpoints onto child members, and coordinates group-wide stop and resume
+//! barriers across member [`Debugger`] instances.
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -75,7 +81,7 @@ pub enum GroupEvent {
     /// A member's process was released to run on its own.
     MemberDetached { member: MemberNumber },
 
-    /// on its own otherwise.
+    /// A member's debugger session was lost.
     MemberLost { member: MemberNumber },
 
     /// Every member has exited or left; watched processes may still run.
@@ -480,6 +486,12 @@ struct MemberStop {
     reason: StopReason,
 }
 
+/// Coordinates group-wide stop barriers and defers incoming commands while
+/// peer members are still pausing.
+///
+/// Under [`StopScope::Process`], member stops are reported immediately; under
+/// [`StopScope::Group`], the first stop transitions to `Phase::Stopping` until
+/// every other live member has paused.
 #[derive(Debug)]
 struct Stops<C> {
     scope: StopScope,
@@ -683,6 +695,10 @@ enum Internal {
     Ended(MemberNumber),
 }
 
+/// Single-task actor that owns all live member [`Debugger`] instances.
+///
+/// Its `select!` loop is biased toward internal member events and backend
+/// notices so state transitions settle before serving new external commands.
 struct Driver {
     shared: Arc<Shared>,
     root: DebuggerHandle,

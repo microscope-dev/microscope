@@ -8,6 +8,11 @@ export function formatWeight(weight: number, unit: string): string {
   return `${count} ${weight === 1 ? "execution" : "executions"}`;
 }
 
+/**
+ * Maps a baseline comparison to a red (growth) / blue (reduction) fill.
+ * Normalizing by `max(share, baseShare)` keeps new and removed frames symmetric
+ * in `[-1, 1]`; changes under 2% stay neutral gray.
+ */
 export function diffFill(share: number, baseShare: number, dark: boolean): string {
   const larger = Math.max(share, baseShare);
   const change = larger > 0 ? (share - baseShare) / larger : 0;

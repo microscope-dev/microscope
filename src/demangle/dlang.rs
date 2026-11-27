@@ -1,3 +1,6 @@
+//! Minimal D (`_D`) demangler: extracts qualified names, walking trailing type
+//! encodings only to reject malformed or partial symbols.
+
 const DEPTH_LIMIT: u32 = 64;
 
 pub fn qualified_name(mangled: &str) -> Option<String> {

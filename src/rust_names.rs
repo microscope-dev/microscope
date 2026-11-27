@@ -1,3 +1,6 @@
+//! Known `rustc` internal symbol and type spellings that vary across Rust
+//! toolchain versions.
+
 pub const DROP_GLUE: [&str; 2] = ["drop_glue", "drop_in_place"];
 
 pub const RUST_PANIC: [&str; 2] = ["__rustc::rust_panic", "rust_panic"];

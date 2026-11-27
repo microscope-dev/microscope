@@ -1,3 +1,9 @@
+//! ECMA-426 (Source Map v3) parser, URL resolver, and bidirectional position index.
+//!
+//! Supports standard maps, indexed (`sections`) maps, inline `data:` URLs, and
+//! trailing `//# sourceMappingURL=` comments, with bounded allocations for
+//! untrusted inputs.
+
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt as _;
@@ -164,6 +170,12 @@ const fn mappings_error(offset: usize, reason: &'static str) -> SourceMapError {
     SourceMapError::Mappings { offset, reason }
 }
 
+/// Parsed Source Map v3 indexed for both generated-to-original and
+/// original-to-generated lookups.
+///
+/// `generated` and `originals` are parallel arrays sorted by generated position
+/// for binary-search `covering` queries, while `by_original` indexes only
+/// non-shadowed mapped segments sorted by `(source, line, column, generated)`.
 #[derive(Debug, Clone)]
 pub struct SourceMap {
     file: Option<Arc<str>>,
@@ -623,6 +635,8 @@ impl Builder {
         }
 
         let (generated, originals): (Vec<_>, Vec<_>) = segments.into_iter().unzip();
+        // When multiple segments share a generated position, only the last wins in
+        // `covering`; exclude shadowed earlier segments so reverse lookups stay consistent.
         let mut by_original: Vec<u32> = (0..generated.len())
             .filter(|&index| {
                 originals.get(index).is_some_and(Option::is_some)
@@ -832,6 +846,7 @@ fn decode_vlq(text: &[u8], at: &mut usize) -> Result<i64> {
     Ok(if value & 1 == 0 {
         magnitude
     } else if magnitude == 0 {
+        // VLQ sign-magnitude `-0` (`value == 1`) encodes `-2^31` (`i32::MIN`) per ECMA-426.
         -(1 << 31)
     } else {
         -magnitude
@@ -1083,6 +1098,11 @@ pub fn locate(script: &Location, text: &str) -> Result<Option<MapReference>> {
         .transpose()
 }
 
+/// Extracts a trailing `//# sourceMappingURL=` or `//@ sourceMappingURL=` directive.
+///
+/// Scans backwards over trailing `//` comments only and stops on quotes or `*/`
+/// so directives embedded inside code or template literals are not mistaken for
+/// file-level source map comments.
 #[must_use]
 pub fn source_mapping_url(script: &str) -> Option<&str> {
     for line in script.rsplit(['\n', '\r', '\u{2028}', '\u{2029}']) {

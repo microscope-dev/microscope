@@ -51,6 +51,11 @@ const ALIGN: Record<NonNullable<Text["anchor"]>, CanvasTextAlign> = {
   end: "right",
 };
 
+/**
+ * Renders a `Picture` onto a HiDPI `<canvas>` (capped at `MOST_PIXELS` total backing pixels)
+ * and records interactive shapes with their `DOMMatrix` and bounding box in `hits`
+ * so hover tooltips and clicks can hit-test in reverse paint order.
+ */
 export function buildCanvas(picture: Picture, tip: Tip, onSelect?: OnSelect): HTMLCanvasElement {
   const canvas = document.createElement("canvas");
   canvas.classList.add("picture");

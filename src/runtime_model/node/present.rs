@@ -17,6 +17,9 @@ pub(super) struct Writer {
     pub assumed: Option<Arc<str>>,
 }
 
+/// Packs unboxed `f64` addresses into `u64` handles without colliding with
+/// 64-bit V8 `Smi` (`0b00`), strong `HeapObject` (`0b01`), weak `HeapObject`
+/// (`0b11`), or 8-byte-aligned addresses (`0b00`).
 const DOUBLE_TAG: u64 = 0b10;
 const TAG_MASK: u64 = 0b11;
 

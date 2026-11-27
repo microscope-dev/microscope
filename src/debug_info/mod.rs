@@ -1,3 +1,9 @@
+//! Binary and runtime debug-information loaders.
+//!
+//! Translates ELF, DWARF, split/separate debug files, language runtime tables,
+//! and JIT descriptors into a uniform `DebugInfo` bundle of indexed metadata,
+//! stack unwinding, and variable inspection.
+
 #[cfg(not(target_os = "linux"))]
 compile_error!("microscope currently supports debug information only on Linux");
 
@@ -97,6 +103,10 @@ pub struct VariableRegister {
     pub bytes: Arc<[u8]>,
 }
 
+/// Lifetime and address-stability classification for a variable's backing storage.
+///
+/// Used by watchpoints to decide whether an object's address stays valid
+/// across instructions or moves with the stack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StorageClass {
     NotMemory,

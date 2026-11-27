@@ -12,6 +12,8 @@ pub struct Condition {
     expression: Expression,
 }
 
+/// Parses an expression and rejects assignments across every syntactic
+/// ambiguity reading so conditions cannot mutate inferior state at stop time.
 fn read_only(text: &str, invalid: fn(String) -> Error) -> Result<Expression> {
     let expression = Expression::parse(text).map_err(|error| invalid(error.to_string()))?;
 

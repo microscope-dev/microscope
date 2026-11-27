@@ -1,3 +1,8 @@
+//! Resolves BPF-sampled V8 frames back to function names and source locations.
+//!
+//! Re-validates that each sampled `SharedFunctionInfo` and `Script` still match their captured
+//! IDs before reading bytecode offsets, since GC may have moved or freed them after the sample.
+
 use std::sync::Arc;
 
 use super::frames;

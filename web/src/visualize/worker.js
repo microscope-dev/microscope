@@ -1,4 +1,5 @@
 (() => {
+  // Capture intrinsics before lockDown() strips non-allowlisted properties from globalThis and its prototype chain.
   const post = self.postMessage.bind(self);
   const listen = self.addEventListener.bind(self);
   const later = self.setTimeout.bind(self);
@@ -284,6 +285,7 @@
   let handling = false;
   let flushLater = false;
 
+  /** Coalesces outbound live messages per kind so rapid renderer calls do not trip Sandbox's rate watchdog. */
   function ask(kind, message) {
     assert(kind in asked, "asked for a known kind");
     if (starter === null) {
@@ -501,6 +503,7 @@
     } else if (message?.type === "draw" && loaded && (drawer !== null || starter !== null)) {
       draw(message.id, message.input, message.context);
     } else if (message?.type === "ping") {
+      // Chain pong onto queue so a hung async live handler trips the ping watchdog.
       queue = queue.then(() => post({ type: "pong" }));
     } else if (LIVE.has(message?.type) && loaded && starter !== null) {
       // oxlint-disable-next-line promise/always-return -- the queue only orders the work; nothing reads its value

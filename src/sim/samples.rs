@@ -1,3 +1,9 @@
+//! Randomized `perf` sampling driver and sample-unwinding oracle.
+//!
+//! Periodically captures simulated `PERF_RECORD_SAMPLE` blobs after thread
+//! bursts and checks `unwind_sample` (including stack-copy + frame-pointer
+//! splicing) against the thread's `Shadow` call stack.
+
 use super::choices::{Choices, Stream};
 use super::corpus::Variant;
 use super::kernel::shadow::Shadow;

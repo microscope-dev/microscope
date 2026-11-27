@@ -1,3 +1,8 @@
+//! Enumerates active `Node.js` timers from `node:internal/timers`.
+//!
+//! Finds `processTimers` on the principal realm, walks its closure context chain to recover
+//! `timerListMap` and internal symbols, and traverses each doubly-linked `_idleNext` list.
+
 use std::sync::Arc;
 
 use super::objects::{Object, Problem, Reader, address_at};

@@ -64,6 +64,7 @@ export type Need = "session" | "connection" | "control";
 
 type Kind = PaneKind<Need>;
 
+/** Defers component lookup to render time to break circular imports between panes.tsx and pane modules. */
 function deferred(get: () => Kind["Body"]): Kind["Body"] {
   return (props) => createComponent(get(), props);
 }
@@ -347,6 +348,7 @@ export function debugLayout(): Layout {
 
 export function applyLayout(layout: Layout): void {
   workbench.setState({ layout });
+  // Clone `files` so Documents re-reconciles open file tabs against the newly applied layout.
   tab.setState((state) => ({ files: [...state.files] }));
 }
 
@@ -407,6 +409,10 @@ export function fleetOverviewLayout(): Layout {
   });
 }
 
+/**
+ * Returns true when the current dock layout belongs to a different route mode than `wants`
+ * (e.g. a debug layout left over on the start page or a capture layout on a fleet dashboard).
+ */
 export function misplaced(layout: Layout, wants: Wants): boolean {
   const panes = Object.values(layout.panes);
   if (panes.length === 0) {

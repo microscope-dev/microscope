@@ -46,6 +46,13 @@ function stampDepth(state: unknown, nextDepth: number): Record<string, unknown> 
     : { depth: nextDepth };
 }
 
+/**
+ * Browser history adapter for `@solidjs/router`.
+ *
+ * Stamps a monotonic `depth` into `history.state` so `canGoBack()` works reliably,
+ * and keeps `set()` silent toward `routerNotify` because the router calls `set()`
+ * for its own navigations (whereas imperative `push`/`replace` must notify it).
+ */
 export function createBrowserHistory(): AppHistory {
   const subscribers = new Set<(event: { action: { type: HistoryAction } }) => void>();
   let routerNotify: ((value?: string | LocationChange) => void) | null = null;

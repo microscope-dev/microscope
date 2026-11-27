@@ -70,6 +70,7 @@ const PUNCTUATION: Readonly<Record<string, string>> = {
   Backquote: "`",
 };
 
+/** Prefers physical `event.code` under Alt/Ctrl so macOS Option dead keys and accented characters still match shortcuts. */
 function keyOf(event: KeyLike): string {
   if (!event.code) {
     return event.key;
@@ -88,6 +89,11 @@ function keyOf(event: KeyLike): string {
   return punctuation && (event.altKey || event.ctrlKey) ? punctuation : event.key;
 }
 
+/**
+ * Reports whether `element` should consume plain-key shortcuts as text input.
+ * Containers can override via `data-keys="debugger"` (always allow shortcuts)
+ * or `data-keys="renderer"` (always swallow plain keys for custom canvases).
+ */
 export function isTextBox(element: Element | null): boolean {
   if (!element) {
     return false;

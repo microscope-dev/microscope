@@ -1,3 +1,5 @@
+//! `strace`-compatible `-e` filter expression parser and syscall event matcher.
+
 use std::collections::BTreeSet;
 
 use regex::Regex;
@@ -6,6 +8,7 @@ use super::model::{Abi, Outcome, SyscallEvent, SyscallId};
 use super::specs::{self, Class};
 use super::table;
 
+/// Set of `SyscallId`s backed by per-ABI bitsets for `O(1)` membership checks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallSet {
     calls: BTreeSet<SyscallId>,

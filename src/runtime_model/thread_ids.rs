@@ -1,3 +1,10 @@
+//! Proven bijection between target-namespace native thread IDs and debugger
+//! host [`ThreadId`]s.
+//!
+//! When debugging across PID namespaces (such as containers), thread IDs
+//! recorded inside target memory differ from host TIDs. This table rejects
+//! ambiguous or partial claims rather than guessing.
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -26,6 +33,11 @@ impl ThreadIds {
         Self::read(stop.threads(), |threads| stop.target_thread_ids(threads))
     }
 
+    /// Builds a strict one-to-one map from `(host, target)` thread pairs.
+    ///
+    /// If two host threads claim the same target ID or one host thread claims
+    /// two target IDs, the affected entries are poisoned as `None`
+    /// (`IdentityError::Ambiguous`).
     pub fn read(
         mut threads: Vec<ThreadId>,
         read: impl FnOnce(&[ThreadId]) -> Vec<(ThreadId, TargetThreadId)>,

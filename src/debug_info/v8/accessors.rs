@@ -1,3 +1,9 @@
+//! Recovers V8 and Node runtime addresses and offsets by decoding exported `x86_64`
+//! C++ accessor functions when internal symbols are not exported.
+//!
+//! Each decoder checks for an exact, unambiguous instruction shape and fails
+//! loudly if a compiler or V8 version emits an unrecognized sequence.
+
 use std::sync::Arc;
 
 use iced_x86::{Decoder, DecoderOptions, Instruction, MemorySize, Mnemonic, OpKind, Register};
@@ -124,6 +130,12 @@ fn load(instruction: &Instruction, to: Register, base: Register) -> Option<u64> 
         .then(|| instruction.memory_displacement64())
 }
 
+/// Locates V8's `JSDispatchTable` for leaptiering builds (V8 13.6+).
+///
+/// Prefers `ExternalReference::js_dispatch_table_address`; on V8 13.6 builds
+/// with hidden internal symbols (such as Debian's `libnode.so`), falls back to
+/// tracing `v8::IsolateGroup::GetDefault` and `~IsolateGroup` to recover the
+/// group global and the table's `base_` offset.
 pub(super) fn dispatch_table(
     object: &object::File<'_>,
     version: V8Version,
@@ -707,6 +719,13 @@ fn blob_accessor(object: &object::File<'_>, address: u64) -> Result<(u64, bool),
     Err(unexpected(&what, None))
 }
 
+/// Recovers the four embedded-blob globals (code, code size, data, data size)
+/// from `v8::Isolate::GetEmbeddedCodeRange`.
+///
+/// Tracks dataflow from the `RSI`/`RDX` out-parameters across the four trivial
+/// RIP-relative global accessors it calls; the two stored results identify
+/// `code` and `code_size`, and the remaining 64-bit/32-bit pair gives `data`
+/// and `data_size`.
 pub(super) fn embedded_blob(object: &object::File<'_>) -> Result<EmbeddedBlob, Arc<str>> {
     let what = "v8::Isolate::GetEmbeddedCodeRange";
     let address = function(object, GET_EMBEDDED_CODE_RANGE, false)
@@ -874,6 +893,8 @@ fn decode_node_version(instructions: &[Instruction], what: &str) -> Result<u64, 
     })
 }
 
+/// Recovers the `entry_stack` offset in `v8::Isolate` from `v8::Isolate::IsInUse`,
+/// which tests that field for non-null directly off `RDI`.
 pub(super) fn entry_stack(object: &object::File<'_>) -> Result<u64, Arc<str>> {
     let function = function(object, IS_IN_USE, false)
         .ok_or_else(|| -> Arc<str> { format!("the module names no {IS_IN_USE}").into() })?;

@@ -1,3 +1,7 @@
+//! Proves `Node.js` inspector startup has quiesced via three native breakpoint checkpoints
+//! (`after_wait` when the watchdog wakes to post, `before_wait` when it parks again, and the
+//! outer `check` return) so teardown cannot race startup postings.
+
 use crate::backend::linux::arch::stack_after_return;
 use nix::unistd::Pid;
 

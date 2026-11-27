@@ -170,6 +170,15 @@ interface Live {
   end(failure: LiveFailure): void;
 }
 
+/**
+ * Runs untrusted user visualizer code in a hidden `sandbox="allow-scripts"` iframe
+ * (opaque origin, no host DOM/storage access) over a transferred `MessageChannel`.
+ *
+ * A second `load` event signals unexpected iframe navigation and marks the sandbox
+ * lost. Static draws and interactive live sessions each have separate concurrency
+ * queues (`PARALLEL`, `LIVE_PARALLEL`), and live sessions run a ping/pong plus
+ * message-rate watchdog to terminate hung or flooding renderers.
+ */
 export class Sandbox {
   private readonly frame: HTMLIFrameElement;
   private state: FrameState = { kind: "loading" };
@@ -183,6 +192,7 @@ export class Sandbox {
   private running = 0;
   private next = 1;
 
+  // Cache digests that returned `{ type: "live" }` so subsequent `draw()` calls short-circuit without round-tripping.
   private readonly liveDigests = new Set<string>();
 
   private readonly lives = new Map<string, Live>();
@@ -646,6 +656,7 @@ export function currentTheme(): "light" | "dark" {
 
 let colors: CanvasRenderingContext2D | null = null;
 
+/** Normalizes CSS color strings to `#rrggbb` via Canvas 2D `fillStyle` serialization for `microscope.color.scale`. */
 function sixDigits(color: string): string {
   colors ??= document.createElement("canvas").getContext("2d");
   if (colors === null) {

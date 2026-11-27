@@ -97,6 +97,10 @@ export const showDocument = (path: string) => documents.show(path);
 export const closeDocument = (path: string) => documents.close(path);
 export const showView = (view: View) => documents.view(view);
 
+/**
+ * Headless bridge keeping URL focus (`at`, `look.src`, `look.view`), open file tabs (`tab.files`),
+ * and the dock layout (`arrange`) in sync.
+ */
 export function Documents() {
   const focus = useFocus();
   const shown = useShown();
@@ -107,6 +111,8 @@ export function Documents() {
   const paths = useLinkPaths();
   const asked = useTab((state) => state.asked);
 
+  // Closing the last open tab clears `look.src`, causing `shown()` to fall back to `own()`;
+  // `unasked` suppresses re-opening that frame's file on the resulting effect run.
   let unasked: string | null = null;
 
   const openTrigger = createMemo(

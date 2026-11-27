@@ -1,3 +1,10 @@
+//! Keeps hardware watchpoints on interpreted variables valid across GC
+//! compaction, JIT frame replacement (OSR/deopt), and frame exit.
+//!
+//! Plants internal breakpoints on the runtime's collector and frame-replacer
+//! entries so watchpoints are temporarily lifted during GC and re-armed at the
+//! object's new address on return.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use nix::unistd::Pid;

@@ -318,6 +318,7 @@ pub(super) fn classify_stop_evidence(
                 fault_address: metadata.fault_address,
             })
         }
+        // Under PTRACE_SEIZE, PTRACE_GETSIGINFO returning EINVAL on a stopping signal identifies a group-stop.
         Err(Errno::EINVAL) if is_stopping_signal(signal) => ClassifiedStop::GroupStop(signal),
         outcome => ClassifiedStop::Unclassifiable(RawStopRecord {
             status,
@@ -326,6 +327,8 @@ pub(super) fn classify_stop_evidence(
     }
 }
 
+/// `ESRCH` or a `PTRACE_EVENT_EXIT` `si_code` means `SIGKILL` or exit superseded this stop
+/// before we could inspect it.
 pub(super) fn is_superseded(siginfo: &std::result::Result<SignalMetadata, Errno>) -> bool {
     const EXIT_EVENT: i32 = libc::SIGTRAP | (libc::PTRACE_EVENT_EXIT << 8);
     match siginfo {
@@ -334,6 +337,8 @@ pub(super) fn is_superseded(siginfo: &std::result::Result<SignalMetadata, Errno>
     }
 }
 
+/// Linux `x86_64` reports single-step completion with `TRAP_TRACE`, `TRAP_BRKPT`, or
+/// `TRAP_UNKNOWN` (5) depending on whether the stepped instruction entered a syscall or signal.
 pub(super) const fn is_single_step_trap(metadata: &SignalMetadata) -> bool {
     matches!(
         metadata.code,

@@ -1,3 +1,6 @@
+//! Drains in-process instrumentation probe rings from a target process via
+//! `perf::read_memory` and maintains the liveness heartbeat that keeps probes enabled.
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -114,6 +117,11 @@ pub struct Collector {
 
 const HEARTBEAT_EVERY: std::time::Duration = std::time::Duration::from_millis(100);
 
+/// Background thread that stamps the monotonic clock into each control block
+/// every `HEARTBEAT_EVERY`.
+///
+/// If the recorder stalls past the configured timeout, the target disables its
+/// own probes to bound overhead.
 struct Heartbeat {
     controls: Arc<std::sync::Mutex<Vec<u64>>>,
     beating: Option<(std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>)>,
@@ -509,6 +517,11 @@ impl Collector {
         }
     }
 
+    /// Enables a probe instance in the target process.
+    ///
+    /// Writes clock, heartbeat, timeout, and per-site state bytes before setting
+    /// the control block's enable word so the target never observes an enabled
+    /// control block with uninitialized fields.
     fn switch_on(&mut self, index: usize) {
         let control = self.at(index).control;
         let Some(registry) = self.registry(control) else {
@@ -719,6 +732,8 @@ impl Collector {
             }
         }
 
+        // Re-read `head` after copying to detect wraparound overwrites that raced
+        // with `read_memory`, discarding any leading slots the writer may have clobbered.
         let mut head = [0; 8];
         let moved = perf::read_memory(pid, address + 64, &mut head)
             .map_or(header.head, |_| u64::from_le_bytes(head));

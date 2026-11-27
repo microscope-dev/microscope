@@ -1,3 +1,9 @@
+//! Per-thread syscall timeline lanes combining bucketed counts with long-call spans.
+//!
+//! Every call returning in `start..end` increments `calls`/`failed` at its
+//! return bucket; calls spanning at least one bucket are also emitted in `long`
+//! so blocking syscalls render as continuous bars.
+
 use super::keys::Keys;
 use super::query::{Query, syscalls};
 use crate::capture::Capture;

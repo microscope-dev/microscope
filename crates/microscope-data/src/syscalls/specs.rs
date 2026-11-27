@@ -1,3 +1,8 @@
+//! Declarative syscall argument/return specifications and `strace`-compatible class tags.
+//!
+//! Drives user-memory capture, filter matching, file descriptor tracking, and
+//! formatted output from a single table.
+
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
 

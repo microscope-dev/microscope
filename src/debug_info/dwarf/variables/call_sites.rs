@@ -1,3 +1,6 @@
+//! DWARF call-site and tail-call graph indexing for `DW_OP_entry_value` recovery
+//! and artificial tail-call stack frames.
+
 use crate::debug_info::dwarf::DwarfSet;
 use std::sync::Arc;
 

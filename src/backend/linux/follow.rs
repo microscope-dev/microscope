@@ -1,3 +1,9 @@
+//! Multi-process follow-fork / follow-exec coordination and shared group settings.
+//!
+//! `Group` receives forked/execed/demoted processes via `Following`, either
+//! spawning a new hosted `Controller` or handing the process to `Watcher` to
+//! monitor lightly until it execs a program matching the follow policy.
+
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -736,6 +742,8 @@ struct Watched {
     launched: bool,
 }
 
+/// Lightly traces non-debugged descendant processes (such as shells or vfork
+/// children) so `exec` into a target program can still be promoted to a full session.
 struct Watcher {
     ptrace: LinuxPtrace,
     messages: mpsc::Receiver<ControllerMessage>,

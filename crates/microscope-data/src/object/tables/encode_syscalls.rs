@@ -13,6 +13,11 @@ use crate::capture::Capture;
 use crate::capture::records::{Syscall, UNSEEN, captures as parse_captures};
 use crate::syscalls::{Capture as ArgCapture, CaptureState, ReadAt};
 
+/// Encodes syscalls grouped per page by `(abi, number)` for tighter per-syscall
+/// delta compression, preserving chronology in an `order` column.
+///
+/// Pages with at least 1024 rows split syscall arguments into a second frame so
+/// summary scans can skip decompressing arguments.
 #[expect(
     clippy::too_many_lines,
     reason = "encodes paged grouped syscall columns with core vs args framing"
@@ -68,6 +73,8 @@ pub(super) fn encode_syscalls(
             keys_per_row.push(gk);
             by_kind.entry(gk).or_default().push(call);
 
+            // Substitute `entered` (or `prev_exit`) when `exited == UNSEEN` so delta
+            // coding stays near zero; a 2-bit `unseen` mask column restores `UNSEEN`.
             let raw_t = if call.exited.get() != UNSEEN {
                 Some(call.exited.get())
             } else if call.entered.get() != UNSEEN {
@@ -338,6 +345,9 @@ fn flush_syscall_blob_page(
     Ok(())
 }
 
+/// Encodes per-argument capture blobs alongside `SyscallNote` blobs,
+/// multiplexing note blobs into the same section under `NOTE_BLOBS_ARGUMENT`
+/// (`u8::MAX`).
 #[expect(
     clippy::too_many_lines,
     reason = "encodes paged grouped syscall capture blobs and note blobs"

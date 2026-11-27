@@ -1,3 +1,6 @@
+//! Stepping a thread over a `0xCC` breakpoint requires lifting the trap byte, single-stepping
+//! that thread alone while siblings stay stopped, and reinstalling `0xCC` afterward.
+
 use crate::VirtualAddress;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,22 +16,17 @@ pub(super) enum Lift {
     Vfork,
 }
 
+/// `Reported` remembers that the thread stopped at `at` even after the site was removed,
+/// so re-adding a breakpoint at `at` before resuming transitions back to `MustStepOver`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum AtTrap {
     Clear,
 
-    Reported {
-        at: VirtualAddress,
-    },
+    Reported { at: VirtualAddress },
 
-    /// Stands at the trap it reported at `at`, to step over before it runs
-    MustStepOver {
-        at: VirtualAddress,
-    },
+    MustStepOver { at: VirtualAddress },
 
-    Repairing {
-        at: VirtualAddress,
-    },
+    Repairing { at: VirtualAddress },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

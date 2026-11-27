@@ -420,6 +420,10 @@ function showingCode(current: Look, address: string | null): Look {
   return { ...kept, ...(address === null ? {} : { asm: address }), view: "disassembly" };
 }
 
+/**
+ * Subscribes to inferior state transitions before sending a run/step command so fast stops are
+ * not missed; reports `"running…"` only if the program is still running when the request settles.
+ */
 function follow(store: Store<Model>, id: number, send: () => Promise<unknown>): Promise<null> {
   const before = store.getState().state?.inferior;
   let settled = false;

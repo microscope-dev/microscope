@@ -14,6 +14,11 @@ interface Tracked {
 
 let current: Tracked | null = null;
 
+/**
+ * Captures the primary pointer for a single active drag/resize gesture.
+ * Listens for `Escape` in the capture phase with `stopImmediatePropagation`
+ * so cancelling a gesture does not also dismiss surrounding UI.
+ */
 export function trackPointer(event: PointerEvent, gesture: Gesture): boolean {
   if (event.button !== 0 || current) {
     return false;

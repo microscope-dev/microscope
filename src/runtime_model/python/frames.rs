@@ -1,3 +1,8 @@
+//! `CPython` interpreter frame walking for stopped threads and BPF-sampled stacks.
+//!
+//! Handles entry-frame boundaries, `Py_STACKREF` tagged pointers on 3.14+, and thread-local
+//! bytecode (TLBC) copies in free-threaded builds.
+
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -225,6 +230,7 @@ impl Walk<'_, '_> {
             || -> Problem { format!("is at byte {offset}, outside its code's bytecode").into() };
 
         let line = if offset < 0 {
+            // A newly pushed frame points one code unit before the bytecode start until it runs.
             if offset < -i64::try_from(super::linetable::CODE_UNIT).unwrap_or(0) {
                 return Err(outside());
             }

@@ -1,3 +1,6 @@
+//! NUL-terminated string and path pools indexed by `u32` byte offset (`StrId`,
+//! `PathId`).
+
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
@@ -11,6 +14,8 @@ pub struct StringsBuilder {
     pooled: Pooled,
 }
 
+/// Flat hash-to-offset index that stores the first entry per 64-bit hash inline
+/// and spills rare collisions into `collided`, avoiding per-bucket allocations.
 #[derive(Debug, Default, Clone)]
 pub struct Pooled {
     first: foldhash::HashMap<u64, u32>,
@@ -159,6 +164,12 @@ pub fn valid_pool(pool: &[u8], utf8: bool) -> bool {
     !utf8 || std::str::from_utf8(pool).is_ok()
 }
 
+/// Checks whether `offset` starts a valid entry in a pool verified by
+/// `valid_pool`.
+///
+/// For UTF-8 pools, rejecting continuation bytes (`0b10xxxxxx`) is sufficient
+/// because any non-continuation byte inside valid NUL-terminated UTF-8 begins a
+/// valid UTF-8 substring up to the next NUL.
 #[must_use]
 pub fn valid_reference(pool: &[u8], offset: u32, utf8: bool) -> bool {
     let Some(&byte) = pool.get(offset as usize) else {

@@ -1,3 +1,9 @@
+//! Compiles a matched [`View`] against a concrete type into a [`BoundView`].
+//!
+//! Binding runs once per type and returns a [`Rejection`] on missing fields or
+//! type mismatches so `view::choose_among` can fall through to another candidate
+//! (for example, views targeting different standard-library versions).
+
 use std::sync::Arc;
 
 use crate::eval::bind::{Mode, bind as bind_expression, bind_condition, bind_value};
@@ -148,6 +154,7 @@ pub struct BoundScan<St> {
 }
 
 impl<St> BoundScan<St> {
+    /// True when a single unfiltered `range(N)` clause drives the scan, allowing `O(1)` seeks.
     pub fn random_access(&self) -> bool {
         matches!(
             self.clauses.as_slice(),

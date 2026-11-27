@@ -1,3 +1,7 @@
+//! Plans hardware-breakpoint function-call counting, including detecting Go's
+//! prologue stack-growth check (`morestack`) so retried entries are not
+//! double-counted.
+
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -42,6 +46,8 @@ impl Branch {
     }
 }
 
+/// Linux's default PIE load base when ASLR is disabled (`ADDR_NO_RANDOMIZE`),
+/// used to place a breakpoint before `exec` and verified afterwards via `check_bias`.
 const UNRANDOMIZED_PIE_BASE: u64 = 0x5555_5555_4aaa;
 
 fn inlined_everywhere(program: &Path, data: &[u8], symbol: &str) -> Option<RecordError> {

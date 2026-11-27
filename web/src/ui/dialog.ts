@@ -2,6 +2,10 @@ import { createEffect, onSettled } from "solid-js";
 
 const CONTROLS = "input, select, textarea, button, [href], [tabindex]:not([tabindex='-1'])";
 
+/**
+ * Moves focus into a dialog on mount and restores the previously focused element on unmount,
+ * unless the user has already moved focus somewhere else outside the dialog.
+ */
 export function useDialogFocus(
   dialog: () => HTMLElement | null | undefined,
   first?: () => HTMLElement | null | undefined,

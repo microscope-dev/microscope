@@ -1,3 +1,9 @@
+//! Event-stream auditor checking monotonic `DebuggerEvent`
+//! ordering and exact exit publication.
+//!
+//! Verifies that revisions, stop IDs, and execution IDs never regress, and
+//! that every reaped thread and process publishes its exit status once.
+
 use tokio::sync::mpsc;
 
 use std::cell::RefCell;

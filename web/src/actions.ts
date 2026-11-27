@@ -51,6 +51,7 @@ export type Action = Available | Unavailable;
 
 const unavailable = (reason: string): Unavailable => ({ enabled: false, reason });
 
+// Deduplicates in-flight RPCs per action name so double-clicks or held shortcut keys do not double-step.
 const answering = new Map<ActionName, Promise<unknown>>();
 
 function ready(name: ActionName, run: (connection: Connection) => Promise<unknown>): Available {

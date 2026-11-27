@@ -1,3 +1,7 @@
+//! Deduplicated background queue and multipart uploader for debug symbols
+//! requested by the ingest server, with bounded tracking maps, retry backoff,
+//! and cooldown on persistent failure.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
 use std::io::Read as _;

@@ -1,3 +1,8 @@
+//! Resumable nested-loop scanner for `sequence` and `map` view clauses.
+//!
+//! Executes `range`, `list`, `inorder`, and WebAssembly `kernel` generators with
+//! cycle/depth protection and periodic cursor checkpointing for pagination.
+
 use std::collections::BTreeSet;
 
 use crate::ViewProblem;
@@ -45,6 +50,9 @@ impl Var {
     }
 }
 
+/// Brent's cycle detector complements the per-level `visited` set so corrupted
+/// linked lists in target memory halt with `ViewProblem::Cycle` even across
+/// checkpoint restores where `visited` starts empty.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Brent {
     tortoise: u64,
@@ -121,6 +129,11 @@ impl Cursor {
     }
 }
 
+/// Saved [`Cursor`] snapshots taken every [`CHECKPOINT_INTERVAL`] items.
+///
+/// Allows paging forward into large containers without rescanning from index 0.
+/// Scans that include a Wasm `kernel` clause skip checkpointing because live
+/// Wasm instances cannot be cloned.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Checkpoints {
     cursors: Vec<Cursor>,

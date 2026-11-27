@@ -199,6 +199,8 @@ pub fn parse(text: &str, dialect: Dialect) -> Result<(Vec<Ambiguity>, Readings),
     Ok((ambiguity_list, readings))
 }
 
+/// Finds token positions of `(path)` followed by `-`, `*`, or `&`, where the
+/// parenthesized path could be either a prefix cast or a grouped operand.
 fn ambiguities(tokens: &[Token]) -> Vec<usize> {
     let ident = |index: usize| match tokens.get(index).map(|token| &token.kind) {
         Some(TokenKind::Ident(word)) => Some(word.as_str()),
@@ -838,6 +840,8 @@ impl<'tokens> Parser<'tokens> {
         Ok(Path { global, segments })
     }
 
+    /// Only absorb `.` into a path when `::` follows later (e.g. `pkg.sub::T`);
+    /// plain `a.b` stays member access and is split against scope names in `bind`.
     fn dots_then_colons(&self) -> bool {
         let mut offset = 0;
         while self.peek_at(offset) == &TokenKind::Punct(Punct::Dot)

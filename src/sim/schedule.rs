@@ -50,7 +50,9 @@ impl Action {
 pub enum Policy {
     Walk(Weights),
 
-    /// actions.
+    /// Probabilistic Concurrency Testing (PCT): assigns random priorities to
+    /// actors and lowers the running actor's priority at `depth - 1` random
+    /// change points within `horizon` steps.
     Pct {
         depth: u64,
         horizon: u64,
@@ -88,6 +90,8 @@ pub struct Scheduler {
 
 const HIGH: i64 = 1 << 32;
 
+/// Upper bound on how long an enabled actor may wait under PCT before being
+/// forced to run, preventing livelock when a high-priority actor spins.
 const PATIENCE: u64 = 10_000;
 
 impl Scheduler {

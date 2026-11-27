@@ -358,6 +358,8 @@ pub fn decode_dict_u64_budgeted(
     Ok(out)
 }
 
+/// Splits each `u64` into a compressible 1-byte class (bit-width plus top 2
+/// bits) and a raw packed stream of low-order mantissa bits that bypasses `zstd`.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "class bytes fit in u8 (v < 4 or width in 3..=64)"
@@ -495,6 +497,8 @@ pub fn decode_binned_2b(
     Ok(out)
 }
 
+/// Reorders a parent-pointer forest into DFS pre-order so `encode_bp_tree` can
+/// encode the topology in 2 bits per node (`1` = enter, `0` = leave).
 #[must_use]
 pub fn forest_to_dfs(parents: &[u32]) -> (Vec<u32>, Vec<u32>, Vec<usize>) {
     let n = parents.len();
@@ -804,6 +808,8 @@ pub fn decode_sparse_histograms(
     Ok(out)
 }
 
+/// Transposes fixed-size 8-byte-aligned records into word-major order so
+/// corresponding fields across consecutive rows sit adjacent for `zstd`.
 #[must_use]
 pub fn encode_words(records: &[&[u8]], record_len: usize) -> Vec<u8> {
     debug_assert!(record_len > 0 && record_len.is_multiple_of(8));

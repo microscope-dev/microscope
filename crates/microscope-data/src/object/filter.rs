@@ -1,3 +1,6 @@
+//! 8-bit Binary Fuse filter (`BinaryFuse8`, Mueller-Lemire) for fast negative
+//! membership lookups with ~1/256 false-positive rate and ~1.13 bytes/key.
+
 use std::hash::Hasher;
 
 use twox_hash::XxHash3_64;
@@ -141,6 +144,9 @@ impl BinaryFuse8 {
         }
     }
 
+    /// Builds a filter via 3-way hypergraph peeling and reverse XOR assignment,
+    /// retrying with new seeds and widening `segment_count` after 16 failed
+    /// seeds at the current size.
     #[must_use]
     #[expect(
         clippy::too_many_lines,

@@ -1,3 +1,7 @@
+//! State machine for `StepKind::IntoNewTask`, intercepting runtime task-spawn
+//! functions (`go`, `tokio::spawn`, etc.) and following execution into the newly
+//! created task's entry point.
+
 use crate::backend::linux::Registers;
 use std::collections::{BTreeMap, BTreeSet};
 

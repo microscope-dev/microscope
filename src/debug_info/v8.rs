@@ -1,3 +1,10 @@
+//! Extracts V8 runtime metadata and validates pre-generated Torque/header layouts
+//! against the `v8dbg_` postmortem constants exported by a Node/V8 binary.
+//!
+//! Only uncompressed 64-bit tagged pointers (`v8dbg_TaggedSize == 8`) without the
+//! V8 sandbox are supported; mismatched builds are rejected with an explicit reason
+//! rather than misreading heap memory.
+
 #[rustfmt::skip]
 #[path = "v8/layouts.gen.rs"]
 mod layouts;
@@ -70,6 +77,8 @@ use crate::image::v8::CURRENT_ISOLATE;
 
 const GET_CURRENT: &str = "_ZN2v87Isolate10GetCurrentEv";
 
+/// Recovers the current-isolate TLS location from `v8::Isolate::GetCurrent` when
+/// the internal TLS symbol is stripped or hidden.
 pub(super) fn add_thread_locals(
     object: &object::File<'_>,
     thread_locals: &mut std::collections::BTreeMap<
@@ -524,6 +533,12 @@ fn int_value(object: &object::File<'_>, symbol: &object::Symbol<'_, '_>) -> Opti
     Some(i64::from(i32::from_le_bytes(bytes.try_into().ok()?)))
 }
 
+/// Binds a pre-generated Torque layout for `version` against the binary's exported
+/// `v8dbg_` symbols.
+///
+/// `v8dbg_` supplies frame offsets and runtime constants while the generated layout
+/// supplies full heap-object offsets; every overlapping field, instance type, and
+/// checked constant must match before the layout is accepted.
 fn bind(
     version: V8Version,
     values: &BTreeMap<String, i64>,
@@ -734,6 +749,9 @@ fn check_complete(version: V8Version, layout: &V8Layout) -> Result<(), Arc<str>>
     Ok(())
 }
 
+/// First V8 release with leaptiering (`JSDispatchTable`), replacing direct
+/// `JSFunction::code` pointers with dispatch handles and splitting
+/// `SharedFunctionInfo` data into trusted/untrusted slots.
 const LEAPTIERING: (u32, u32) = (13, 6);
 
 const _: () = assert!(

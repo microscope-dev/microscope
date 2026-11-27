@@ -1,3 +1,8 @@
+//! Incremental reader for `/tmp/perf-<pid>.map` JIT symbol maps.
+//!
+//! Resolves the target's inner-namespace PID via `/proc/<pid>/status` (`NSpid`) and rejects
+//! stale map files whose creation time predates the target process's start time.
+
 use std::io::{Read as _, Seek as _};
 use std::path::PathBuf;
 

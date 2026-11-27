@@ -77,6 +77,8 @@ export function useCards(): () => Card[] {
     return reason === null ? current.at : null;
   });
 
+  // Keep the previous card list while running or refetching scopes so cards do not unmount
+  // and lose renderer/canvas state between stops.
   let last: Card[] = [];
   return createMemo(() => {
     const data = scopes().data;
@@ -601,6 +603,10 @@ function RendererTab(props: { name: string; pressed: boolean; choose: (name: str
   );
 }
 
+/**
+ * Coalesces rapid stop/resize updates to at most one in-flight sandbox draw per card, drops
+ * out-of-order results (`next.stop >= latest`), and closes superseded ImageBitmaps via `free()`.
+ */
 function useDrawQueue(
   id: string,
   holder: () => HTMLElement | null,
@@ -719,6 +725,10 @@ const MOST_HEIGHT = 4_000_000;
 const TABLE_STYLE = { "max-height": `${ROW * (SHOWN_ROWS + 1)}px` };
 const ROW_STYLE = { height: `${ROW}px` };
 
+/**
+ * Virtualized table for renderer inputs. Clamps total scroll height to `MOST_HEIGHT` and switches
+ * to proportional scroll mapping above that cap to stay within browser element height limits.
+ */
 function InputTable(props: { rows: InputRows; label: string }) {
   const [scrolled, setScrolled] = createSignal(0);
 

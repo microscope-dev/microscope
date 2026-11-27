@@ -1,3 +1,8 @@
+//! Low-overhead internal profiler for `--timings` and benchmark tools.
+//!
+//! Captures nested thread-local spans with wall time, thread CPU time,
+//! optional hardware retired-instruction counts, and heap allocations.
+
 pub mod alloc;
 mod report;
 

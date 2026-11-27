@@ -1152,7 +1152,7 @@ pub enum StopReason {
     /// The debugger established an initial coherent stop after attaching.
     Attach,
 
-    /// A launch requested with [`LaunchOptions::stop_at_entry`] stopped at
+    /// A launch with [`LaunchOptions::stop_at_entry`] stopped at entry.
     Entry,
 
     Breakpoint {
@@ -1191,22 +1191,22 @@ pub enum StopReason {
         ending: TaskEnding,
     },
 
-    /// timeout drops a future it no longer awaits, and the step went on in
+    /// A stepped future was dropped before completing.
     FutureDropped { kind: StepKind },
 
     /// Execution stopped at the user's request.
     Pause,
 
-    /// A thread was moved to resume elsewhere, by a jump or by assigning
+    /// A thread was moved to resume at a different location.
     Jump,
 
-    /// as its thread, the only one, ran to make it.
+    /// A thread stopped after performing an assignment.
     Assignment,
 
     /// Execution stopped because of an exception.
     Exception(ExceptionInfo),
 
-    /// a fatal error. The frame the runtime blames is selected.
+    /// The language runtime reported an exception or fatal error.
     LanguageException(LanguageException),
 
     RuntimeEvent {
@@ -1215,15 +1215,15 @@ pub enum StopReason {
     },
 
     ProgramBreakpoint {
-        /// whose frame is selected.
+        /// Trap address of the program-triggered breakpoint, if known.
         address: Option<VirtualAddress>,
     },
 
-    /// catches.
+    /// Execution stopped at a caught syscall.
     Syscall(Box<SyscallStop>),
 
     Exec {
-        /// cannot be inspected or resumed.
+        /// Whether the debugger followed into the new image.
         followed: bool,
     },
 
@@ -1296,7 +1296,7 @@ pub enum InferiorState {
         status: ExitStatus,
     },
 
-    /// The debugger let the last program go, or lost it, as
+    /// The debugger detached from or lost the last process.
     Detached { process_id: ProcessId },
 }
 

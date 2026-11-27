@@ -1,3 +1,9 @@
+//! Dedicated OS tracer thread that owns all `ptrace` calls and the shared `WaitHub`.
+//!
+//! Linux `ptrace` binds tracee ownership to the specific OS thread that spawned or seized
+//! them, so single-process sessions and multi-process groups alike multiplex their
+//! `Hosted` controllers onto this one thread.
+
 use std::sync::{Arc, mpsc as std_mpsc};
 use std::task::{Context, Wake, Waker};
 use std::thread::{self, JoinHandle, Thread};

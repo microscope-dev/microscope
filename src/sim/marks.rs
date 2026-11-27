@@ -1,3 +1,6 @@
+//! Coverage marks (`Mark`, `Marks`, `Reach`) tracking which edge cases and
+//! protocol paths the simulation swarm actually exercised.
+
 macro_rules! marks {
     ($($(#[$doc:meta])* $mark:ident,)*) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]

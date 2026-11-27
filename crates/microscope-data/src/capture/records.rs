@@ -289,6 +289,11 @@ impl Truncation {
     }
 }
 
+/// A single unwound frame.
+///
+/// `address` holds a code address for native frames, a `u32` string-pool offset
+/// when `FrameKind::named` is true (`Awaited`, `Interpreted`, `Kernel`), or a
+/// `Truncation` code when `kind == FrameKind::Truncated`.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -679,6 +684,7 @@ pub struct TaskWait {
     pub reserved: U32,
 }
 
+/// Sentinel timestamp (`i64::MIN`) for missing syscall entry or exit times.
 pub const UNSEEN: i64 = i64::MIN;
 
 #[repr(C)]

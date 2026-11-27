@@ -80,6 +80,10 @@ pub use microscope_data::model::{
     Architecture, ByteOrder, CodeRole, Pid, PointerWidth, TargetDescription, Tid,
 };
 
+/// Offset added to an [`ImageAddress`] to obtain its [`VirtualAddress`].
+///
+/// Stored as a wrapping `u64` difference because a PIE or relocated mapping can
+/// sit either above or below its link-time address.
 #[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LoadBias(u64);
 
@@ -1238,7 +1242,7 @@ pub enum VariableValue {
     /// A Fortran allocatable array the program has not allocated.
     NotAllocated,
 
-    /// one.
+    /// A Fortran pointer array that is not associated with a target.
     NotAssociated,
 
     Slice {
@@ -2196,7 +2200,7 @@ pub enum TextCompletion {
     /// Every byte was read.
     Complete,
 
-    /// string records its length.
+    /// Reading stopped at the byte limit; `length` is set when the string records its length.
     Truncated { length: Option<u64> },
 
     /// The text continues into memory that could not be read.
@@ -2287,16 +2291,16 @@ pub enum ViewProblem {
     /// The view declares one count and generates another.
     CountMismatch { declared: u64, generated: u64 },
 
-    /// element at this position would repeat an earlier one.
+    /// A generator repeated an earlier element at this position.
     Cycle { at: u64 },
 
-    /// builds.
+    /// Nesting exceeded the maximum view depth.
     TooDeep { depth: u32 },
 
-    /// The generators passed the most elements a view generates without a
+    /// Generators exceeded the maximum number of elements for a view.
     TooMany { limit: u64 },
 
-    /// used the host wrongly.
+    /// A visualizer Wasm kernel failed or misused the host interface.
     Kernel { kernel: Arc<str>, reason: Arc<str> },
 
     /// The debugger failed presenting the value; a defect in microscope.
@@ -3369,10 +3373,10 @@ pub enum FrameKind {
     /// A signal trampoline activation.
     Signal,
 
-    /// its state is gone but for what was passed to it.
+    /// A synthetic tail-call frame whose caller state is gone.
     TailCall,
 
-    /// An async function or block of a suspended task, whose state is the
+    /// An async function or block of a suspended task at `object`.
     Async { object: VirtualAddress },
 
     Awaited {
@@ -3380,7 +3384,7 @@ pub enum FrameKind {
         ty: TypeReference,
     },
 
-    /// is the interpreter's record of it at `frame`. Its code is in no
+    /// An interpreter frame whose runtime record is at `frame`.
     Interpreted { frame: VirtualAddress },
 }
 

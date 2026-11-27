@@ -1,3 +1,8 @@
+//! `CPython` class metadata and attribute resolution across heap and static built-in types.
+//!
+//! Handles per-interpreter static type dicts (3.12+), MRO traversal, and non-executing descriptor
+//! checks so attribute reads never invoke arbitrary Python `__getattr__` or property getters.
+
 use std::sync::Arc;
 
 use super::library::LibraryType;

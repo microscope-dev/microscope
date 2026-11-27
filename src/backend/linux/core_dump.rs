@@ -89,6 +89,8 @@ impl CoreBytes {
     }
 }
 
+/// Scans sparse file holes via `SEEK_HOLE`/`SEEK_DATA` so `CoreDump::written`
+/// can tell unwritten stack pages apart from zeroed pages that were actually touched.
 fn holes(file: &File, len: u64) -> Vec<Range<u64>> {
     use std::os::fd::AsFd as _;
 
@@ -1189,6 +1191,8 @@ impl FileBacking {
     }
 }
 
+/// Virtual address space of a core dump, reading saved core segments first and
+/// falling back to verified read-only `FileBacking` ranges for omitted pages.
 pub(super) struct CoreMemory {
     core: Arc<CoreDump>,
     backings: Vec<FileBacking>,

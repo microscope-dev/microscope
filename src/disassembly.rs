@@ -597,6 +597,12 @@ impl<'a> Engine<'a> {
         })
     }
 
+    /// Collects up to `before` instructions preceding `address` without
+    /// guessing instruction boundaries in variable-length ISAs.
+    ///
+    /// Sweeps forward from progressively earlier known boundaries (function
+    /// starts, symbols, section starts) and stops if a sweep crosses `end`
+    /// instead of landing on it.
     fn leading(&mut self, address: VirtualAddress, before: usize) -> Result<Leading> {
         let target = address.get();
         let known = self.source.instruction_starts(AddressRange {

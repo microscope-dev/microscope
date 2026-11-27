@@ -1,3 +1,8 @@
+//! Closed-loop CPU budget controller for production profiling.
+//!
+//! Learns per-sample processing cost over time and adjusts the kept sample share
+//! while paying back prior overspend (`owed`) over subsequent periods.
+
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -92,6 +97,11 @@ impl Model {
         self.owed = Duration::ZERO;
     }
 
+    /// Updates the kept sample share from one observation period.
+    ///
+    /// Targets `HEADROOM` (90%) of `budget.cpu` minus fixed overhead and accumulated
+    /// debt, while clamping to at least `FEWEST_KEPT_A_SECOND` so visibility never
+    /// drops to zero even if fixed overhead alone exceeds the budget.
     #[expect(
         clippy::cast_precision_loss,
         reason = "sample counts and seconds need no more precision than f64's"

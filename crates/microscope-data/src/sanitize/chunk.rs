@@ -305,6 +305,10 @@ fn sanitize_arguments_setting(
     (out, None)
 }
 
+/// Sanitizes a capture chunk and rebuilds its string and blob pools.
+///
+/// Rounds timestamps to `time_unit` and remaps `SyscallNote::calls` indices
+/// whenever syscalls are dropped.
 #[expect(
     clippy::too_many_lines,
     reason = "classifies and sanitizes every string and payload field across all capture tables"
@@ -882,6 +886,11 @@ pub fn sanitize_chunk(
     }
 }
 
+/// Re-sanitizes encoded sections under `sanitizer`, returning `(sections, true)`
+/// verbatim when no rule would change any byte.
+///
+/// Probes `Strings`, `Dimensions`, and `SyscallBlobs` first to avoid full
+/// table decode and re-encode on already-clean posts.
 #[expect(
     clippy::too_many_lines,
     reason = "probes Strings and decoded SyscallBlobs payloads before choosing verbatim passthrough vs full fallback"

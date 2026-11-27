@@ -1,3 +1,10 @@
+//! Sandboxed WebAssembly traversal kernels (`wasmi`) for complex data structures.
+//!
+//! Kernels handle layouts like B-trees that are awkward in `.views` clauses.
+//! Each module is strictly sandboxed: no floats, no start function, bounded
+//! linear memory, fuel metering charged to the host, and only two host imports
+//! (`microscope_kernel_v1.read` and `microscope_kernel_v1.yield`).
+
 use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex};
@@ -28,6 +35,9 @@ const UNITS_PER_REFILL: u64 = 512;
 
 const PAGE: u64 = 64 * 1024;
 
+/// Host imports intentionally trap with `Call` instead of performing I/O inside
+/// the callback so `Run::next` can act as a pull-based coroutine, returning
+/// yielded items to the caller and resuming the Wasm stack on the next pull.
 #[derive(Debug, Clone, Copy)]
 enum Call {
     Read {

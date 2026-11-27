@@ -18,6 +18,10 @@ function countShapes(shapes: Shape[]): number {
   return count;
 }
 
+/**
+ * Renders a validated `Picture` as DOM SVG for small scenes (`<= MOST_SVG_SHAPES`)
+ * and falls back to `<canvas>` with manual hit-testing for large scenes to avoid DOM bloat.
+ */
 export function buildPicture(picture: Picture, onSelect?: OnSelect): HTMLElement {
   const holder = document.createElement("div");
   holder.classList.add("picture-holder");

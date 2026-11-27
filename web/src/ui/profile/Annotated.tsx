@@ -980,6 +980,10 @@ function usePane(count: () => number, pane: () => HTMLDivElement | null) {
   });
 }
 
+/**
+ * Spacer div used instead of absolute row positioning so sticky cost columns
+ * (`.pin`) can stay pinned while the virtualized code rows scroll horizontally.
+ */
 function Gap(props: { list: SolidVirtualizer<HTMLDivElement, Element>; side: "before" | "after" }) {
   const height = createMemo(() => {
     const drawn = props.list.items();
@@ -990,6 +994,10 @@ function Gap(props: { list: SolidVirtualizer<HTMLDivElement, Element>; side: "be
   return <div style={{ height: `${height()}px` }} aria-hidden="true" />;
 }
 
+/**
+ * Invisible row holding the longest line so virtualized panes keep a stable
+ * horizontal scroll width as rows mount and unmount.
+ */
 function Sizer(props: { text: string; from?: boolean | undefined }) {
   return (
     <div class="code-row code-sizer" aria-hidden="true">

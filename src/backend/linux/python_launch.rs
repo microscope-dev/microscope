@@ -1,3 +1,8 @@
+//! Launch-time `CPython` 3.12/3.13 agent bootstrap via `PYTHONPATH` `sitecustomize.py` and a FIFO.
+//!
+//! `CPython` 3.14 provides `sys.remote_exec`, but 3.12 and 3.13 need a launch-time hook to load
+//! the debugger agent without injecting shellcode.
+
 use std::ffi::OsString;
 use std::io::{Read as _, Write as _};
 use std::os::fd::OwnedFd;
@@ -75,6 +80,8 @@ impl PythonLaunch {
         Ok(Some(launch))
     }
 
+    /// Attaches a followed child interpreter to its ancestor's bootstrap directory using a
+    /// per-PID `wake-<pid>` FIFO so each process gets its own request channel.
     pub(super) fn join(executable: &Path, pid: Pid) -> Result<Option<Self>, Arc<str>> {
         if !launches_bootstrapped_python(executable) {
             return Ok(None);
@@ -166,6 +173,7 @@ impl PythonLaunch {
             let wake = directory.join("wake");
             nix::unistd::mkfifo(&wake, Mode::S_IRUSR | Mode::S_IWUSR).map_err(problem)?;
 
+            // Open O_RDWR so nonblocking open() does not fail with ENXIO before sitecustomize.py opens the FIFO.
             let channel: OwnedFd = open(
                 &wake,
                 OFlag::O_RDWR | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW,

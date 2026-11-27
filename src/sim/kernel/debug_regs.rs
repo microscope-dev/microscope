@@ -1,3 +1,10 @@
+//! `x86_64` hardware debug registers (`DR0`-`DR3`, `DR6`, `DR7`) for
+//! watchpoints and single-step status.
+//!
+//! Models Linux's alignment/user-limit validation, `ENOSPC` slot contention
+//! with other perf/debug users, and `DR6`'s active-high reserved bits
+//! (`DR6_RESERVED`).
+
 use nix::errno::Errno;
 
 use crate::sim::cpu::{Access, Accesses};

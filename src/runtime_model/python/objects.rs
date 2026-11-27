@@ -1,3 +1,8 @@
+//! Budgeted, block-cached memory reader for `CPython` structs and primitive objects.
+//!
+//! Handles PEP 393 compact and legacy `str` decoding as well as `Py_STACKREF` tagged pointers
+//! introduced in `CPython` 3.14.
+
 use std::sync::Arc;
 
 use crate::VirtualAddress;
@@ -362,6 +367,8 @@ impl Record<'_> {
     }
 }
 
+/// Untags a `CPython` 3.14+ `_PyStackRef` word, clearing the low deferred-refcount bit and
+/// rejecting tagged small integers or invalid tag bits.
 pub(super) fn stack_reference(bits: u64) -> Option<VirtualAddress> {
     match bits & 3 {
         0 | 1 => Some(bits & !1)

@@ -1,5 +1,7 @@
 pub mod sampler;
 
+/// Returns `1` on kernels >= 5.17 where `bpf_loop` is available, letting BPF walkers avoid
+/// bounded unrolled loops that bloat verifier complexity.
 pub fn loop_helper() -> u32 {
     use aya::util::KernelVersion;
     u32::from(KernelVersion::current().is_ok_and(|version| version >= KernelVersion::new(5, 17, 0)))

@@ -1,3 +1,9 @@
+//! Recognizes `rustc` async coroutine types and extracts their state layouts.
+//!
+//! Decodes DWARF variant parts for `{async_fn_env#N}`, `{async_block_env#N}`, and
+//! `{async_closure_env#N}` types into `CoroutineInfo` (discriminant offset/size,
+//! captured arguments, and per-suspend-point saved locals).
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -110,6 +116,9 @@ fn coroutine<'a>(
         .map(|variant| read_state(variant, types))
         .collect::<Result<Vec<_>, Arc<str>>>()?;
 
+    // In rustc's coroutine DWARF layout, `Unresumed` holds the captured arguments
+    // and every other state repeats those captures as a trailing suffix of its
+    // members; strip that suffix so `saved` holds only suspend-point locals.
     let unresumed = states
         .iter_mut()
         .find(|state| state.kind == CoroutineStateKind::Unresumed)

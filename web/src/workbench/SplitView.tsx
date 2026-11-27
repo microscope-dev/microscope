@@ -53,6 +53,7 @@ function SplitView(props: { id: SplitId }) {
     );
   });
 
+  // Rescale visible children to fill the space of hidden siblings without mutating stored weights.
   const scale = createMemo(() => {
     const current = split();
     if (!current) {
@@ -177,6 +178,7 @@ function Separator(props: {
         shared,
         settle(measured, isRow ? pointer.clientX : pointer.clientY, pointer.altKey),
       );
+    // Mutate flexGrow on the DOM during drag to avoid reactive store and localStorage writes per frame.
     const show = ([a, b]: readonly [number, number]) => {
       measured.before.style.flexGrow = String(a * scale);
       measured.after.style.flexGrow = String(b * scale);

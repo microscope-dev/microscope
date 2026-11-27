@@ -1,3 +1,8 @@
+//! Tab-completion context and candidate generation for the CLI REPL.
+//!
+//! Caches module-level symbols separately from per-stop frame locals so completion
+//! refreshes stay cheap across steps within the same set of loaded modules.
+
 use std::sync::Arc;
 
 use super::Cli;

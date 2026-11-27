@@ -1,3 +1,9 @@
+//! Compact one-line value summaries for inspected values and view templates.
+//!
+//! Handles shortest round-tripping decimal formatting for software floats
+//! (`f16`, `bf16`, x87 `f80`, `f128`) as well as Python and JavaScript float
+//! conventions.
+
 use std::fmt::Write as _;
 use std::sync::Arc;
 

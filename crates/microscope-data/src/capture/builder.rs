@@ -33,6 +33,12 @@ pub struct InterpretedPlace<'a> {
     pub declared: Option<(&'a str, u32)>,
 }
 
+/// Accumulates and deduplicates capture rows before assembling a `Capture`
+/// (`finish` validates in debug builds; `finish_read` validates unconditionally).
+///
+/// Tracks live vs. ended `Pid` and `Tid` lifetimes separately so OS ID reuse
+/// across time resolves to distinct rows, and deduplicates modules, frames,
+/// stacks, functions, and tasks on insertion.
 #[derive(Debug, Default, Clone)]
 pub struct CaptureBuilder {
     strings: StringsBuilder,
@@ -652,6 +658,9 @@ impl CaptureBuilder {
         });
     }
 
+    /// Drops events before `time`, clamping spanning `OffCpu`, `Zone`, and
+    /// `Gap` intervals to `time` and marking clipped `OffCpu` and `Zone` rows
+    /// with `*_BEGAN_UNSEEN`.
     pub fn forget_before(&mut self, time: i64) {
         for samples in &mut self.samples {
             samples.retain(|sample| sample.time.get() >= time);
@@ -698,6 +707,9 @@ impl CaptureBuilder {
         self.forget_syscalls(|at| at >= time);
     }
 
+    /// Drops events at or after `time`, clamping spanning `OffCpu`, `Zone`, and
+    /// `Gap` intervals to `time` and marking clipped `OffCpu` and `Zone` rows
+    /// with `*_ENDED_UNSEEN`.
     pub fn forget_from(&mut self, time: i64) {
         for samples in &mut self.samples {
             samples.retain(|sample| sample.time.get() < time);
@@ -1046,6 +1058,8 @@ impl CaptureBuilder {
             self.count(account.kind.get(), account.value.get());
         }
 
+        // Feed zones in reverse depth and order so `depths`'s `Reverse(order)`
+        // tie-breaker preserves original nesting for identical-bound zones.
         for range in capture.zone_ranges.iter().rev() {
             let thread = Remap::get(&map.threads, range.thread.get());
             for zone in capture.range_zones(range).iter().rev() {
@@ -1250,6 +1264,9 @@ impl CaptureBuilder {
     }
 }
 
+/// Packs per-thread zones (pushed inner-before-outer on close) into
+/// non-overlapping depth tracks; `(start, Reverse(end), Reverse(order))` opens
+/// outer zones first.
 fn depths(zones: Vec<Zone>) -> Vec<Vec<Zone>> {
     let mut zones: Vec<(usize, Zone)> = zones.into_iter().enumerate().collect();
     zones.sort_by_key(|(order, zone)| {

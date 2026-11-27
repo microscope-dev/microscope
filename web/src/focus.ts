@@ -2,6 +2,7 @@ import { assert } from "./assert";
 import { target } from "./memory";
 import type { TaskKey } from "./protocol";
 
+/** Debugger URL query params (w: watches, x: expanded value paths, d: pinned drawings). */
 export interface Look {
   src?: string;
 
@@ -52,6 +53,7 @@ export function stringifySearch(search: Record<string, unknown>): string {
   }
   const text = params.toString();
 
+  // Keep paths, line ranges, and pinned-renderer delimiters readable in the address bar.
   return text
     ? `?${text.replaceAll("%2F", "/").replaceAll("%3A", ":").replaceAll("%7E", "~")}`
     : "";
@@ -130,6 +132,7 @@ export function formatPlace(place: SourcePlace): string {
     : `${place.path}:${place.line}`;
 }
 
+/** Strips the session `cwd/` prefix for shorter URLs, unless that relative path already exists in `files` and would be ambiguous. */
 export function linkPath(
   path: string,
   cwd: string | undefined,
@@ -252,6 +255,10 @@ export function parsePinned(entry: string): Pinned {
     : { path: entry, renderer: null };
 }
 
+/**
+ * Encodes a pinned drawing as `path~renderer`, or `path` when using the default renderer.
+ * A trailing `~` escapes a path whose own suffix looks like a `~renderer` tag so `parsePinned` round-trips it.
+ */
 export function formatPinned(pinned: Pinned): string {
   if (pinned.renderer !== null) {
     return `${pinned.path}~${pinned.renderer}`;

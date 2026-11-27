@@ -56,6 +56,11 @@ const STACKS: ReadonlySet<ProfileView> = new Set([
   "details",
 ]);
 
+/**
+ * Shared state for a group of linked profile panes in `layout.links`.
+ * The link holds the shared query scope (`look`), while each pane keeps its own
+ * view-local display options (`OwnLook`) in `pane.params`.
+ */
 export interface ProfileLink {
   readonly profile: string;
 
@@ -181,6 +186,11 @@ function openBeside(
   };
 }
 
+/**
+ * Default pane placement: stack views (`flame`, `tree`, `functions`, `kernel`,
+ * `details`) tab together below the overview; `zones` tabs with the explorer
+ * or opens to the right of the stack views.
+ */
 function place(
   layout: Layout,
   link: LinkId,
@@ -320,6 +330,12 @@ function viewsFor(summary: ProfileSummary, live: boolean): ProfileView[] {
   ];
 }
 
+/**
+ * Lazily opens profile views as data becomes available (for example, `zones` or
+ * `kernel` appear mid-recording once the first events arrive). Tracks `offered`
+ * on the link so closed panes are not re-opened, and preserves the user's active
+ * tab on incremental updates after the initial layout.
+ */
 export function arrange(
   layout: Layout,
   link: LinkId,

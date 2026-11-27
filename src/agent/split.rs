@@ -1,3 +1,7 @@
+//! Filters a multi-process `Capture` down to an allowed PID set, compacting all
+//! table indices and string pools so chunks for different projects never leak
+//! cross-process data.
+
 use std::collections::BTreeSet;
 
 use microscope_data::{

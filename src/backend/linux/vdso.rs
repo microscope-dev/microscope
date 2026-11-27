@@ -1,3 +1,5 @@
+//! Reads `[vdso]` from target memory (since it has no on-disk file) for symbols and `.eh_frame` unwinding.
+
 use std::ops::Range;
 use std::path::PathBuf;
 

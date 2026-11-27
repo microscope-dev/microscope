@@ -132,6 +132,8 @@ export function ProfileRoute() {
   const navigate = useNavigate();
   const view = createMemo(() => look().view ?? null);
   const open = useLayout((layout) => viewOpen(layout, profile(), view()));
+  // When the user closes the pane backing this URL (open -> closed), redirect to another
+  // open profile pane or fall back to home.
   let was: { profile: string; view: string | null; open: boolean } | null = null;
   createEffect(
     () => ({ profile: profile(), view: view(), open: open() }),
@@ -171,6 +173,11 @@ export function endedNotice(notices: readonly Note[], program: string | null): N
   return notices.findLast((notice) => notice.text === text || notice.text.startsWith(`${text}, `));
 }
 
+/**
+ * Guards `/s/:session` routes: tracks whether the route ever matched the live session so an
+ * ended session is distinguished from a bad link (and auto-follows replacement sessions), while
+ * delegating numeric non-live IDs in standalone mode to recorded session dashboards.
+ */
 export function SessionRoute(props: RouteSectionProps) {
   const params = useParams();
   const session = createMemo(() => params.session ?? "");

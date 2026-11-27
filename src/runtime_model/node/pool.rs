@@ -1,3 +1,8 @@
+//! Identifies busy `libuv` thread-pool workers out of process.
+//!
+//! Matches process threads against `uv_threadpool`'s `pthread` array and treats threads whose
+//! blocked `futex` lies outside the pool's `cond` and `mutex` ranges as actively running a job.
+
 use super::objects::{Problem, Reader};
 use super::tasks::{pool_job, pool_thread};
 use crate::image::v8::UvPool;

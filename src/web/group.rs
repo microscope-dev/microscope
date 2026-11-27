@@ -1,3 +1,6 @@
+//! Bridges multi-process `GroupHandle` and per-member `DebuggerEvent` streams into the
+//! single `State` watch channel observed by web clients.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
 

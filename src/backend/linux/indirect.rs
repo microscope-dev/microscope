@@ -1,3 +1,9 @@
+//! Tracks GNU IFUNC (`STT_GNU_IFUNC`) resolvers so function breakpoints land on
+//! the implementation chosen at runtime rather than the resolver stub.
+//!
+//! Learns already-resolved targets from GOT slots when possible, and plants
+//! temporary entry/return breakpoints on unresolved resolvers otherwise.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use nix::unistd::Pid;

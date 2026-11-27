@@ -61,8 +61,13 @@ function liveProblem(failure: LiveFailure): string {
   }
 }
 
+// Avoid forwarding function keys, Escape, and Tab to the renderer (and avoid preventing default on Tab, which traps keyboard focus).
 const KEPT = /^(?:F\d+|Escape|Tab)$/u;
 
+/**
+ * Hosts a sandboxed off-thread canvas renderer via `bitmaprenderer` (`ImageBitmap` transfer) with
+ * a demand-driven rAF loop that enforces backpressure of at most one frame in flight at a time.
+ */
 export function LiveDrawing(props: {
   card: string;
   job: LiveJob;
@@ -167,6 +172,7 @@ export function LiveDrawing(props: {
     size = next;
     setHeight(next.css.height);
 
+    // Only size the canvas directly before the first frame; later resizes wait for the next ImageBitmap so setting width/height does not clear the canvas.
     const shown = canvas;
     if (shown !== undefined && shown.dataset.stop === undefined) {
       shown.width = next.device.width;

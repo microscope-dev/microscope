@@ -283,6 +283,8 @@ pub(super) struct Entered {
     captured: Vec<Capture>,
 }
 
+/// Per-thread syscall phase so exit stops reuse arguments captured at entry
+/// and `PTRACE_EVENT_*` stops inside a syscall don't confuse entry/exit pairing.
 #[derive(Debug, Clone, Default)]
 pub(super) enum CallPosition {
     #[default]

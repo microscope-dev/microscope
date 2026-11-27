@@ -1,3 +1,6 @@
+//! Cross-language type name parsing and canonicalization (C/C++, Rust, Go,
+//! Zig, Odin, and D) for type lookups and visualizer matching.
+
 pub mod functions;
 
 use std::cell::RefCell;

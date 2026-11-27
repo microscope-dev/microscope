@@ -1,3 +1,6 @@
+//! `x86_64` System V ABI and Go DWARF register numbers, plus Linux signal-frame
+//! (`ucontext_t`) register recovery.
+
 use super::{DwarfRegister, MemoryReader, RegisterFile};
 use crate::VirtualAddress;
 
@@ -54,6 +57,8 @@ pub const UCONTEXT_MCONTEXT: u64 = 40;
 pub const SIGCONTEXT_REGISTERS: [DwarfRegister; 17] =
     DwarfRegister::each([8, 9, 10, 11, 12, 13, 14, 15, 5, 4, 6, 3, 1, 0, 2, 7, 16]);
 
+/// Reads the 16 general-purpose registers and `RIP` (17 slots) saved by the
+/// Linux kernel in `ucontext_t::uc_mcontext` on a signal trampoline stack frame.
 pub fn interrupted_registers(
     stack_pointer: u64,
     memory: &mut dyn MemoryReader,

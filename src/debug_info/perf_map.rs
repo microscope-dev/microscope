@@ -1,3 +1,8 @@
+//! Parser and unwinder for Linux `perf-<pid>.map` JIT symbol tables.
+//!
+//! Turns perf-map entries (and optional copied machine code) into a `DebugInfo`
+//! whose unwinder lazily proves `x86_64` stack frames from each function's code.
+
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
@@ -17,6 +22,8 @@ pub struct Entry {
     pub name: Arc<str>,
 }
 
+/// Parses complete newline-terminated lines from a perf map and returns the
+/// byte offset consumed so partial trailing writes by a running JIT can be retried.
 pub fn parse(text: &[u8]) -> (Vec<Entry>, usize) {
     let lines = text
         .iter()
@@ -135,6 +142,7 @@ fn within(range: AddressRange<ImageAddress>, jitted: &[Jitted]) -> BTreeMap<u64,
             continue;
         }
 
+        // Later map entries win when a JIT recycles code memory for a new function.
         let overlapped: Vec<u64> = functions
             .range(..end)
             .rev()

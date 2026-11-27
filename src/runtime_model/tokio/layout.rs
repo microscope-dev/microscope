@@ -248,6 +248,8 @@ impl Lock {
     }
 }
 
+/// Resolves Tokio's mutex wrapper, supporting both `parking_lot` (`__1`,
+/// 1-byte lock state) and `std::sync::Mutex` (`__0`, 4-byte futex word).
 fn mutex(
     image: &dyn RuntimeImage,
     ty: TypeReference,
@@ -463,6 +465,8 @@ impl Guarded {
     }
 }
 
+/// Layout of the blocking pool's task queue(s): a single mutex in older Tokio
+/// releases, or an enum choosing between `Locked` and `Sharded` queues.
 #[derive(Debug)]
 pub enum Queues {
     One(Guarded),

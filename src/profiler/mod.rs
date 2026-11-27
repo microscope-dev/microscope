@@ -1,3 +1,6 @@
+//! Sampling profiler frontend: records CPU, off-CPU, probe, interpreted-frame,
+//! and syscall data into a `Capture`, and exposes query helpers on `Profile`.
+
 mod annotate;
 pub mod budget;
 mod calls;
@@ -57,6 +60,8 @@ use crate::backend::perf;
 use crate::capture::records::{AccountKind, FrameKind, NONE, Truncation};
 use crate::capture::{Capture, file};
 
+/// Clock rates (49, 999, 9999 Hz) are intentionally off-multiple to avoid
+/// lockstep beating with periodic OS and application timers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Preset {
     Production,
@@ -114,6 +119,7 @@ pub const DEEP_STACK_COPY: u32 = 32 * 1024;
 
 pub const MAX_RATE_STACK_COPY: u32 = 16 * 1024;
 
+/// Maximum 8-byte-aligned `u16` user-stack copy size accepted by `perf_event_open`.
 pub const MOST_STACK_COPY: u32 = 65528;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

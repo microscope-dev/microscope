@@ -1,3 +1,9 @@
+//! Emergency tracee cleanup executed after a controller or waiter panic.
+//!
+//! Stops live threads and forked children, drains queued `SIGTRAP`/`SIGSTOP`, restores every
+//! `0xCC` trap byte, rewinds `RIP` over hit traps, clears `DR7`, and detaches (or kills owned
+//! inferiors) so tracees are not left deadlocked or crashing on orphaned breakpoints.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 

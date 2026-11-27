@@ -1,3 +1,10 @@
+//! Recovers Node.js async-task and `libuv` threadpool layout offsets from
+//! exported `x86_64` C++ methods in the Node binary.
+//!
+//! Because Node does not export struct layouts for `Environment`, `PrincipalRealm`,
+//! or `AsyncWrap`, we symbolically trace small exported methods (`SetupTimers`,
+//! `GetAsyncId`, `MemoryInfoName`, etc.) to prove each offset.
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -185,6 +192,12 @@ struct Setup {
     realm: u64,
 }
 
+/// Traces `BindingData::SetupTimers` to prove the embedder-data slots for the
+/// Node context tag and `Environment`, plus the `PrincipalRealm` offset in `Environment`.
+///
+/// The method loads `Context::embedder_data`, checks one slot against the static
+/// `kNodeContextTagPtr`, loads `Environment` from another slot, and loads
+/// `PrincipalRealm` into `RDI` from `Environment`.
 fn setup_timers(code: &[Instruction], embedder_data: u64, what: &str) -> Result<Setup, Arc<str>> {
     const CALLER_SAVED: [Register; 9] = [
         Register::RAX,
@@ -414,6 +427,10 @@ fn async_id(code: &[Instruction], what: &str) -> Result<(u64, u64), Arc<str>> {
     }
 }
 
+/// Finds `libuv`'s file-static threadpool globals scoped to `STT_FILE` `"threadpool.c"`.
+///
+/// Scoping to the `threadpool.c` symbol group avoids colliding with identically
+/// named statics (`threads`, `mutex`, `cond`) in other translation units.
 fn pool(object: &object::File<'_>) -> Option<UvPool> {
     let mut file = None;
     let mut found: BTreeMap<&str, Vec<u64>> = BTreeMap::new();

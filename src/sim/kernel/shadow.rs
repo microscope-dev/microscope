@@ -1,3 +1,9 @@
+//! Ground-truth shadow call stack (`Shadow`) and step trajectory (`Tracking`).
+//!
+//! Maintained directly from CPU `Call`/`Return`/`Jump` events so backtrace,
+//! tail-call, sample-unwinding, and stepping oracles can compare the debugger's
+//! output against what the thread actually executed.
+
 use super::Tid;
 use crate::sim::cpu::{Flow, RSP, Registers};
 

@@ -1,3 +1,8 @@
+//! DWARF DIE-to-`TypeInfo` arena builder for C/C++, Rust, Go, and Zig type graphs.
+//!
+//! Resolves cross-unit forward declarations, type signatures, and dynamic
+//! aggregate layouts while enforcing the load budget.
+
 use crate::debug_info::dwarf::DwarfSet;
 use crate::image::lines::Files;
 use std::collections::{BTreeMap, VecDeque};

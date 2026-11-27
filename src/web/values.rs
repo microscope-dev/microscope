@@ -40,6 +40,9 @@ enum Node {
     },
 }
 
+/// Per-connection table of expandable value nodes. `insert` resets the table
+/// when a connection moves to a new session or `StopId`; `get` checks `session`
+/// while `DebuggerHandle` rejects stale `StopContext`s.
 #[derive(Default)]
 pub struct Handles {
     tables: Mutex<HashMap<u32, Table>>,

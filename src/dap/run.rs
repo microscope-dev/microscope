@@ -79,6 +79,9 @@ pub(super) enum News {
     None,
 }
 
+/// Events at or below `resynced` are ignored as already reflected in a snapshot,
+/// except `InferiorExited` and `InferiorDetached` for the currently shown process so
+/// termination is never missed.
 pub(super) fn news(run: &Run, resynced: u64, event: DebuggerEvent) -> News {
     let fresh = event.revision() > resynced;
     match event {

@@ -16,6 +16,13 @@ interface Entry {
 
 const LIMIT = 400;
 
+/**
+ * Bounded LRU cache (max `LIMIT` entries) for RPC responses, with a reactive
+ * `#version` counter that triggers `useRequest` subscribers on invalidation.
+ *
+ * `disconnected` errors evict themselves once settled so reconnects retry
+ * instead of pinning a transient offline failure.
+ */
 export class Cache {
   readonly #entries = new Map<string, Entry>();
   readonly #listeners = new Set<() => void>();
@@ -125,6 +132,13 @@ export interface Requested<T> {
   current: boolean;
 }
 
+/**
+ * Subscribes a component to a cached RPC call.
+ *
+ * Fetches pause while the enclosing workbench pane is hidden (`useVisible`)
+ * and the last settled answer (`kept`) stays visible across key or cache-version
+ * changes so panes do not flash empty while refetching.
+ */
 export function useRequest<M extends Method>(
   method: M,
   params: () => (ParamsOf<M> extends undefined ? undefined : ParamsOf<M>) | null,

@@ -1,3 +1,11 @@
+//! Expression language for inspecting and mutating debuggee state.
+//!
+//! Expressions flow through `syntax` (context-free parsing), `bind` (name and
+//! type resolution against a [`target::Scope`]), `ir` (typed operations), and
+//! `interp` (side-effect-free execution against a [`target::Machine`]). Target
+//! code is never executed; assignments return encoded bytes for the caller to
+//! write.
+
 pub mod bind;
 mod dynamic;
 pub mod error;

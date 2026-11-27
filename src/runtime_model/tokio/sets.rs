@@ -1,3 +1,6 @@
+//! Discovers `tokio::task::local::LocalSet` instances held inside driven
+//! futures when a `LocalSet` is not currently active in thread-local storage.
+
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -15,6 +18,11 @@ const MAX_WRAPPERS: usize = 16;
 
 type Pending = (VirtualAddress, TypeReference, bool);
 
+/// How to resolve a coroutine's active state while scanning a driven future.
+///
+/// Coroutines on the live await chain supply `Chosen`; other currently running
+/// coroutines (`Running`) cannot safely be read because their stored state
+/// discriminant may be stale.
 #[derive(Debug, Clone, Copy)]
 enum State {
     Chosen(u64),
@@ -273,6 +281,8 @@ impl TokioRuntime {
             return Ok(());
         }
 
+        // For `async fn` coroutines, captured arguments are only live in
+        // `captures` while `Unresumed`; once resumed they live in `state.saved`.
         let own = state.kind == CoroutineStateKind::Unresumed
             || coroutine.kind != CoroutineKind::AsyncFunction;
         let captures = coroutine.captures.iter().filter(|_| own);

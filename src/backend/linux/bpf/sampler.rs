@@ -1,3 +1,6 @@
+//! `eBPF` `perf_event` sampler that walks `CPython` and `V8` stacks in-kernel and optionally
+//! thins samples using an epoch-guarded probability threshold.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::fd::AsFd as _;
 use std::os::unix::fs::MetadataExt as _;
@@ -544,6 +547,7 @@ const REMEDY: &str =
     - record with --snapshots 10ms, which reads them as the program runs and needs
       no privilege";
 
+/// Linux `PROC_PID_INIT_INO`: the fixed inode number of the initial PID namespace in `nsfs`.
 const INITIAL_PID_NAMESPACE: u64 = 0xefff_fffc;
 
 fn initial_pid_namespace(namespace: &std::fs::File) -> std::io::Result<bool> {
@@ -552,6 +556,8 @@ fn initial_pid_namespace(namespace: &std::fs::File) -> std::io::Result<bool> {
         && namespace.metadata()?.ino() == INITIAL_PID_NAMESPACE)
 }
 
+/// Verifies the recorder runs in the initial PID namespace so `bpf_get_current_pid_tgid` IDs
+/// match the PIDs/TIDs userspace writes into BPF maps.
 pub fn check_namespace() -> Result<(), SamplerError> {
     let observed = std::fs::File::open("/proc/self/ns/pid")
         .and_then(|namespace| initial_pid_namespace(&namespace));
@@ -649,6 +655,10 @@ pub fn verified_instructions(kernel: bool) -> Result<u64, SamplerError> {
         .ok_or_else(|| load_error("the kernel reports no verified_insns"))
 }
 
+/// Controls in-kernel probabilistic sample thinning across two alternating 1-bit epochs.
+///
+/// Rotating `boundary` ahead by a `guard` window lets userspace read exact per-epoch
+/// `raised`/`kept` counts without racing against in-flight `perf_event` NMIs.
 pub struct Thin {
     _ebpf: Option<Ebpf>,
     maps: ThinMaps,

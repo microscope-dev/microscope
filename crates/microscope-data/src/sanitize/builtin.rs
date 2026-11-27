@@ -1,3 +1,6 @@
+//! Built-in secret and PII detectors with fast byte prefilters
+//! (`fast_prefilter`, `pool_may_match`) to skip regex evaluation on clean input.
+
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::ops::Range;
 use std::str::FromStr;
@@ -335,6 +338,9 @@ fn luhn(found: &[u8]) -> bool {
     (13..=19).contains(&count) && sum.is_multiple_of(10)
 }
 
+/// Validates IP regex hits and rejects IPv6 matches adjacent to identifier or
+/// colon characters, requiring brackets around `::` to avoid C++/Rust scope
+/// operators.
 fn ip_in_context(value: &[u8], range: &Range<usize>) -> bool {
     let Some(found) = value.get(range.clone()) else {
         return false;

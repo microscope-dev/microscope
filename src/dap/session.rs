@@ -39,6 +39,11 @@ pub struct Client {
 
 pub type Response = Result<Value, String>;
 
+/// Correlates adapter-initiated reverse requests (`runInTerminal`, `startDebugging`)
+/// with their eventual client responses.
+///
+/// Entries start in `unsent` keyed by an internal ticket until the writer task assigns
+/// the wire `seq` and promotes them to `sent`.
 #[derive(Default)]
 pub struct Responses {
     next_ticket: u64,
@@ -220,6 +225,8 @@ impl ClientSupport {
     };
 }
 
+/// Owns the underlying debugger or process group; child `Member` sessions borrow the
+/// parent's `GroupHandle` and do not shut the group down when they disconnect.
 enum Owner {
     Single(Debugger),
 
@@ -300,6 +307,10 @@ struct Target {
     threads: config::ThreadListing,
 }
 
+/// Tracks the DAP startup barrier. `initialized` is emitted right after
+/// `initialize` so clients can configure breakpoints, while the `launch` or
+/// `attach` reply is held in `Adopted` until both `adopt` and
+/// `configurationDone` arrive in either order.
 enum Phase {
     New,
 

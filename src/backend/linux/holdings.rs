@@ -1,3 +1,8 @@
+//! Assigns stable, monotonic display numbers to runtime-held resources (isolates, interpreters).
+//!
+//! Numbers survive across stops as long as at least one live thread still holds the identity,
+//! and assignment is sorted by `(thread, runtime)` so numbering is independent of sighting order.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::RuntimeId;

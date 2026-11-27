@@ -1,3 +1,10 @@
+//! Linux `x86_64` `ptrace` debugger backend.
+//!
+//! Each debugged process is driven by a `Controller<P>` hosted on the single OS tracer
+//! thread (`tracer.rs`). Parameterizing over `InspectionOps` and `LinuxTraceOps` lets the
+//! same controller logic run against live `ptrace`, deterministic simulation (`sim_edge`),
+//! and post-mortem core dumps.
+
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
@@ -251,6 +258,8 @@ fn pending_exception_info(pending: PendingSignal) -> ExceptionInfo {
     )
 }
 
+/// Process-wide lease ensuring only one tracer thread runs `waitpid(-1)` at a time,
+/// since concurrent `waitpid(-1)` loops would steal wait events from each other.
 struct SessionLease {
     owns_global_lease: bool,
 }
@@ -899,6 +908,8 @@ impl Inferior {
         }
     }
 
+    /// On Linux, a thread-group leader that exits while worker threads remain alive stays
+    /// as a zombie until all siblings exit; treat it as settled so all-stop barriers finish.
     fn exited_leader(&self, pid: Pid, thread: &TraceThread) -> bool {
         pid == self.tgid
             && matches!(thread.state, NativeThreadState::Exiting)
@@ -909,6 +920,8 @@ impl Inferior {
         matches!(thread.state, NativeThreadState::Stopped) || self.exited_leader(pid, thread)
     }
 
+    /// Defers pending signals while repairing a trap, stepping, or resuming a single thread
+    /// so signal delivery cannot hijack the step or execute a handler while a trap is lifted.
     fn holds_signals(&self, thread: &TraceThread, expected: &ExpectedStop) -> bool {
         thread.holds_siblings()
             || matches!(expected, ExpectedStop::UserStep { .. })

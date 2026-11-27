@@ -1,3 +1,8 @@
+//! Stepping support for compiler-outlined loop bodies (such as Go range-over-func iterators).
+//!
+//! Tracks the enclosing function's `Activation` so step-over and step-out follow the logical
+//! loop across iterator frames rather than getting stuck inside or escaping out of the body.
+
 use crate::backend::linux::Registers;
 use std::collections::BTreeSet;
 

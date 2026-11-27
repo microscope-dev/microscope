@@ -1,3 +1,6 @@
+//! Build-time DWARF facts (`facts.json`) extracted externally so simulation
+//! oracles do not trust microscope's own DWARF parser.
+
 use serde::Deserialize;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

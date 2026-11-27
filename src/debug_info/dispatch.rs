@@ -1,3 +1,9 @@
+//! Abstract `x86_64` interpreter for Rust coroutine state-machine dispatch.
+//!
+//! Symbolically executes a `poll` function's entry prologue for each coroutine
+//! state value (with `RDI` as the coroutine object and `RSP` as a symbolic stack)
+//! to find the dispatch range and per-state resume landing addresses.
+
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -69,6 +75,10 @@ pub fn flood(
     flood_all(image, start, within).0
 }
 
+/// Floods reachable instructions from `start` while `within` holds.
+///
+/// Returns the merged address ranges and `true` only if every reachable branch
+/// stayed within `MAX_FLOOD` instructions and had a statically known target.
 pub fn flood_all(
     image: &dyn DispatchImage,
     start: ImageAddress,
@@ -194,6 +204,8 @@ enum Value {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Cell {
     value: Value,
+    /// Taint bit: true when `value` was derived from the coroutine's `__state` field,
+    /// so a branch on it marks the state-dispatch decision point.
     state: bool,
 }
 

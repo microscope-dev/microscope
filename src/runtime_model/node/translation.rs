@@ -1,3 +1,8 @@
+//! Decodes V8 safepoint tables and deoptimization frame translations for `Maglev` and `TurboFan`.
+//!
+//! Reconstructs the chain of inlined JavaScript frames and their bytecode/builtin offsets at a
+//! compiled call site.
+
 use super::objects::{Object, Problem, Reader};
 use super::positions;
 use crate::image::v8::{Constant, Field, TranslationOpcode, Translations, V8Layout};

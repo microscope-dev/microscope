@@ -1,3 +1,8 @@
+//! Serves the sandboxed `/visualizer-frame` iframe for untrusted user renderers.
+//!
+//! Uses `sandbox allow-scripts`, `default-src 'none'`, and a per-request CSP nonce so
+//! visualizer code executes in an opaque origin with no cookies or network access.
+
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse as _, Response};
@@ -46,6 +51,7 @@ fn page(nonce: &str) -> String {
     )
 }
 
+/// Encodes JS source as a JSON string, escaping `<` so `</script>` cannot break out of the tag.
 fn script_string(text: &str) -> String {
     serde_json::to_string(text)
         .unwrap_or_else(|error| json!(format!("the worker did not encode: {error}")).to_string())

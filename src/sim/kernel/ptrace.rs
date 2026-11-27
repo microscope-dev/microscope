@@ -1,3 +1,7 @@
+//! Simulated `ptrace` operations (register, memory, debug-register, seize,
+//! interrupt, resume, and detach) enforcing Linux's tracer-ownership and
+//! ptrace-stop preconditions.
+
 use nix::errno::Errno;
 use nix::libc;
 

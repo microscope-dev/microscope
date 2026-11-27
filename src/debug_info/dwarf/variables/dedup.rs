@@ -1,3 +1,8 @@
+//! Structural type deduplication via bisimulation partition refinement.
+//!
+//! Collapses identical types emitted across multiple compilation units into a
+//! single `TypeId` and returns a `Remap` for updating all referencing tables.
+
 use std::sync::Arc;
 
 use std::collections::HashMap;
@@ -101,6 +106,9 @@ impl BuiltTypes {
         Some(remap)
     }
 
+    /// Computes structural equivalence classes by temporarily zeroing all
+    /// `TypeReference`s so node signatures ignore arbitrary `TypeId` numbering,
+    /// refining classes over the extracted edge graph, and then restoring them.
     fn classes<H: std::hash::BuildHasher + Clone + Sync>(
         &mut self,
         hasher: &H,

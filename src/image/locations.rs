@@ -1,3 +1,9 @@
+//! Content-deduplicated DWARF expressions, location lists, and evaluation units.
+//!
+//! Variable, call-site, and dynamic-layout tables reference locations by
+//! compact [`ExpressionId`] and [`LocationListId`] handles rather than
+//! duplicating raw DWARF bytecode.
+
 use std::hash::BuildHasher as _;
 
 use gimli::ValueType;
@@ -337,6 +343,11 @@ impl LocationsBuilder {
         .unwrap_or(0)
     }
 
+    /// Merges another builder's expressions and lists into `self`, returning ID remaps.
+    ///
+    /// Expressions can reference location lists via `DW_OP_call*` procedures and
+    /// location lists reference expressions, so this interleaves both pools and
+    /// emits each record once all of its referenced IDs have been remapped.
     pub fn absorb(
         &mut self,
         other: &Self,

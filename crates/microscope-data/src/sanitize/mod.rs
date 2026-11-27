@@ -1,3 +1,6 @@
+//! Policy-driven redaction, HMAC hashing, masking, and field/record dropping
+//! for sensitive data in captures and upload posts.
+
 mod builtin;
 pub mod chunk;
 
@@ -379,6 +382,11 @@ impl Tally {
     }
 }
 
+/// Applies built-in and custom regex rules per `FieldClass`.
+///
+/// Already-sanitized `[redacted]` and `[hash:...]` tokens are skipped across
+/// `Redact`, `Hash`, and `Mask` (and `****` runs during `Action::Mask`) so
+/// sanitization is idempotent across re-runs.
 #[derive(Debug)]
 pub struct Sanitizer {
     rules: Vec<Rule>,
@@ -643,6 +651,10 @@ impl Sanitizer {
         }
     }
 
+    /// Sanitizes an `argv` slice in three stages: structured secret-flag pairs
+    /// (`--token val`, `--token=val`), per-arg embedded secret flags, and
+    /// cross-argument regexes over a NUL-joined buffer (falling back to per-arg
+    /// matching if any argument already contains NUL).
     #[expect(
         clippy::too_many_lines,
         reason = "redacts structured flag values, embedded flags, and cross-argument rules in one pass"

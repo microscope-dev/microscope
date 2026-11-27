@@ -1,3 +1,9 @@
+//! Synthesizes a minimal `x86_64` ELF shared library loaded by the in-process Python agent.
+//!
+//! Exports a trap-target function (`microscope_python_hook`), a fast sequence reader
+//! (`microscope_python_sequence`), and a page-aligned writable control slot
+//! (`microscope_python_control`) for out-of-process command updates.
+
 pub const SYMBOL: &str = "microscope_python_hook";
 pub const SEQUENCE_SYMBOL: &str = "microscope_python_sequence";
 pub const CONTROL_SYMBOL: &str = "microscope_python_control";
@@ -95,8 +101,10 @@ pub fn library() -> Vec<u8> {
         put(at + 48, &alignment.to_le_bytes());
     }
 
+    // `microscope_python_hook`: `endbr64; ret` (trapped by debugger breakpoint).
     put(512, &[0xf3, 0x0f, 0x1e, 0xfa, 0xc3]);
 
+    // `microscope_python_sequence`: `endbr64; mov rax, [rip + disp]; ret` reading the u64 sequence at 4104.
     put(528, &[0xf3, 0x0f, 0x1e, 0xfa, 0x48, 0x8b, 0x05]);
     put(535, &(4104_i32 - 539).to_le_bytes());
     put(539, &[0xc3]);

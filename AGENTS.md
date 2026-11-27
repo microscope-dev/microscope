@@ -29,14 +29,15 @@ Use the `justfile` for project tasks. Run `just --list` to see available recipes
 
 ## Style Guide
 
-- Never write code comments. Instead, ensure the code speaks for itself because it's so straightforward and simple.
-    - Never leave load-bearing assumptions to comments or documentation. Systems and code must be correct by construction.
-    - You may write code comments if the compiler/linter requires it (i.e. unsafe).
+- Keep code comments minimal, high-level, and written in simple, human-like language.
+    - Explain *why* things are the way they are (invariants, subtle ordering, kernel/ABI/runtime quirks), and explain *how* only for genuinely complicated logic.
+    - Prefer doc comments (`//!`, `///`, `/** ... */`) over inline comments where possible. Avoid trivial comments that restate the code.
+    - Never leave load-bearing assumptions solely to comments or documentation. Systems and code must be correct by construction.
 - Keep files under 1500 lines (excluding tests) and ensure the code is logically organized so it's easy to consume later.
 
 ## Code Map
 
-One Rust crate (`src/`), plus a TypeScript web UI (`web/`).
+Rust workspace (`src/`, `crates/microscope-data/`, `crates/microscope-test-strategies/`), plus a TypeScript web UI (`web/`).
 
 - `src/backend/linux/`: ptrace tracer, run control, stepping, breakpoints/watchpoints, frames, memory, core dumps, BPF (`bpf/`), perf (`perf/`), CDP inspector, syscalls
 - `src/debug_info/`: ELF, DWARF, gopclntab, CPython, V8, GDB JIT, perf maps, JS source maps
@@ -45,8 +46,8 @@ One Rust crate (`src/`), plus a TypeScript web UI (`web/`).
 - `src/eval/`: expression language (parse in `syntax/`, bind, IR, interpret)
 - `src/view/` + `views/*.views`: type visualizer DSL and the built-in visualizers
 - `src/unwind/`: stack unwinding
-- `src/profiler/`, `src/capture/`, `src/analysis/`: sampling profiler, capture files, profile queries/diffs
-- `src/syscalls/`: syscall tables (`*.gen.rs` are generated), filters, decoding
+- `src/profiler/`: sampling profiler
+- `crates/microscope-data/src/`: capture files (`capture/`), columnar object storage (`object/`), profile queries/diffs (`analysis/`), syscall tables (`syscalls/`, `*.gen.rs` are generated), sanitization (`sanitize/`), symbols (`symbols/`), shared view queries (`view/`)
 - Frontends: `src/cli/` (REPL), `src/dap/` (Debug Adapter Protocol), `src/web/` (server for `web/`), `src/present/` (shared formatting)
 - `src/agent/`: remote machine agent, cloud, inventory, wire protocol
 - `src/group.rs`: multi-process groups; `src/model.rs`: core newtypes (`Pid`, `Tid`, ...); `src/protocol.rs`: shared query types

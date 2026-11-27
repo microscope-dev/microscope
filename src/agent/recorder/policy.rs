@@ -217,6 +217,9 @@ pub fn remote_selection_rules(policy: Option<&PolicyDirective>) -> Vec<Selection
         .collect()
 }
 
+/// Resolves the `(Preset, TimeUnit)` for one process by layering base config,
+/// org/project policy, and active bursts (upgrades only), then clamping to
+/// local `Limits` so remote directives cannot exceed host safety caps.
 pub fn effective_policy_for_process(
     proc_sel: &SelectedProcess,
     base_preset: Preset,

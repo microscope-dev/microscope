@@ -1,3 +1,9 @@
+//! Recovers a high-address stack ceiling for attached threads whose creation was not observed
+//! (used by `zero_return_address` to bound stack walks).
+//!
+//! Reads glibc's `__libc_stack_end` (or `thread_pointer` / TCB for worker threads) or musl's
+//! `pthread` / `auxv` fields, cross-checked against `/proc/<pid>/auxv` and the thread pointer.
+
 use nix::unistd::Pid;
 
 use super::native::InspectionOps;

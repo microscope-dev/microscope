@@ -58,6 +58,8 @@ impl<P: InspectionOps> Controller<P> {
             .or_else(|| self.read_returned(pid, start.returning?))
     }
 
+    /// Eagerly snapshots return registers when landing on the return address so
+    /// multi-step `StepKind::Out` sequences do not lose them before stopping.
     pub(super) fn note_returned_values(&mut self, pid: Pid) {
         let Some(returning) = self
             .session

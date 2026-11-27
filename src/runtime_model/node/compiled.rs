@@ -1,3 +1,9 @@
+//! Resolves JIT-compiled V8 frames (`Sparkplug` baseline, `Maglev`, and `TurboFan`) to source
+//! positions.
+//!
+//! Checks the function's current and cached `Code` objects first, then scans backward for an
+//! aligned `InstructionStream` header when a frame is still running older tiered code.
+
 use super::Statics;
 use super::objects::{Object, Problem, Reader};
 use super::positions::{self, Encoding};

@@ -26,6 +26,11 @@ export function stopNote(state: State, at: At): string | null {
   return EXCEPTIONS.has(entry.reason.kind) ? entry.reason.description : null;
 }
 
+/**
+ * Decides whether the tab should auto-navigate when the inferior's state changes.
+ * Only follows if unpinned and currently looking at the previously followed stop (or no stop yet),
+ * so browsing an older stop in history is never yanked away by new stops.
+ */
 export function follow(
   state: State,
   at: At | null,

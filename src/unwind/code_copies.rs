@@ -1,3 +1,6 @@
+//! Identifies anonymous executable mappings that are runtime-copied slices of
+//! loaded ELF code so samples inside copied stubs still symbolize and unwind.
+
 use std::ops::Range;
 
 use crate::{ImageAddress, LoadedModule, ModuleImage, SymbolKind};

@@ -1,3 +1,9 @@
+//! Pools raw `perf` drain blocks and pins only blocks referenced by records held
+//! past the time watermark.
+//!
+//! Once more than `MOST_KEPT` blocks accumulate, older held records are compacted
+//! into a single block so one straggler cannot pin unbounded memory.
+
 use std::collections::VecDeque;
 
 use crate::backend::perf::Blocks;

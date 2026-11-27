@@ -1,3 +1,8 @@
+//! Per-binary diagnostic facts (symbol sources, DWARF status, debug file, TLS).
+//!
+//! Stored inside the image so consumers can report why debug info is absent or
+//! incomplete without re-opening the underlying binary.
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -256,6 +261,10 @@ impl<'a> FactsView<'a> {
         }
     }
 
+    /// Rebinds the cached debug-file status to a caller-supplied host path.
+    ///
+    /// Images intentionally omit the separate debug file's filesystem path so
+    /// caches stay relocatable; returns [`Unbound`] if presence disagrees.
     pub fn debug_file(self, path: Option<Arc<PathBuf>>) -> Result<Option<DebugFile>, Unbound> {
         let found = self
             .record

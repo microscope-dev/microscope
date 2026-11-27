@@ -1,3 +1,6 @@
+//! `ptrace`-based syscall tracer with optional `SECCOMP_RET_TRACE` pre-filtering so untraced
+//! syscalls run at native speed without ptrace stops.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
 use std::sync::Arc;
@@ -219,6 +222,8 @@ struct Unannounced {
     ended: Option<ProcessEnd>,
 }
 
+/// `Filtered` resumes with `PTRACE_CONT` between syscalls and switches to `PTRACE_SYSCALL` only
+/// for the exit stop after a seccomp trap; `EveryCall` always stops on every syscall entry/exit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Filtered,

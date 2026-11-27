@@ -56,6 +56,8 @@ pub fn encode_event_bundle(
     )
 }
 
+/// Encodes per-machine event tables referencing a shared Tier A string/symbol
+/// pool (`SharedStringIndex`) instead of embedding duplicate strings and symbols.
 #[expect(
     clippy::too_many_lines,
     reason = "encodes per-machine event bundle referencing shared Tier A symbols"

@@ -196,6 +196,7 @@ export function Lanes() {
     },
     { equals: (a, b) => a[0] === b[0] && a[1] === b[1] },
   );
+  // Debounce backend timeline/zone fetches while panning or wheel-zooming smoothly at 60fps.
   const asked = useSettled(shownView, SETTLE);
   const span = createMemo(() => Math.max(shownView()[1] - shownView()[0], 1));
 
@@ -266,6 +267,8 @@ export function Lanes() {
     return text ? new Set(text.split(",")) : null;
   });
 
+  // High-water mark of zone nesting depth per thread so lane heights do not
+  // jump around as zones enter and leave the viewport during pan/zoom.
   let seenDepths = new Map<number, number>();
   const depths = createMemo<ReadonlyMap<number, number>>(() => {
     const current = index();
@@ -1235,6 +1238,10 @@ function onCpu(blocks: ZoneBlocks, at: number): number | null {
   return Math.min(Math.max(1 - off / covered, 0), 1);
 }
 
+/**
+ * Modulates a zone bar's opacity per timeline bucket using `blocked + preempted`
+ * time so off-CPU stalls show up as faded gaps inside the zone.
+ */
 function paintRunning(
   context: CanvasRenderingContext2D,
   {

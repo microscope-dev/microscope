@@ -48,6 +48,13 @@ type Phase =
   | { kind: "socket"; transport: Transport | null; open: boolean }
   | { kind: "waiting"; timer: ReturnType<typeof setTimeout> };
 
+/**
+ * Manages the WebSocket lifecycle (`stopped -> authorizing -> socket -> waiting`)
+ * with reconnect backoff and request/response multiplexing.
+ *
+ * Each async transition checks object identity against `#phase` so callbacks
+ * from a previous socket or auth check are ignored after `stop()` or reconnect.
+ */
 export class Connection {
   readonly #options: ConnectionOptions;
   #phase: Phase = { kind: "stopped" };
@@ -164,6 +171,7 @@ export class Connection {
     }
   }
 
+  /** Binary payloads precede their JSON `result` frame and start with an 8-byte LE request ID. */
   #receiveBinary(data: ArrayBuffer): void {
     if (data.byteLength < 8) {
       return;
@@ -241,6 +249,7 @@ export class Connection {
   }
 }
 
+/** Tears down the socket on bfcache `pagehide` so the browser can cache the page, and restarts on `pageshow`. */
 export function leaveWhileCached(connection: Connection, page: EventTarget): void {
   let paused = false;
   page.addEventListener("pagehide", (event) => {
@@ -261,6 +270,7 @@ export const browserConnect: Connect = (handlers) => {
   const url = new URL(serverUrl("api/ws"), location.href);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   const token = presented();
+  // Browsers cannot send custom headers on WebSocket upgrades, so auth rides in the subprotocol list.
   const socket = new WebSocket(url, token ? ["microscope", `microscope-token.${token}`] : []);
   socket.binaryType = "arraybuffer";
   socket.addEventListener("open", () => handlers.open());
@@ -314,6 +324,7 @@ export async function login(token: string): Promise<boolean> {
   throw new Error(`unexpected status ${response.status}`);
 }
 
+/** Memoizes a settled token exchange (retrying only after a rejected fetch) so effect re-runs do not re-POST after stripping `#token`. */
 export function tradeOnce(trade: (token: string) => Promise<boolean> = login) {
   let trading: Promise<boolean> | null = null;
   return (token: string): Promise<boolean> => {

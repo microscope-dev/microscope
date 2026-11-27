@@ -150,6 +150,8 @@ pub fn utf8_text(text: &TextSummary) -> Option<TextSummary> {
         _ => return None,
     };
 
+    // When a byte-capped read cuts through a trailing multi-byte UTF-8 sequence,
+    // keep the valid prefix rather than rejecting the whole string.
     let valid = match std::str::from_utf8(&text.bytes) {
         Ok(valid) => valid,
         Err(error) if !complete && error.error_len().is_none() => {

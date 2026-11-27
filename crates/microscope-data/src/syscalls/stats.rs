@@ -106,6 +106,7 @@ impl SyscallStats {
         self.total_ns.checked_div(self.timed)
     }
 
+    /// Estimates the `q` quantile (in `0.0..=1.0`) by interpolating linearly within its log2 bucket, clamped to `[min_ns, max_ns]`.
     #[must_use]
     pub fn quantile_ns(&self, q: f64) -> Option<u64> {
         if self.timed == 0 {
@@ -386,8 +387,6 @@ mod tests {
     }
 
     proptest! {
-        /// Folding calls one by one or per part and merging gives the same
-        /// stats, whichever part has no timed calls.
         #[test]
         fn adding_all_calls_equals_merging_the_parts(a in calls(), b in calls()) {
             let mut merged = stats_of(&a);
@@ -397,9 +396,6 @@ mod tests {
             prop_assert_eq!(merged, stats_of(&whole));
         }
 
-        /// The estimate of the `q` quantile lies between the shortest and
-        /// longest calls, in the log2 bucket of the call at rank
-        /// `ceil(q·n)`. `q` is a multiple of 1/64, so `q·n` is exact.
         #[test]
         fn quantiles_lie_between_the_extremes_in_the_true_bucket(
             durations in prop::collection::vec(duration(), 1..40),

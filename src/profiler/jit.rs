@@ -1,3 +1,7 @@
+//! Tracks anonymous executable mappings, incremental `/tmp/perf-<pid>.map` reads,
+//! and GDB JIT descriptors, rebuilding symbol chunks (`CHUNK`) only for address
+//! ranges touched by samples.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -159,6 +163,8 @@ impl Jit {
         })
     }
 
+    /// Aligns a rebuild window to `CHUNK` boundaries without splitting a known
+    /// function across two chunks, bounding re-indexing to the touched region.
     fn chunk(&self, start: u64, end: u64, address: u64) -> (u64, u64) {
         let cut = |boundary: u64| {
             if boundary <= start {

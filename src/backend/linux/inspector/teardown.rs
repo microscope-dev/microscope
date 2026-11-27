@@ -1,3 +1,6 @@
+//! Borrowed inspectors simply disconnect over CDP; debugger-created inspectors wait for
+//! startup quiescence and invoke Node's native stop hook so the port is released cleanly.
+
 use crate::backend::linux::arch::stack_after_return;
 use std::collections::BTreeSet;
 use std::sync::Arc;

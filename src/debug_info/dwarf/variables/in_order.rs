@@ -1,3 +1,8 @@
+//! Bounded-lookahead parallel scheduler with deterministic in-order commit.
+//!
+//! Runs DWARF unit-group walks concurrently while committing results strictly in
+//! index order so output IDs are reproducible regardless of thread scheduling.
+
 use std::collections::BTreeMap;
 use std::sync::PoisonError;
 
@@ -7,6 +12,10 @@ pub trait Add<W> {
     fn add(&mut self, walk: Option<W>) -> bool;
 }
 
+/// Coordinates parallel group walks with a sliding commit window.
+///
+/// `window` caps how far ahead of `adding.next` workers may run to bound peak
+/// memory; `AbandonOnUnwind` wakes blocked workers if any thread panics.
 pub struct InOrder<'g, W, A> {
     order: &'g [usize],
 

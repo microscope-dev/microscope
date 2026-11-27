@@ -1,3 +1,7 @@
+//! Scans executable ELF sections for `call` instructions and checks DWARF unwind
+//! info to decide whether a binary preserves frame pointers reliably enough to
+//! use `SMALL_STACK_COPY`.
+
 use iced_x86::{Decoder, DecoderOptions, FlowControl, Mnemonic};
 use object::{Object, ObjectSection, ReadRef, SectionFlags};
 
@@ -15,6 +19,8 @@ pub struct CallSites {
 }
 
 impl CallSites {
+    /// Allows up to 0.1% of call sites without frame pointers (such as hand-written
+    /// assembly stubs) before falling back to a deep stack copy.
     pub const fn keep_the_chain(self) -> bool {
         self.not_kept as u64 * 1000 <= self.kept as u64 + self.not_kept as u64
     }

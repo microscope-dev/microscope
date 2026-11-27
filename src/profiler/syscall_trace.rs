@@ -1,3 +1,6 @@
+//! Runs BPF or `ptrace` syscall tracing alongside `perf` profiling, bridging
+//! live budget shedding, windowed retention, and final capture merging.
+
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -212,6 +215,9 @@ impl SyscallOptions {
         )))
     }
 
+    /// Returns the syscall set to intercept, adding `fds::followed` whenever a
+    /// path/fd filter is active or any selected call names files, so `FdTable`
+    /// stays accurate.
     pub(super) fn traced(&self) -> CallSet {
         let Some((_, filter)) = &self.filter else {
             return CallSet::all();

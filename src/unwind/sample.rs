@@ -1,3 +1,9 @@
+//! Offline stack unwinder for perf samples.
+//!
+//! Walks DWARF CFI over the captured stack bytes first, then splices onto the
+//! kernel-recorded frame-pointer `chain` when CFI hits an uncertain end (such
+//! as running past the copied stack window).
+
 use foldhash::HashMap;
 
 use super::{
@@ -386,6 +392,12 @@ fn signal_trampoline<M: Modules + ?Sized>(
     })
 }
 
+/// Finds the deepest CFI-unwound frame that aligns with `sample.chain` so
+/// unwinding can continue via frame pointers.
+///
+/// Reconstructs `RBP` link addresses from the stack copy and requires
+/// [`FramePointerRule::Kept`], plus a matching caller return address when
+/// splicing at an interior CFI frame.
 fn splice<M: Modules + ?Sized>(
     modules: &M,
     rules: &mut FrameRules,

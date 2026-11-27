@@ -1,3 +1,9 @@
+//! Compact, serializable address-to-symbol lookup index (`USCOPESY` format).
+//!
+//! Stores deduplicated string, file, function, and inline-chain tables alongside
+//! sorted, non-overlapping address span tables encoded with delta varints,
+//! optional zstd compression, and an `XxHash3_64` checksum.
+
 use std::cell::RefCell;
 
 use foldhash::HashMap;
@@ -63,6 +69,10 @@ pub struct SymtabSpan {
     pub function: u32,
 }
 
+/// Pre-parsed symbol table for a single binary build ID.
+///
+/// `spans`, `line_spans`, and `symtab_spans` are sorted and non-overlapping
+/// with `start < end` on each interval so lookups are binary searches.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SymbolIndex {
     pub(super) build_id: BuildId,
@@ -197,6 +207,10 @@ impl SymbolIndex {
             .saturating_add(128)
     }
 
+    /// Resolves `address` to an innermost-first stack of `ResolvedFrame`s.
+    ///
+    /// Prefers DWARF `spans` (which carry inline chains, threading each frame's
+    /// `call_file`/`call_line` to its caller) and falls back to `symtab_spans`.
     #[must_use]
     pub fn lookup(&self, address: u64) -> Vec<ResolvedFrame> {
         let leaf_line = self.lookup_line(address);

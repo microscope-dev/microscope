@@ -50,6 +50,7 @@ export async function currentUser(): Promise<User | null> {
   return (await response.json()) as User;
 }
 
+// Monotonic epoch used by `askSince` to discard stale `/api/users/me` responses that raced with an explicit sign-in or sign-out.
 let epoch = 0;
 
 function decided(state: Partial<AccountState>): void {
@@ -258,6 +259,7 @@ function ask(): Promise<Account> {
   );
 }
 
+/** Reads one-time tokens/challenges from the URL fragment (never sent to the server) and strips them from history immediately. */
 function takeFragment(): URLSearchParams {
   const fragment = new URLSearchParams(window.location.hash.slice(1));
   if (window.location.hash) {

@@ -1,3 +1,5 @@
+//! Tokenized `strace`-style formatting for syscall entries, returns, and trace events.
+
 pub mod dumps;
 mod names;
 pub mod sets;
@@ -151,6 +153,7 @@ pub fn errno(Errno(number): Errno) -> (String, &'static str) {
     }
 }
 
+/// Returns whether `errno` is a kernel-internal `ERESTART*` code visible to tracers before syscall restart.
 #[must_use]
 pub const fn restarts(Errno(number): Errno) -> bool {
     matches!(number, 512..=514 | 516)

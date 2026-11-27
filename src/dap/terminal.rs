@@ -1,3 +1,9 @@
+//! Launches debuggees in an editor terminal via DAP `runInTerminal`.
+//!
+//! Spawns `microscope dap-launcher` in the client's terminal, identifies its PID over
+//! a private `0o700` Unix socket via `SO_PEERCRED`, attaches before `exec`, and
+//! releases the launcher with a 1-byte handshake.
+
 use std::fs::DirBuilder;
 use std::io::{self, Write as _};
 use std::os::unix::fs::DirBuilderExt as _;
@@ -99,6 +105,7 @@ pub(super) async fn launch(
         .map_err(|error| failed(&error))
 }
 
+/// Unix listener inside a `0o700` temp directory so only the same user can connect.
 pub(super) struct PrivateSocket {
     directory: PathBuf,
     name: &'static str,

@@ -1,3 +1,8 @@
+//! Cross-process `fcntl` lock budget (`ring-lease` feature) for `perf_event` locked-memory quota.
+//!
+//! Partitions `perf_event_mlock_kb` * online CPUs + `RLIMIT_MEMLOCK` across concurrent test
+//! processes so parallel perf tests do not fail with `EPERM` from exhausting the user's mlock limit.
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Wanted {
     Try,

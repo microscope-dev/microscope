@@ -1,3 +1,5 @@
+//! Sparse language- and ABI-specific type attributes kept out of fixed-size [`super::types::TypeRecord`]s.
+
 use std::sync::Arc;
 
 use zerocopy::little_endian::{U32, U64};

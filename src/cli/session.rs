@@ -1,3 +1,8 @@
+//! CLI session assembly: merges CLI flags, user/project config, and launch profiles.
+//!
+//! Project files that can execute commands or pick launch targets are gated behind
+//! an explicit trust check before their settings take effect.
+
 use std::ffi::OsString;
 use std::io::{self, IsTerminal as _};
 use std::path::{Path, PathBuf};

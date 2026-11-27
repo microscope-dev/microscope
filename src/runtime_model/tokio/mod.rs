@@ -1,3 +1,9 @@
+//! Tokio async runtime model.
+//!
+//! Discovers active `MultiThread`, `CurrentThread`, and `LocalSet` runtimes
+//! from thread-local contexts, walks sharded `OwnedTasks` lists and blocking
+//! pools, inspects suspended task futures, and tracks task lifecycle entries.
+
 mod future;
 mod layout;
 mod sets;
@@ -39,6 +45,10 @@ enum Lifecycle {
     Idle,
 }
 
+/// Decoded view of Tokio's atomic task state bitfield.
+///
+/// Precedence matches Tokio's state machine: `COMPLETE` overrides `RUNNING`,
+/// which overrides `NOTIFIED`.
 #[derive(Debug, Clone, Copy)]
 struct TaskWord {
     lifecycle: Lifecycle,
@@ -190,6 +200,10 @@ struct List {
     counted: bool,
 }
 
+/// Pagination cursor packed into a single `u64`.
+///
+/// Task headers are pointer-aligned (bit 0 is 0), so bit 0 = 1 distinguishes
+/// blocking-pool indices from task-header addresses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Cursor {
     Start,
@@ -488,6 +502,9 @@ impl TokioRuntime {
         Ok(list)
     }
 
+    /// Verifies that a task vtable's `poll` entry resolves to
+    /// `tokio::runtime::task::raw::poll` before trusting offsets read from it,
+    /// guarding against freed or concurrently mutated task nodes.
     fn checked_vtable(
         &self,
         stop: &dyn RuntimeStop,
@@ -918,6 +935,10 @@ fn holds_pointee(info: &crate::TypeInfo) -> bool {
     })
 }
 
+/// Static DWARF reachability check for whether `ty` can transitively hold a
+/// `LocalSet`, `RunUntil`, or `dyn Future` (which might erase one).
+///
+/// Used by `sets` to prune irrelevant fields before reading target memory.
 fn may_hold_set(image: &dyn RuntimeImage, ty: crate::TypeReference, boxed: bool) -> bool {
     use crate::TypeKind;
     fn members(

@@ -1,3 +1,8 @@
+//! Per-process file descriptor table reconstructed from syscall and lifecycle events.
+//!
+//! Tracks open files, sockets, pipes, `O_CLOEXEC` flags, and `AT_FDCWD` (stored
+//! at key `-100`) so later syscalls can be annotated with paths and endpoints.
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -245,6 +250,12 @@ impl FdTable {
             })
     }
 
+    /// Advances descriptor state for `call` and reconciles any `fresh` snapshot that preceded it.
+    ///
+    /// When a tracer emits a `TraceEvent::Descriptor` with `made: true` right
+    /// before the syscall that created the fd, `describe_before` still returns
+    /// the previous entry while this method folds the snapshot's resolved path
+    /// or device onto the new fd without overwriting richer socket endpoints.
     pub fn apply_call(&mut self, call: &SyscallEvent) {
         let fresh = self
             .processes
@@ -379,6 +390,7 @@ impl FdTable {
             return;
         };
 
+        // Non-blocking `connect` returns `EINPROGRESS` while still binding the socket's remote endpoint.
         let in_progress =
             name == "connect" && event.outcome == Outcome::Failed(super::model::Errno(EINPROGRESS));
         let result = match event.outcome {

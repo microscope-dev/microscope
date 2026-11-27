@@ -1,3 +1,8 @@
+//! Probe zone folding, latency statistics, and plot downsampling.
+//!
+//! Coalesces sub-pixel zones for timeline rendering, computes log-bucketed
+//! duration histograms, and downsamples probe plot series without hiding spikes.
+
 use std::collections::BTreeMap;
 
 use crate::capture::Capture;
@@ -52,6 +57,10 @@ fn off_cpu_within(spans: &[OffCpu], (start, end): (i64, i64)) -> (i64, i64) {
     (blocked, preempted)
 }
 
+/// Returns zone blocks for `range`, coalescing adjacent zones shorter than `fold`.
+///
+/// Coalescing never mixes `chosen` and unchosen zones so highlighted filter
+/// matches remain visible even when zoomed out.
 #[must_use]
 pub fn zone_blocks(
     capture: &Capture,
@@ -336,6 +345,10 @@ pub struct PlotBin {
     pub high: f64,
 }
 
+/// Downsamples probe plots into per-bin `(first, last, low, high)` envelopes.
+///
+/// Also scans outside `range` to populate `held` (last finite value before
+/// `range.0`) and `continues` so step plots extend cleanly to viewport edges.
 #[must_use]
 pub fn plot_series(
     capture: &Capture,

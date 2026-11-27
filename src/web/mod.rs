@@ -151,6 +151,10 @@ struct App {
 }
 
 impl App {
+    /// Authorizes a request via an explicit token or a same-origin session cookie.
+    ///
+    /// Token auth only requires a known `Host` so cross-origin clients (e.g. editor
+    /// webviews) can connect; cookie auth requires matching `Host` and `Origin` to block CSRF.
     fn authorize(&self, headers: &HeaderMap, presented: Option<&str>) -> Option<Role> {
         if let Some(token) = presented.filter(|token| !token.is_empty()) {
             return self
@@ -323,6 +327,7 @@ fn router(app: Arc<App>) -> Router {
     if base.is_empty() {
         api
     } else {
+        // `Router::nest` does not route `{base}/` to a nested fallback, so serve it directly.
         let root = move |headers: HeaderMap| page(State(root_app), headers, Uri::from_static("/"));
         Router::new()
             .nest(&base, api)
@@ -469,6 +474,7 @@ async fn login(State(app): State<Arc<App>>, headers: HeaderMap, body: String) ->
         return (StatusCode::FORBIDDEN, "this link is not for this server").into_response();
     };
 
+    // Never downgrade a browser that already holds a `Control` cookie when opening a `View` link.
     if role == Role::View && app.authorize(&headers, None) == Some(Role::Control) {
         return StatusCode::NO_CONTENT.into_response();
     }

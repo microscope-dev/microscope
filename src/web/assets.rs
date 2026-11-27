@@ -1,3 +1,9 @@
+//! Static web UI asset lookup and `--public-url` base-path rewriting.
+//!
+//! Debug builds read from `build/web` on disk for fast iteration; release builds embed
+//! the generated `web_assets.rs` bundle. Extensionless paths fall back to `index.html`
+//! for client-side routing.
+
 use std::borrow::Cow;
 
 #[cfg(not(debug_assertions))]
@@ -45,6 +51,8 @@ pub fn find(path: &str) -> Option<Asset> {
     })
 }
 
+/// Rewrites built `index.html` asset URLs for a reverse-proxy subpath and injects
+/// `<meta name="microscope-base">` for client-side API and router URLs.
 pub fn rooted(page: &[u8], base: &str) -> Vec<u8> {
     let page = String::from_utf8_lossy(page)
         .replace("<base href=\"/\" />", "")

@@ -1,3 +1,9 @@
+//! Rust standard library runtime model.
+//!
+//! Detects `rustc`-built binaries, hooks Rust panic entry points to decode
+//! `PanicPayload` trait objects via their vtable's first method symbol, and
+//! classifies standard library frames and source paths.
+
 use std::collections::BTreeSet;
 use std::path::{Component, Path};
 use std::sync::Arc;
@@ -28,6 +34,8 @@ const PANIC: ExceptionFilter = ExceptionFilter {
 const VTABLE_SIZE: u64 = 8;
 const VTABLE_FIRST_METHOD: u64 = 24;
 
+/// Sentinel `String` capacity used by `FormatStringPayload` before a panic
+/// hook formats the message.
 const NO_STRING: u64 = 1 << 63;
 
 const MAX_MESSAGE: u64 = 1 << 16;
@@ -128,6 +136,12 @@ impl Payload<'_> {
         }
     }
 
+    /// Identifies the concrete `PanicPayload` type from the vtable's first
+    /// method symbol and reads its message or value expression from `data`.
+    ///
+    /// Legacy Rust symbol mangling omits concrete generic arguments on trait
+    /// impls, so generic parameters are substituted from DWARF or the function
+    /// name before matching.
     fn report(&self, data: u64, vtable: u64) -> Result<RuntimeException, Arc<str>> {
         let ty = self.implementer(vtable, VTABLE_FIRST_METHOD)?;
         let ty = ty.as_str();
@@ -407,6 +421,11 @@ impl RuntimeModel for RustRuntime {
     }
 }
 
+/// Returns whether a demangled Rust symbol belongs entirely to `std`, `core`,
+/// or `alloc`.
+///
+/// For trait impls (`<Self as Trait>::method`), both `Self` and `Trait` must
+/// be standard library types so user impls of standard traits are not hidden.
 pub fn standard_library_function(name: &str) -> bool {
     let standard = |path: &str| {
         let path = path.trim_start_matches('&');

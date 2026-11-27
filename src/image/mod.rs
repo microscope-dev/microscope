@@ -1,3 +1,9 @@
+//! Validated, zero-copy binary cache of per-module debug facts.
+//!
+//! Each `Image` stores flat `zerocopy` tables over an `AlignedBytes` buffer so
+//! symbols, line programs, functions, types, variables, unwind data, and
+//! runtime layouts can be memory-mapped and queried without deserialization.
+
 pub mod calls;
 pub mod declarations;
 pub mod facts;
@@ -43,6 +49,10 @@ fn ids(rows: usize) -> Range<u32> {
     0..end
 }
 
+/// Index range `(first, count)` covering `first..first + count` in a companion table of `T`.
+///
+/// Image validation verifies every stored span with [`Span::within`] against
+/// its target table so view methods can slice without runtime bounds checks.
 #[repr(C)]
 #[derive(FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
 pub struct Span<T> {
@@ -139,6 +149,10 @@ pub trait Record: FromBytes + IntoBytes + KnownLayout + Immutable + Unaligned {
     const KIND: TableKind;
 }
 
+/// Fixed-size table row reused across multiple [`TableKind`]s.
+///
+/// Callers pass the [`TableKind`] explicitly, and [`Image::shared`] asserts
+/// `NAME` against `schema::record(kind)` to prevent mismatched table reads.
 pub trait SharedRecord: FromBytes + IntoBytes + KnownLayout + Immutable + Unaligned {
     const NAME: &'static str;
 }
@@ -181,6 +195,7 @@ impl Image {
         };
 
         validate::contents(&image)?;
+        // Drop pages touched during validation so cold tables stay paged out until queried.
         image.bytes.release();
         Ok(image)
     }

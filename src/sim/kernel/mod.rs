@@ -1,3 +1,10 @@
+//! Deterministic model of Linux processes, threads, signals, `ptrace`,
+//! hardware debug registers, and `perf` sampling.
+//!
+//! Any unmodeled syscall or corner case records a `ModelGap` rather than
+//! silently diverging from Linux, so the harness never confuses simulator
+//! limitations with debugger bugs.
+
 pub mod catching;
 pub mod debug_regs;
 pub mod perf;
@@ -242,6 +249,8 @@ pub struct Options {
 
 pub type Planted = (u64, u8, u8);
 
+/// How a thread is currently attached to a tracer (`PTRACE_ATTACH` vs
+/// `PTRACE_SEIZE`, where `interrupted` tracks a pending `PTRACE_INTERRUPT`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tracing {
     Untraced,
@@ -251,6 +260,8 @@ pub enum Tracing {
     Seized { tracer: i32, interrupted: bool },
 }
 
+/// Progress of a thread across a `syscall` boundary, including
+/// `ERESTARTNOINTR` restarts when interrupted by a signal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallPhase {
     Outside,
@@ -495,10 +506,11 @@ pub enum Happening {
     /// A group exit or SIGKILL took a thread out of a ptrace-stop.
     PulledFromStop { tid: Tid },
 
-    /// A thread's fork or clone failed for a signal pending, to be made
+    /// A thread's fork or clone failed for a pending signal and will restart
+    /// once the signal is handled.
     Restarting { tid: Tid },
 
-    /// (K-TRAP-2).
+    /// A `PTRACE_INTERRUPT` stopped a thread ahead of a pending trap.
     InterruptAheadOfTrap { tid: Tid },
 
     /// A group leader exited while other threads ran on.
@@ -510,6 +522,8 @@ pub enum Happening {
     /// A thread forked a process.
     Forked { parent: Tid, child: Tid },
 
+    /// A traced thread was detached or its tracer exited; `planted` is set if
+    /// an active `0xcc` trap remained in executable memory.
     Released {
         tid: Tid,
         tracer: i32,
@@ -525,19 +539,22 @@ pub enum Happening {
     /// The tracer tried to seize a thread that had finished exiting.
     SeizeRefused { tid: Tid },
 
-    /// as soon as it resumes.
+    /// A `PTRACE_INTERRUPT` arrived while the thread was already stopped and
+    /// will take effect as soon as it resumes.
     InterruptWaits { tid: Tid },
 
     /// An untraced thread entered its process's job-control stop.
     JobStopped { tid: Tid },
 
-    /// SIGCONT ended a process's job-control stop.
+    /// `SIGCONT` ended a process's job-control stop.
     Continued { tgid: Tgid },
 
-    /// its signal.
+    /// The tracer resumed a thread from a signal-delivery-stop without
+    /// forwarding its signal.
     Suppressed { tid: Tid, signal: i32 },
 
-    /// and the thread took its default action.
+    /// A signal was delivered without a handler and the thread took its
+    /// default action.
     Delivered { tid: Tid, signal: i32 },
 }
 
@@ -610,6 +627,9 @@ pub struct Kernel {
     pub(super) phantom_debug: BTreeMap<Tid, debug_regs::DebugRegisters>,
 }
 
+/// How hardware debug registers behave for this run, modeling real-world
+/// virtualization quirks (`Discarding`) and perf/kernel slot contention
+/// (`Contended`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DebugBehavior {
     Faithful,
@@ -838,6 +858,8 @@ impl Kernel {
             .map(|thread| thread.tid)
     }
 
+    /// Linux withholds a zombie thread-group leader's wait status until every
+    /// other thread in the group has been reaped.
     fn delayed(&self, thread: &Thread) -> bool {
         thread.tid == thread.tgid.leader()
             && matches!(thread.state, State::Zombie(_))

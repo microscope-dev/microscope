@@ -1,3 +1,8 @@
+//! Parallel per-unit DWARF walk coordinator and deterministic arena merger.
+//!
+//! Workers walk units against a frozen shared type base and merge their local
+//! types, files, and location pools back in unit order with ID renumbering.
+
 use crate::debug_info::dwarf::DwarfSet;
 use std::ops::Range;
 use std::sync::{Mutex, PoisonError};
@@ -116,6 +121,8 @@ pub(super) struct UnitTypes {
     aliases: Vec<(DieKey, TypeId, Option<usize>)>,
 }
 
+/// Per-type spend and pool-range log recorded during a worker's walk so
+/// duplicate types dropped during merge can refund their load budget.
 #[derive(Default)]
 pub(super) struct Trail {
     entries: Vec<Traced>,

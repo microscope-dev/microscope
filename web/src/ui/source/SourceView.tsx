@@ -157,6 +157,7 @@ class Values extends WidgetType {
     return span;
   }
 
+  /** CodeMirror WidgetType ignores DOM events by default; return false so clicking inline values places the cursor normally. */
   override ignoreEvent(): boolean {
     return false;
   }
@@ -392,6 +393,8 @@ export function SourceView(props: SourceViewProps) {
       }
       const line = editor.state.doc.line(currentReveal);
 
+      // Within the same file, skip re-centering if the target line is already comfortably visible;
+      // switching files always centers the revealed line.
       const shown = revealedIn === currentText;
       revealedIn = currentText;
       const block = editor.lineBlockAt(line.from);

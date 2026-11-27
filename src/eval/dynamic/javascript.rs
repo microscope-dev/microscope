@@ -141,6 +141,7 @@ pub(super) fn compare(op: BinaryOp, left: &Loaded, right: &Loaded) -> Result<boo
     Ok(holds(op, order))
 }
 
+/// JavaScript orders strings lexicographically by UTF-16 code units, not UTF-8 bytes.
 fn utf16_order(left: &[u8], right: &[u8]) -> Result<Ordering, Stop> {
     let (Ok(left), Ok(right)) = (std::str::from_utf8(left), std::str::from_utf8(right)) else {
         return Err(refused(

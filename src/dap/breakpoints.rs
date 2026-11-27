@@ -1,3 +1,8 @@
+//! Reconciles DAP's replace-whole-group breakpoint requests with `BreakpointId`s.
+//!
+//! Preserves stable DAP breakpoint IDs across edits and refcounts shared underlying
+//! breakpoints when multiple DAP entries resolve to the same target.
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 
@@ -81,12 +86,12 @@ pub enum State {
         message: String,
     },
 
-    /// whose `enable` is the only way back: the protocol has no enabled
+    /// Disabled from the debug console; DAP itself has no per-breakpoint enabled flag.
     Disabled { breakpoint: BreakpointId },
     Unresolved {
         message: String,
 
-        /// is loaded, rather than having failed.
+        /// True when waiting for a module to load rather than permanently failed.
         pending: bool,
     },
 }
@@ -670,7 +675,7 @@ mod tests {
         /// The debugger refuses the next removal.
         Refuse,
 
-        /// The console adds a function breakpoint, which may equal one the
+        /// The console adds a function breakpoint, possibly duplicating a client one.
         ConsoleAdd { name: u8, condition: Option<u8> },
 
         /// The console deletes any breakpoint.

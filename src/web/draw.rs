@@ -1,3 +1,5 @@
+//! Extracts bounded, JS-safe visualizer inputs and raw binary buffers for `/visualizer-frame`.
+
 use std::sync::Arc;
 
 use microscope::{
@@ -19,6 +21,7 @@ const MOST_VALUES: u64 = 65_536;
 
 const MOST_DEPTH: usize = 16;
 
+/// Largest integer representable exactly as an IEEE-754 `f64` (`Number.MAX_SAFE_INTEGER`).
 const MOST_EXACT: u128 = (1 << 53) - 1;
 
 const PAGE: u32 = 256;

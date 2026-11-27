@@ -1,3 +1,9 @@
+//! Upfront structural and cross-table validation for [`Image`].
+//!
+//! Runs once when loading from disk or sealing a newly built image, allowing
+//! all view types to assume valid string/path pools, spans, sort orders, and
+//! enum discriminants.
+
 use rayon::prelude::*;
 
 use super::format::TableKind;
@@ -113,6 +119,7 @@ pub(super) fn contents(image: &Image) -> Result<(), ImageError> {
     families.into_iter().collect()
 }
 
+/// Skip Rayon fan-out on small images where thread scheduling costs more than sequential checks.
 const PARALLEL_VALIDATION: usize = 1 << 20;
 
 struct Lines<'a> {

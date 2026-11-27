@@ -1,3 +1,10 @@
+//! Copy-on-write paged virtual `AddressSpace` for simulated processes.
+//!
+//! CPU reads, writes, and fetches enforce mapping permissions (`Protection`),
+//! whereas `peek`/`poke` model `ptrace` access that ignores read-only flags
+//! (for planting `0xcc` traps) while preserving copy-on-write isolation across
+//! forked processes and shared ELF code pages.
+
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -70,7 +77,8 @@ pub struct MemoryFault {
 pub enum MemoryError {
     Fault(MemoryFault),
 
-    /// model does not know, as `what` says: a model gap.
+    /// An access whose real Linux behavior depends on state the simulator
+    /// does not model (a model gap), described by `what`.
     Unmodeled {
         address: u64,
         what: &'static str,
@@ -278,6 +286,9 @@ impl AddressSpace {
         Ok(())
     }
 
+    /// Stops at the first non-executable or unmapped page boundary once at
+    /// least one byte has been fetched, because `x86_64` only faults if the
+    /// decoded instruction actually crosses into that page.
     pub fn fetch(&self, address: u64, bytes: &mut [u8]) -> Result<usize, MemoryError> {
         let mut count = 0;
 

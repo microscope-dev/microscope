@@ -42,6 +42,7 @@ export function Dock(props: { setup: DockSetup }) {
     const value = stacked();
     return value === "" ? [] : (value.split(" ") as GroupId[]);
   });
+  // Render floating windows in stable ID order and drive stacking via `z-index` so raising a window never reparents its DOM.
   const sortedWindows = createMemo(() => windows().toSorted());
   const narrow = useNarrow();
   let element: HTMLDivElement | undefined;

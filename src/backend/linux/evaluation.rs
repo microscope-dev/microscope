@@ -53,7 +53,7 @@ enum ObjectRef {
     /// One the debug information describes.
     Data(ObjectKey),
 
-    /// A variable a suspended async frame keeps in its future, or the
+    /// A variable a suspended async frame keeps in its future, or the future itself.
     Saved { ty: TypeId, address: VirtualAddress },
 
     Interpreted {
@@ -876,6 +876,8 @@ fn tuple_members(info: &TypeInfo) -> Option<Vec<Arc<str>>> {
     })
 }
 
+/// Periodically checks `run_control_waiting` when `interruptible` so long
+/// evaluations yield to incoming resume/stop requests.
 pub(super) struct StopMachine<'a, 'b, P: InspectionOps> {
     pub(super) frame: &'b Frame<'a, P>,
     pub(super) budget: &'b mut InspectionBudget,

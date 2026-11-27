@@ -1,3 +1,9 @@
+//! Field orderings of CPython's `_Py_DebugOffsets` table in `.PyRuntime`,
+//! one schema per minor version starting with 3.13.
+//!
+//! Each slice matches the exact `uint64_t` layout following the 24-byte header
+//! (`"xdebugpy"` cookie, version word, and `free_threaded` flag).
+
 pub(super) const V3_13: &[&str] = &[
     "runtime_state.size",
     "runtime_state.finalizing",

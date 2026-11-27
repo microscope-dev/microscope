@@ -18,6 +18,10 @@ const isRemote = (value: unknown): value is Remote =>
 
 const isChoice = (value: unknown): value is Remote | null => value === null || isRemote(value);
 
+/**
+ * Returns the active remote server for standalone mode.
+ * Each tab keeps its own choice in `sessionStorage`, seeding new tabs from the last `localStorage` selection.
+ */
 export function remote(): Remote | null {
   if (!standalone) {
     return null;

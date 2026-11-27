@@ -1,3 +1,9 @@
+//! Dense `u32` key table indexing frames, tasks, labels, and syscalls for a `Capture`.
+//!
+//! Building `Keys` once per `Granularity` lets aggregation, filtering, and
+//! timelines operate on compact integer keys and defer string formatting until
+//! presentation.
+
 use std::borrow::Cow;
 
 use foldhash::HashMap;
@@ -7,6 +13,8 @@ use crate::CodeRole;
 use crate::capture::Capture;
 use crate::capture::records::{FrameKind, NONE, Truncation, role_of};
 
+/// `Function` expands full inline chains, whereas `PhysicalFunction` keeps only
+/// the outermost (non-inlined) frame in `frame_lines`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Granularity {
     #[default]
@@ -67,6 +75,7 @@ pub struct Keys<'a> {
     shared: std::sync::OnceLock<std::collections::HashSet<String>>,
 }
 
+/// Maps duplicate function records (e.g. from reloaded modules) to a single canonical row.
 fn canonical_functions(capture: &Capture) -> Vec<u32> {
     let mut first = HashMap::default();
     (0..)
@@ -679,6 +688,8 @@ fn labels(capture: &Capture) -> Found<'_> {
     }
 
     for spans in &mut found.spans {
+        // Place outer spans before inner spans at the same start time so `rfind`
+        // in `LabelQuery::judge` picks the innermost active label.
         spans.sort_by_key(|&(start, end, _)| (start, std::cmp::Reverse(end)));
     }
 

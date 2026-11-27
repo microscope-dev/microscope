@@ -1,3 +1,8 @@
+//! Logical memory reads and writes over `ptrace` that keep software breakpoints transparent.
+//!
+//! Reads unmask installed `0xcc` traps with their saved original bytes, and writes update
+//! `BreakpointSite::original_byte` without clobbering active traps in target memory.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use nix::unistd::Pid;
@@ -68,7 +73,8 @@ pub(super) struct LogicalMemoryRead {
 pub(super) enum MemoryAccessError {
     Inaccessible,
 
-    /// where a core dump's file-backed memory ends inside a word.
+    /// A word-aligned read hit a boundary (such as a core dump's file-backed end) where only
+    /// the leading `readable` bytes are valid.
     Partial {
         word: u64,
         readable: usize,
@@ -262,6 +268,8 @@ fn check_traps_hidden(
     }
 }
 
+/// For any byte covered by an installed trap, the new value is recorded in `original_byte`
+/// only after `write_word` succeeds, so a failed write never desyncs breakpoint state.
 pub(super) fn write_logical_memory_with(
     sites: &mut BTreeMap<VirtualAddress, BreakpointSite>,
     address: VirtualAddress,

@@ -1,3 +1,6 @@
+//! Dedicated `rayon` worker pools for debug-info loading, with per-worker CPU
+//! time accounting.
+
 use std::num::NonZeroUsize;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -64,6 +67,7 @@ impl Drop for Running {
 
 fn register_worker() {
     let tid = nix::unistd::gettid().as_raw();
+    // Linux `MAKE_THREAD_CPUCLOCK(tid, CPUCLOCK_SCHED)`: `(~tid << 3) | 6`.
     let clock = nix::time::ClockId::from_raw((!tid << 3) | 6);
     CLOCKS
         .lock()
@@ -160,6 +164,8 @@ pub fn configure(
     Ok(running)
 }
 
+/// Runs `work` on the shared loader pool, or inline if already on a `rayon`
+/// worker thread to avoid nested pool switches.
 pub(crate) fn install<R: Send>(work: impl FnOnce() -> R + Send) -> Result<R, JobsError> {
     if rayon::current_thread_index().is_some() {
         return Ok(work());
@@ -174,6 +180,8 @@ pub(crate) fn install<R: Send>(work: impl FnOnce() -> R + Send) -> Result<R, Job
     Ok(pool.install(work))
 }
 
+/// Runs small loads on a dedicated single-thread pool so they don't spin up the
+/// full worker pool or contend with large parallel loads.
 pub(crate) fn install_small<R: Send>(work: impl FnOnce() -> R + Send) -> Result<R, JobsError> {
     if rayon::current_thread_index().is_some() {
         return Ok(work());

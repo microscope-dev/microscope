@@ -1,3 +1,9 @@
+//! Interactive `rustyline` REPL loop for the CLI frontend.
+//!
+//! Blocking terminal I/O runs on a dedicated OS thread communicating with the async
+//! `Cli` loop over channels so group notices and async member-name completions work
+//! without stalling the Tokio runtime.
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
@@ -147,6 +153,8 @@ pub async fn run(cli: &Cli, confirm: bool) -> Result<()> {
     let mut outcome = Ok(());
     let mut last_repeatable = None;
 
+    // Buffer asynchronous group notices while `rustyline` owns the prompt so they
+    // don't interleave with the user's editable line; flush them as soon as input arrives.
     let mut at_prompt = true;
     let mut notices = Vec::new();
     loop {
@@ -164,31 +172,32 @@ pub async fn run(cli: &Cli, confirm: bool) -> Result<()> {
                 continue;
             }
         };
-        at_prompt = false;
-        for notice in std::mem::take(&mut notices) {
-            println!("{notice}");
-        }
-
         let next = match input {
+            Input::Members(base, reply) => {
+                let _ = reply.send(cli.member_names(&base).await);
+                continue;
+            }
             Input::Line(text, dimensions) => {
+                flush_notices(&mut at_prompt, &mut notices);
                 if let Some((columns, rows)) = dimensions {
                     cli.set_dimensions(columns, rows);
                 }
                 entered_line(cli, text.trim(), confirm, &mut last_repeatable).await
             }
             Input::Answer(answer) => {
+                flush_notices(&mut at_prompt, &mut notices);
                 if answer.trim().to_ascii_lowercase().starts_with('y') {
                     run_line(cli, "quit").await
                 } else {
                     Next::Read
                 }
             }
-            Input::Members(base, reply) => {
-                let _ = reply.send(cli.member_names(&base).await);
-                continue;
+            Input::Eof => {
+                flush_notices(&mut at_prompt, &mut notices);
+                Next::Quit
             }
-            Input::Eof => Next::Quit,
             Input::Failed(error) => {
+                flush_notices(&mut at_prompt, &mut notices);
                 outcome = Err(anyhow!(error));
                 break;
             }
@@ -221,6 +230,13 @@ pub async fn run(cli: &Cli, confirm: bool) -> Result<()> {
         .context("failed to join line editor task")?
         .map_err(|_| anyhow!("line editor thread panicked"))?;
     outcome
+}
+
+fn flush_notices(at_prompt: &mut bool, notices: &mut Vec<String>) {
+    *at_prompt = false;
+    for notice in std::mem::take(notices) {
+        println!("{notice}");
+    }
 }
 
 async fn run_line(cli: &Cli, line: &str) -> Next {

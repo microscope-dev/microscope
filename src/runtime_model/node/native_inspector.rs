@@ -1,3 +1,8 @@
+//! Out-of-process inspection of `Node.js`'s C++ inspector (`Agent` and `InspectorIoDelegate`).
+//!
+//! Reads the active loopback server endpoint and target UUID, checks startup `uv_async_t`
+//! readiness, and matches incoming or dispatched CDP messages directly in target memory.
+
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 

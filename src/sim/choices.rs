@@ -1,3 +1,8 @@
+//! Deterministic randomness partitioned into independent `Stream`s.
+//!
+//! Splitting draws by subsystem keeps schedule, client, fault, and sampling
+//! choices from perturbing each other during replay and shrinking.
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stream {
     Swarm,
@@ -70,6 +75,10 @@ struct Replay {
     drawn: Tape,
 }
 
+/// Seeded PRNG bank with optional `Tape` replay and recording.
+///
+/// When replaying, draws come from the given tape (clamped to the current bound
+/// so shrunk tapes remain valid) and fall back to the PRNG once exhausted.
 pub struct Choices {
     streams: [Xoshiro256StarStar; Stream::ALL.len()],
 

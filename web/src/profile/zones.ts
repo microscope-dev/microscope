@@ -25,6 +25,11 @@ export interface ZoneBlocks {
   offCpu: boolean;
 }
 
+/**
+ * Decodes the 64-byte/block column-major little-endian zone payload:
+ * 5 `f64` columns (`start`, `end`, `covered`, `blocked`, `preempted` = 40 bytes)
+ * followed by 6 `u32` columns (`thread`, `depth`, `name`, `zones`, `flags`, `chosen` = 24 bytes).
+ */
 export function decodeZones(answer: ProfileZones, payload: Uint8Array | undefined): ZoneBlocks {
   const count = answer.blocks;
   const bytes = payload ?? new Uint8Array();
@@ -91,6 +96,12 @@ export function indexBlocks(blocks: ZoneBlocks): BlockIndex {
   return { rows, depths };
 }
 
+/**
+ * Finds the zone block at `(thread, depth)` closest to `time` within `slack`.
+ * Binary searches for the last block with `start <= time + slack`; checking only
+ * `low - 1` and `low - 2` is sufficient because blocks in a row are non-overlapping
+ * and sorted by `start`.
+ */
 export function blockAt(
   blocks: ZoneBlocks,
   index: BlockIndex,
@@ -219,6 +230,11 @@ export function describeFlags(flags: number): string[] {
   return said;
 }
 
+/**
+ * Builds an SVG path for a decimated step plot. Each bin `[time, first, last, least, most]`
+ * holds the previous bin's `last` value horizontally, then traces `[first, least, most, last]`
+ * vertically at `x(time)` so narrow spikes are preserved after decimation.
+ */
 export function plotPath(
   bins: number[][],
   origin: number,

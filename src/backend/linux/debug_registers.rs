@@ -294,6 +294,8 @@ impl DebugRegisterPlan {
             })
     }
 
+    /// Emits `DR7 = 0` first so the kernel never validates a transient half-updated
+    /// address/length pair while reprogramming `DR0`-`DR3`.
     pub fn programming_sequence(&self) -> Vec<(usize, u64)> {
         let mut writes = vec![(CONTROL_REGISTER, 0)];
         writes.extend(

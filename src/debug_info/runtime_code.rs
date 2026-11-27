@@ -1,3 +1,9 @@
+//! Unwinder for dynamically generated `x86_64` runtime code without DWARF CFI.
+//!
+//! Assumes frame-pointer chaining (`RBP`) by default, and inspects a small window
+//! around the current PC to handle the prologue (`push rbp; mov rbp, rsp`) and
+//! `ret` instructions where `RBP` does not yet (or no longer) point to the frame.
+
 use std::path::Path;
 use std::sync::Arc;
 
@@ -90,6 +96,9 @@ fn frame(address: VirtualAddress, memory: &mut dyn MemoryReader) -> CodeFrame {
 
 fn frame_at(bytes: &[u8], start: u64, address: u64) -> Option<CodeFrame> {
     let at = usize::try_from(address - start).ok()?;
+    // Unwinding a caller passes `return_address - 1` (the last byte of the `call`).
+    // If bytes ending at `address` decode as a `call`, we are mid-frame and must not
+    // misread the call's displacement byte as a `ret` or `push rbp`.
     let ends_call = (2..=7).any(|length: usize| {
         let Some(from) = (at + 1).checked_sub(length) else {
             return false;

@@ -1,3 +1,8 @@
+//! Shared multi-client web debug session.
+//!
+//! Coordinates the active target (single debugger or process group), broadcasts output
+//! and state snapshots to all connected tabs, and enforces `Role::Control` on mutations.
+
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsString;
 use std::fmt::Write as _;
@@ -189,6 +194,8 @@ struct Target {
     settings: Arc<AtomicU64>,
 }
 
+/// Feeds debuggee `stdin` on a dedicated task so `INPUT_WAIT` timeouts never
+/// cancel a partial write and target teardown aborts any blocked `write_all`.
 struct Input {
     queue: mpsc::Sender<protocol::Input>,
 

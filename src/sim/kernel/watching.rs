@@ -1,3 +1,8 @@
+//! Kernel-side ground truth for watched memory ranges (`Watching`).
+//!
+//! Records every matching CPU load/store and checks whether hardware debug
+//! registers actually fired, catching missed watchpoints or unnotified resumes.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::Tid;

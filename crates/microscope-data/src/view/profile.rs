@@ -64,6 +64,11 @@ pub(super) fn resolve_view(
     Ok(resolved)
 }
 
+/// Resolves user-facing query names and relative timestamps into an `analysis::Query`.
+///
+/// When `base` is `true` (resolving the baseline side of a diff), missing
+/// transform targets are tolerated: `Focus` maps to `Focus(NONE)` so the base
+/// side yields an empty tree instead of failing the diff.
 fn resolve_in(
     capture: &Capture,
     keys: &Keys<'_>,
@@ -469,6 +474,10 @@ fn zone_sites(capture: &Capture) -> Vec<ProfileZoneSite> {
     sites
 }
 
+/// Builds the `profileTree` JSON header and packed little-endian binary columns.
+///
+/// Binary layout: `own: [f64]`, `total: [f64]`, `key: [u32]`, `depth: [u32]`,
+/// followed by `base_own: [f64]` and `base_total: [f64]` when diffing.
 pub(super) fn tree(
     view: &CaptureView,
     query: &ProfileQuery,
@@ -828,6 +837,11 @@ fn zone_name(capture: &Capture, site: u32, value: u32) -> String {
     }
 }
 
+/// Builds the `profileZones` JSON header and packed little-endian binary block columns.
+///
+/// Binary layout: five `f64` columns (`start`, `end`, `covered`, `blocked`,
+/// `preempted`) followed by six `u32` columns (`thread`, `depth`, `name`,
+/// `count`, `flags`, `chosen`).
 #[expect(
     clippy::too_many_lines,
     reason = "packs zone columns, markers, and plot series into one response"

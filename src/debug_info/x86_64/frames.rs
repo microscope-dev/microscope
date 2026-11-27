@@ -1,3 +1,8 @@
+//! Sound `x86_64` static stack-frame analysis for code without DWARF CFI.
+//!
+//! Tracks `RSP` and `RBP` across control flow to prove unwind rules for JIT
+//! functions, stripped runtime stubs, `_start`, and libc `clone` wrappers.
+
 use std::collections::BTreeSet;
 
 use iced_x86::{
@@ -12,18 +17,21 @@ use crate::{AddressRange, ImageAddress, UnwindTermination, VirtualAddress};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::debug_info) enum CodeFrame {
+    /// CFA is `RSP + pushed + 8`.
     Stack {
         pushed: u64,
         caller_frame_pointer: CallerFramePointer,
     },
 
-    /// address. Standard code saves it right below the return address, 16
+    /// CFA is `RBP + offset`, with the caller's `RBP` saved at `[RBP]`.
+    /// Standard prologues save `RBP` right below the return address (`offset == 16`).
     Based { offset: u64, below: Below },
 
-    /// has no caller.
+    /// Outermost frame (e.g. `_start` or a new thread's entry); has no caller.
     Outermost,
 
-    /// musl's `__clone` to its branch to the new thread's code, which both
+    /// Inside `clone`/`clone3` from `syscall` onward: the child (`RAX == 0`) has
+    /// no caller, while the parent unwinds normally via `RSP`.
     Clone,
 }
 
@@ -57,6 +65,11 @@ enum Next {
 }
 
 impl CodeFrames {
+    /// Proves per-instruction unwind rules via a barrier fixpoint walk.
+    ///
+    /// If two paths reach an offset with different `CodeFrame` states, that
+    /// offset is added to `barriers` and the walk repeats so conflicting states
+    /// never propagate to downstream instructions.
     pub(in crate::debug_info) fn analyze(code: &[u8]) -> Self {
         let mut barriers = BTreeSet::new();
         let found = loop {
@@ -524,6 +537,8 @@ pub(in crate::debug_info) fn entry_frame(
     None
 }
 
+/// Recognizes glibc's `clone`/`clone3` `syscall` return sequence where the child
+/// (`RAX == 0`) branches to thread startup and has no caller frame.
 pub(in crate::debug_info) fn clone_return(
     code: &[u8],
     address: u64,

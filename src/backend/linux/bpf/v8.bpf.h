@@ -1,16 +1,6 @@
-
-
-
-
-
-
-
-
-
-
-
-
-
+// In-kernel V8 frame-pointer walker shared by `sampler.bpf.c` and `syscalls.bpf.c`.
+// Validates JS frames by chasing tagged HeapObject -> Map -> instance_type chains so native
+// C++ frames along the same `rbp` chain are skipped without corrupting output.
 #pragma once
 
 #include "records.h"

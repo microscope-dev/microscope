@@ -16,6 +16,11 @@ type Run =
 
 const NAME = /^[A-Za-z_$][\w$]*$/u;
 
+/**
+ * Flattens decoded visualizer inputs into a run-encoded virtual table.
+ * `TypedArray` runs stay unexpanded and are indexed by binary search over `starts`,
+ * allowing large numeric arrays to scroll in O(log runs) without materializing every row.
+ */
 export function inputRows(inputs: Record<string, Value>): InputRows {
   const runs: Run[] = [];
   for (const [name, value] of Object.entries(inputs)) {
@@ -76,6 +81,7 @@ function text(value: null | boolean | number | bigint): string {
   return String(value);
 }
 
+/** Finds the shortest decimal representation that round-trips through f32 so f32->f64 noise (e.g. 0.10000000149011612) is hidden. */
 function float32(value: number): string {
   if (Number.isFinite(value) && !Object.is(value, -0)) {
     for (let digits = 1; digits <= 9; digits++) {

@@ -1,3 +1,9 @@
+//! ELF symbol, section, GOT/PLT, and thread-local storage extraction.
+//!
+//! Merges static `.symtab`, separate debug symbols, `.gnu_debugdata` (`xz`-compressed
+//! mini debug info), and `.dynsym` (with GNU symbol versioning), and infers symbol
+//! extents from unwind tables when `st_size` is absent.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::sync::Arc;
@@ -93,6 +99,11 @@ pub fn load_symbols(
     }
 }
 
+/// Maps `STT_TLS` symbol names to their x86-64 thread-local storage location.
+///
+/// Prefers `R_X86_64_TPOFF64` GOT slots when present; otherwise computes the
+/// static negative TP offset (`offset - aligned_tls_block_size`) for executables
+/// or a dynamic module-relative offset for shared libraries.
 pub fn load_thread_locals(
     object: &object::File<'_>,
 ) -> BTreeMap<Arc<str>, Result<ThreadLocal, Arc<str>>> {
@@ -207,6 +218,8 @@ pub fn load_thread_locals(
         .collect()
 }
 
+/// Decodes a compiler-emitted x86-64 TLS accessor function (GD, LD, IE, or LE)
+/// into the `ThreadLocal` descriptor it reads.
 pub fn accessor_thread_local(
     object: &object::File<'_>,
     address: u64,
@@ -285,6 +298,9 @@ fn tls_access(
             return Err("the accessor's lea names no module and offset pair".into());
         }
         let at = usize::try_from(first.ip() - address).unwrap_or(usize::MAX);
+        // General Dynamic starts with a `0x66` operand-size prefix (`data16 lea`)
+        // and stores the offset in the second word of the GOT pair; Local Dynamic
+        // omits `0x66` and indexes off the module base returned in `RAX`.
         if bytes.get(at) == Some(&0x66) {
             let offset = dynamic_pair_offset(object, relocations, pair + 8)?;
             return Ok(TlsAccess::Found(ThreadLocal::Dynamic(offset)));

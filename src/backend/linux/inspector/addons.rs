@@ -1,3 +1,6 @@
+//! Plants a native breakpoint on V8's addon entry trampoline during `StepKind::IntoSource`
+//! so stepping into a native addon hands off to `ptrace` and stepping back out returns to V8.
+
 use std::sync::Arc;
 
 use nix::unistd::Pid;

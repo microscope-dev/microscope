@@ -1,3 +1,10 @@
+//! Shared simulation state (`Machine`) bridging `World` and the debugger's
+//! `Preemption` hook.
+//!
+//! Implementing `Preemption::before_call` lets simulated threads and ptrace
+//! waiters run between consecutive kernel calls inside a single controller
+//! handler, exposing races against concurrent thread progress or `SIGKILL`.
+
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::fmt::Write as _;

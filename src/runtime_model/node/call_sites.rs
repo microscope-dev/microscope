@@ -1,3 +1,8 @@
+//! Formats `Error.prototype.stack` out of process from V8's internal `CallSiteInfo` array.
+//!
+//! Matches `Node.js` stack-trace formatting without executing guest code, and refuses if
+//! `CallSite.prototype.toString` has been replaced by user code.
+
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 

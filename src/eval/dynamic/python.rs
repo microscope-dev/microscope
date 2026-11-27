@@ -212,6 +212,9 @@ fn true_divide(left: Exact, right: Exact) -> f64 {
     }
 }
 
+/// Computes `dividend / divisor` as a correctly rounded `f64` via binary long
+/// division to 55 bits (`f64::MANTISSA_DIGITS + 2`) plus a sticky bit, avoiding
+/// both double rounding and `u128` shift overflow (`dividend << 55`).
 fn quotient(dividend: u128, divisor: u128) -> f64 {
     if dividend == 0 || divisor == 0 {
         return 0.0;

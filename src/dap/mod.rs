@@ -148,6 +148,8 @@ pub fn termination() -> Result<impl Future<Output = ()>> {
 
 async fn serve_stdio(log: Log) -> Result<()> {
     let stop = termination()?;
+    // Reserve the real stdout fd for DAP frames and redirect stdout/stderr into a pipe
+    // forwarded as `console` output events so stray prints cannot corrupt the wire stream.
     let protocol_out = nix::unistd::dup(std::io::stdout()).context("failed to duplicate stdout")?;
     let (console_read, console_write) = output::pipe().context("failed to create a pipe")?;
     nix::unistd::dup2_stdout(&console_write).context("failed to redirect stdout")?;
@@ -284,6 +286,7 @@ async fn read_frames<R: AsyncBufRead + Unpin>(
             }
         };
 
+        // Drop browser-initiated cross-origin connections (e.g. DNS rebinding against TCP).
         if frame.origin {
             log.record("!!", "refused a message with an Origin header");
             return;
@@ -296,6 +299,8 @@ async fn read_frames<R: AsyncBufRead + Unpin>(
                 command,
                 arguments,
             }) => {
+                // Record cancellations immediately on the reader task so queued or slow
+                // requests see them before the session loop drains `inbound`.
                 if command == "cancel"
                     && let Some(request) = arguments.get("requestId").filter(|id| !id.is_null())
                     && request
@@ -357,6 +362,8 @@ async fn write_messages<W: AsyncWrite + Unpin>(
 
     while let Some(message) = messages.recv().await {
         seq += 1;
+        // Register the wire `seq` before writing so a fast reply on the reader task
+        // can always find and settle the waiting reverse-request caller.
         if let Outgoing::Request { ticket, .. } = &message
             && let Ok(mut responses) = responses.lock()
         {

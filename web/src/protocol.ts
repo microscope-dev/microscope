@@ -8,6 +8,11 @@ export type Method = P.Request["method"];
 export type ParamsOf<M extends Method> =
   Extract<P.Request, { method: M }> extends { params: infer T } ? T : undefined;
 
+/**
+ * Maps each RPC method to its decoded result type.
+ * Methods that arrive with a preceding binary WebSocket frame carry `payload?: Uint8Array`,
+ * spliced on by `Connection`.
+ */
 export interface Results {
   setName: null;
   share: P.ShareLink;
@@ -89,6 +94,7 @@ export interface Results {
   shareProfile: P.SharedProfile;
 }
 
+// Compile-time exhaustiveness check: fails if `protocol.gen.ts` adds or removes a method without updating `Results`.
 type Exactly<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 const resultsCoverEveryMethod: Exactly<keyof Results, Method> = true;
 void resultsCoverEveryMethod;

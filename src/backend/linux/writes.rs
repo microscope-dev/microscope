@@ -31,6 +31,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         self.write_memory_as(pid, address, bytes)
     }
 
+    /// Applies runtime-computed patches only after verifying every `expected` byte slice
+    /// still matches logical memory, so a stale runtime plan never corrupts modified bytes.
     pub(super) fn write_for_runtime(
         &mut self,
         writes: &[RuntimeWrite],

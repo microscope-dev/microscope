@@ -1,3 +1,7 @@
+//! Decodes V8 `SourcePositionTable` byte arrays into `(code_offset, position)` entries.
+//!
+//! Supports both the pre-V8-14 signed-statement zigzag encoding and the V8 14+ flag-bits encoding.
+
 use super::objects::{Object, Problem, Reader};
 use crate::image::v8::{Constant, Field, V8Version};
 

@@ -12,6 +12,10 @@ pub const MAX_INSPECTION_LIMITS: InspectionLimits = InspectionLimits {
     expression_work: 10_240_000,
 };
 
+/// Multi-resource reservations are atomic (all checked before any counter is
+/// incremented). Exhaustion is sticky for normal reservations
+/// (`consume_memory_up_to` does not latch it), so subsequent calls report the
+/// first limit hit.
 #[derive(Debug)]
 pub struct InspectionBudget {
     limits: InspectionLimits,
@@ -74,6 +78,8 @@ impl InspectionBudget {
             .saturating_sub(self.usage.memory_bytes)
     }
 
+    /// Carves out a sub-budget with a quarter of each remaining consumable
+    /// quota while keeping `remaining.aggregate_depth`.
     pub fn share(&self) -> Self {
         let remaining = self.limits.remaining_after(self.usage);
         let quarter = |value: u64| value / 4;

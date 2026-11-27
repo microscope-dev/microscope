@@ -1,3 +1,6 @@
+//! Columnar table codecs bridging `Capture`/`ChunkData` and `SectionWriter`/
+//! `SectionReader`, plus chunk merging, time rounding, and decode-budget checks.
+
 mod decode;
 mod decode_syscalls;
 mod encode_core;
@@ -84,6 +87,9 @@ impl ChunkData {
     }
 }
 
+/// Fast conservative upper-bound check that `sections` will decode within
+/// `budget_limit`, falling back to an actual budgeted decode only when the
+/// estimate exceeds the limit.
 #[expect(
     clippy::too_many_lines,
     reason = "sums every capture table footprint for fast O(1) decode budget verification"
@@ -203,6 +209,8 @@ pub fn verify_chunk_decode_budget(
     Ok(())
 }
 
+/// Maps `Capture` byte-offset string IDs to dense 1-based indices (`0` = `NONE`)
+/// for compact delta/varint column encoding.
 pub struct StringEncodeMap {
     offset_to_id: HashMap<u32, u32>,
     count: u32,

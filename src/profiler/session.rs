@@ -1,3 +1,7 @@
+//! Orchestrates live recording sessions (launched, single-PID, and multi-PID),
+//! wiring together `perf`, optional BPF interpreter walkers, in-process probe
+//! collection, and syscall tracing.
+
 use std::os::fd::{AsFd, BorrowedFd};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
@@ -470,6 +474,8 @@ fn record_attached_many_mode(
     })
 }
 
+/// Shares the walker's BPF thinning filter when present (`perf` allows only one
+/// BPF program per event fd), or attaches a standalone `Thin` program.
 fn thinned(
     walker: Option<&mut Walker>,
     events: &perf::Events,
@@ -496,6 +502,9 @@ const WALK_REFRESH: Duration = Duration::from_millis(20);
 
 const WALK_RECHECK: Duration = Duration::from_secs(1);
 
+/// Manages the BPF interpreter stack walker (Python and V8). Binary layouts are
+/// pushed once; per-thread TLS and isolate pointers refresh with exponential
+/// backoff (`WALK_REFRESH`..`WALK_RECHECK`) while the thread set is quiet.
 struct Walker {
     sampler: Sampler,
     next: std::time::Instant,
@@ -625,6 +634,8 @@ impl Walker {
         }
     }
 
+    /// Pushes the `V8` struct layout to BPF before the launched process runs so
+    /// samples taken before the first `mmap` drain can still be walked.
     fn lay_out_before(&mut self, processor: &mut record::Processor, pid: u32, program: &Path) {
         let Some(path) = which(program).and_then(|path| std::fs::canonicalize(path).ok()) else {
             return;

@@ -1,3 +1,7 @@
+//! Access tokens, per-port `HttpOnly` cookies, and `Host`/`Origin` validation.
+//!
+//! Protects local and proxied `microscope web` instances against CSRF and DNS rebinding.
+
 use std::fmt::Write as _;
 use std::io::Read as _;
 use std::net::SocketAddr;
@@ -43,6 +47,7 @@ impl Tokens {
     }
 }
 
+/// Constant-time comparison to avoid leaking token prefixes via timing.
 fn same(a: &str, b: &str) -> bool {
     a.len() == b.len()
         && a.bytes()
@@ -60,6 +65,7 @@ pub fn random_hex(bytes: usize) -> std::io::Result<String> {
     }))
 }
 
+/// Scopes the cookie name by port so concurrent local servers do not overwrite each other.
 pub fn cookie_name(port: u16) -> String {
     format!("microscope-{port}")
 }
@@ -156,6 +162,10 @@ pub fn cookie(header: &str, port: u16) -> Option<&str> {
     })
 }
 
+/// Allowed `Host` and `Origin` pairs derived from the bind address and `--public-url`.
+///
+/// Wildcard binds (`0.0.0.0`, `[::]`) allow any IP literal on the listening port plus the
+/// machine's hostname, while rejecting arbitrary domains to block DNS rebinding.
 pub struct Origins {
     hosts: Vec<String>,
 

@@ -1,3 +1,9 @@
+//! Execution control for `CPython`: agent injection, command-slot updates, and request retirement.
+//!
+//! `CPython` 3.14+ injects requests directly into an eligible thread via PEP 768; 3.12 and 3.13
+//! rely on a pre-bootstrapped agent thread. Once loaded, configuration updates are written into
+//! the hook library's shared control page instead of re-injecting scripts.
+
 use std::sync::Arc;
 
 use super::{PythonRuntime, agent, exceptions, frames, hook, injection, objects, threads, values};
@@ -518,6 +524,8 @@ pub(super) fn command(
         })?;
     let mut writes = Vec::new();
 
+    // Write payload and length before updating the generation word so the
+    // in-process sequence reader only observes a fully written command.
     for (offset, bytes) in [
         (hook::CONTROL_HEADER as u64, payload),
         (16, length.to_le_bytes().to_vec()),
@@ -581,6 +589,8 @@ pub(super) fn ticket(
     })
 }
 
+/// Tracks a pending PEP 768 injection so it can be verified and cleared safely on cancellation
+/// or completion without clobbering a recycled thread state or another tool's request.
 #[derive(Debug)]
 struct Ticket {
     layout: PythonLayout,

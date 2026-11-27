@@ -1,3 +1,8 @@
+//! `ValueGraph` intermediate representation for rendering V8 values in `Node.js` `util.inspect` style.
+//!
+//! Decouples budgeted target-memory reading from formatting so cycles, UTF-16 strings, and
+//! `Node.js` release differences are formatted purely in memory.
+
 mod error;
 mod format;
 mod text;
@@ -275,10 +280,7 @@ pub enum FunctionKind {
     Async,
     Generator,
     AsyncGenerator,
-    Class {
-        /// for a base class, whose prototype is `Function.prototype`.
-        extends: Value,
-    },
+    Class { extends: Value },
 }
 
 #[derive(Debug, Clone, PartialEq)]

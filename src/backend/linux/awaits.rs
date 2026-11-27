@@ -1,3 +1,6 @@
+//! Async-aware stepping that follows a Rust future across `.await` suspension
+//! points, task rescheduling, inlined coroutine bodies, and future drops.
+
 use crate::backend::linux::Registers;
 use std::collections::BTreeSet;
 
@@ -644,6 +647,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
+    /// Handles a future's `poll` return: arms waiting, drop-glue, and task lifecycle breakpoints on
+    /// `Pending`, or ends the step with `StopReason::TaskEnded` on `Ready`.
     pub(super) fn follow_poll_return(
         &mut self,
         pid: Pid,

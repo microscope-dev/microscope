@@ -88,6 +88,8 @@ pub fn save_to(path: &Path, creds: &Credentials) -> anyhow::Result<()> {
     let Some(dir) = path.parent() else {
         anyhow::bail!("credentials path has no parent directory");
     };
+    // Only restrict permissions if we created the directory ourselves; leave
+    // pre-existing shared directories (e.g. `~/.config/microscope`) untouched.
     let dir_existed = dir.exists();
     fs::create_dir_all(dir)?;
     if !dir_existed {

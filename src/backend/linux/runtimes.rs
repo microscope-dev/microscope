@@ -151,6 +151,7 @@ impl<P: InspectionOps> ProcessStop<'_, P> {
 }
 
 fn blocked_futex(registers: &Registers) -> Option<u64> {
+    // EINTR, ERESTARTSYS, ERESTARTNOINTR, ERESTARTNOHAND, ERESTART_RESTARTBLOCK.
     const INTERRUPTED: [i64; 5] = [-4, -512, -513, -514, -516];
     let [address, ..] = registers.syscall_arguments(NATIVE_AUDIT_ARCH);
     (registers.syscall_number() == nix::libc::SYS_futex.cast_unsigned()

@@ -1,3 +1,8 @@
+//! `CPython` runtime model for stack unwinding, value inspection, `asyncio` tasks, and execution control.
+//!
+//! Reads interpreter state out-of-process using versioned struct layouts, and pairs that with an
+//! in-process `sys.monitoring` agent for breakpoints, stepping, exceptions, and variable assignment.
+
 mod agent;
 mod asyncio;
 mod code;
@@ -377,6 +382,8 @@ impl Reading {
         })
     }
 
+    /// Walks Python stacks, retrying live reads against a running process with page prefetching
+    /// so partially-read or torn thread stacks can converge on a complete snapshot.
     fn stacks(&self, stop: &dyn RuntimeStop, version: PyVersion) -> Partial<InterpretedStacks> {
         if !stop.runs() {
             return self.stacks_from(stop, version, None, None);

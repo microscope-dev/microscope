@@ -1,3 +1,9 @@
+//! Maps `ExecutionContext`s (OS threads and runtime tasks) to 32-bit DAP thread IDs.
+//!
+//! Direct OS thread IDs and task numbers in `1..ALLOCATED` (`2^30`) keep their
+//! own numeric values when free; `0`, collisions, wider task IDs, and the
+//! truncation placeholder are allocated monotonically in `[ALLOCATED, i32::MAX]`.
+
 use std::collections::HashMap;
 
 use microscope::{ExecutionContext, ThreadId};

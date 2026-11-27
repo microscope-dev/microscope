@@ -33,6 +33,8 @@ fn monotonic_ns() -> i64 {
     })
 }
 
+/// Samples `(wall_ns, wall_ns - mono_ns)` by bracketing wall-clock time between
+/// two `CLOCK_MONOTONIC` reads and using their midpoint to minimize skew.
 pub fn wall_clock_reference() -> (i64, i64) {
     let mono_before = monotonic_ns();
     let wall = unix_now_ns();

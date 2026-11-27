@@ -1,3 +1,9 @@
+//! Oracle for BPF syscall tracepoint encoding and statistics
+//! folding.
+//!
+//! Feeds every `Served` syscall through `bpf::encode_call`/`bpf::decode` and
+//! models fixed-capacity per-thread maps spilling into per-CPU fallback maps.
+
 use std::collections::BTreeMap;
 
 use super::kernel::syscalls::Served;

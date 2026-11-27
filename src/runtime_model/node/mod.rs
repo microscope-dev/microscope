@@ -1,3 +1,9 @@
+//! `Node.js` and V8 runtime model for stack unwinding, value inspection, async await chains,
+//! `libuv` tasks, and native inspector coordination.
+//!
+//! Reads V8 heap and stack state out of process via versioned layouts, and integrates with
+//! `Node.js`'s built-in inspector for breakpoints, stepping, and local-name recovery.
+
 mod access;
 mod awaits;
 mod call_sites;
@@ -201,6 +207,8 @@ struct Statics {
     awaits: Result<awaits::Builtins, Arc<str>>,
 }
 
+/// Validates the static V8 builtin numbering table against the binary's sorted `Builtins_*`
+/// symbols so async resume closures are only matched when builtin IDs are proven to agree.
 fn await_builtins(
     image: &(dyn RuntimeImage + Send + Sync),
     version: V8Version,

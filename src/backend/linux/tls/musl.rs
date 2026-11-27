@@ -1,3 +1,8 @@
+//! `musl` `TLS` address resolution via the `TCB`'s `DTV` pointer (`%fs:8`).
+//!
+//! In `musl`, `dtv[0]` stores the number of allocated module slots and `dtv[1..]` store
+//! per-module `TLS` block bases indexed by 1-based module ID.
+
 use std::num::NonZeroU64;
 
 use nix::unistd::Pid;

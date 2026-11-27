@@ -1,3 +1,7 @@
+//! Frames on a movable runtime task stack are recorded as offsets below the stack top
+//! rather than raw addresses, so step-over and step-out comparisons remain valid even if
+//! the runtime reallocates the stack or migrates the task to another OS thread.
+
 use nix::unistd::Pid;
 
 use crate::{TaskId, VirtualAddress};

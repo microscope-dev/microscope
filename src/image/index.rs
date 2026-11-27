@@ -7,6 +7,11 @@ use super::SharedRecord;
 use super::strings::{StrId, Strings};
 use crate::{AddressRange, ImageAddress};
 
+/// Half-open `[start, end)` address interval augmented with `prefix_max_end`.
+///
+/// Intervals are sorted by `(start, end, value)`. Storing the running maximum
+/// of `end` lets [`containing`] scan backward from `start <= address` and stop
+/// as soon as `prefix_max_end <= address`.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -87,6 +92,10 @@ pub(super) fn valid_intervals(intervals: &[Interval], values: usize) -> bool {
     })
 }
 
+/// Hash-indexed name-to-row mapping sorted by `(hash, value, name)`.
+///
+/// [`named`] binary-searches by the 32-bit `XxHash3_64` prefix and then checks
+/// exact string bytes in the string pool to filter hash collisions.
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,

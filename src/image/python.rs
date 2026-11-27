@@ -1,3 +1,9 @@
+//! Cached CPython runtime metadata (version, flags, `_PyRuntime` range, and struct layouts).
+//!
+//! Offsets and constants are extracted once from `.PyRuntime`'s `_Py_DebugOffsets`
+//! or pre-generated layouts and stored in [`PythonRuntimeRecord`] so the Python
+//! runtime model can inspect interpreter state without re-parsing debug info.
+
 use zerocopy::little_endian::{U16, U32, U64};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 

@@ -1,3 +1,9 @@
+//! Go declaration-line variable visibility filtering.
+//!
+//! Go omits `DW_AT_start_scope` on locals (scoping each to its whole enclosing
+//! block), so locals are hidden until execution advances past their declaration
+//! line (using the inlined call site when stopped inside an inlined callee).
+
 use crate::image::Image;
 use crate::image::functions::FunctionView;
 use crate::image::lines::LineView;

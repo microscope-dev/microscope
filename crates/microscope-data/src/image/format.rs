@@ -1,14 +1,25 @@
+//! Wire layout of the `USCOPEIM` image header, table directory, and trailer.
+
 use zerocopy::little_endian::{U32, U64};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 pub const MAGIC: [u8; 8] = *b"USCOPEIM";
 
+/// Outer container framing version; bump only when `Header`, `DirectoryEntry`,
+/// or `Trailer` layout changes.
 pub const FORMAT_VERSION: u32 = 1;
 
+/// Semantic normalization revision; bump when indexer output changes for the
+/// same input binary even if table record layouts stay identical.
 pub const NORMALIZATION_REVISION: u32 = 24;
 
 pub const TABLE_ALIGNMENT: usize = 64;
 
+/// Fixed 64-byte container header.
+///
+/// Compatibility is gated by three orthogonal checks: `format` (container
+/// framing), `normalization` (semantic rules), and `layout` (a structural
+/// fingerprint of record sizes so schema drift invalidates caches automatically).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned)]
 pub struct Header {

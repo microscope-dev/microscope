@@ -71,6 +71,7 @@ export function reopenTab(kinds: Kinds<string>): boolean {
     const opened = open(restoreLinks(before, entry.links), entry.pane, into);
 
     const at = groupOf(opened.layout, opened.pane)?.tabs.indexOf(opened.pane) ?? 0;
+    // `move` uses pre-removal indices and shifts left by 1 when moving forward in the same group.
     const slot = at < entry.index ? entry.index + 1 : entry.index;
     return move(opened.layout, opened.pane, { type: "tab", group: into, index: slot });
   });

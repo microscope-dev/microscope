@@ -1,3 +1,8 @@
+//! Explicit byte-layout registry for every [`TableKind`].
+//!
+//! [`layout_fingerprint`] hashes this table into the image header so any
+//! record size or field offset change automatically invalidates cached images.
+
 use std::sync::OnceLock;
 
 use super::format::{self, TableKind};

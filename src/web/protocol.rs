@@ -1,3 +1,8 @@
+//! Wire protocol types for the web `WebSocket` API.
+//!
+//! Under `cfg(test)`, types derive `ts_rs::TS` to keep the TypeScript frontend
+//! definitions in sync with the Rust schema.
+
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -726,7 +731,7 @@ pub enum ServerMessage {
     /// Something another participant did.
     Notice(Notice),
 
-    /// they change.
+    /// Available profiles when they change.
     Profiles(ProfileList),
 }
 

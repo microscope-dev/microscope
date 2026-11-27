@@ -1,3 +1,6 @@
+//! Shared binary formats, capture tables, columnar object containers, and
+//! sanitization used across the recorder, debugger, and analysis layers.
+
 pub mod analysis;
 pub mod capture;
 pub mod image;

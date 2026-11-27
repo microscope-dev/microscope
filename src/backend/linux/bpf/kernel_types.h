@@ -1,7 +1,5 @@
-
-
-
-
+// Minimal CO-RE kernel struct definitions (`preserve_access_index`) so BPF programs compile
+// without a full `vmlinux.h` and relocate cleanly against the running kernel's BTF.
 #pragma once
 
 #include "records.h"

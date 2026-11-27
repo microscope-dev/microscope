@@ -1,3 +1,6 @@
+//! Synchronized child launch (`Gate`) that parks a forked process before `exec` over a pipe
+//! pair so the tracer can attach or install filters before the target runs.
+
 use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::process::{Command, ExitStatus};
 use std::sync::mpsc;
@@ -63,6 +66,8 @@ pub fn launch(mut command: Command, options: GateOptions) -> std::io::Result<Gat
     );
     let (hold, released) = mpsc::channel::<()>();
     let reap = options.reap;
+    // Keep the spawner thread alive until released: Linux PR_SET_PDEATHSIG fires when
+    // the forking OS thread exits, not when the process exits.
     let spawner = std::thread::Builder::new()
         .name("microscope-syscalls-child".into())
         .spawn(move || {

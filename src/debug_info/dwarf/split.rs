@@ -1,3 +1,5 @@
+//! Split DWARF (`.dwo`) discovery, cache fingerprinting, and unit loading.
+
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
@@ -7,6 +9,11 @@ use rayon::prelude::*;
 
 use super::{Reader, Sections, text};
 
+/// Main `gimli::Dwarf` paired with any loaded `.dwo` split-unit sections.
+///
+/// `split_of` maps a `gimli::Unit` back to its owning `.dwo` by binary-searching
+/// which `.debug_info.dwo` slice's host pointer range (`as_ptr_range`) contains
+/// the unit's root DIE.
 pub(in crate::debug_info) struct DwarfSet<'data> {
     main: gimli::Dwarf<Reader<'data>>,
 

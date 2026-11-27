@@ -1,3 +1,9 @@
+//! PEP 768 remote-debugging injection planning for `CPython` 3.14+.
+//!
+//! Validates that the runtime is initialized, not finalizing, single-interpreter, and has
+//! non-overlapping debug control fields before emitting the three ordered writes: script path,
+//! pending flag, and `eval_breaker` bit.
+
 use std::cell::Cell;
 use std::sync::Arc;
 

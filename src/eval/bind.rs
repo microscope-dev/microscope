@@ -1,3 +1,9 @@
+//! Name resolution, type checking, and lowering from syntax trees to [`Program`].
+//!
+//! Resolves C-cast ambiguities against [`Scope`], splits dotted names between
+//! scope lookups and member accesses, inserts explicit loads/conversions, and
+//! enforces read-only vs assignment [`Mode`].
+
 use std::sync::Arc;
 
 use super::error::{ErrorKind, ExpressionError};
@@ -474,6 +480,8 @@ impl<'a, S: Scope> Binder<'a, S> {
         }
     }
 
+    /// Peels single-field wrapper structs (ignoring zero-sized fields like
+    /// `PhantomData`) so views can reach through Rust newtypes/wrappers.
     fn inner(&mut self, mut node: Bound<S>, span: Span) -> BindResult<S> {
         for _ in 0..MAX_INNER_STEPS {
             node = self.settle(node)?;

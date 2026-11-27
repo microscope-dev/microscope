@@ -1,3 +1,5 @@
+//! ABI-based return-value capture at function exit (`GoRegisters` and `SystemV` `x86_64`).
+
 use std::sync::Arc;
 
 use crate::debug_info::{Located, ReturnedValue, VariableRuntime};
@@ -95,6 +97,8 @@ impl DwarfVariableInfo {
 
         let results = own(VariableKind::Result).collect::<Vec<_>>();
 
+        // Go's register ABI places stack-spilled results immediately after
+        // stack-spilled arguments, aligned to a word boundary.
         let mut arguments = Assignment::default();
 
         for parameter in own(VariableKind::Parameter) {

@@ -1,3 +1,8 @@
+//! Decodes `CPython` 3.11+ `co_linetable` bytecode-offset-to-line mappings (PEP 626).
+//!
+//! Entries encode 2-byte `CODE_UNIT` runs using 6-bit continuation varints and 4-bit location
+//! kinds (0–9 short, 10–12 one-line, 13 no-column, 14 long, 15 no-location).
+
 pub(super) const CODE_UNIT: u64 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

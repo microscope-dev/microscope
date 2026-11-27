@@ -1,3 +1,6 @@
+//! Per-key serialization gate used to prevent duplicate concurrent loads of the
+//! same binary before the first load populates the cache.
+
 use std::collections::HashSet;
 use std::hash::Hash;
 use std::sync::PoisonError;

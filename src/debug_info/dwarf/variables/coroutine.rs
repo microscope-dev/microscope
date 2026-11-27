@@ -1,3 +1,8 @@
+//! Runtime state inspection and stale-variable filtering for Rust `async` coroutines.
+//!
+//! Reads the active coroutine's `__state` discriminant to identify suspend points
+//! and suppresses locals declared before an `await` that were not saved across it.
+
 #[cfg(target_arch = "x86_64")]
 use rayon::prelude::*;
 

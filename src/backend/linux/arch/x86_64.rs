@@ -210,6 +210,7 @@ impl Registers {
         self.0.orig_rax
     }
 
+    /// Identifies 32-bit compat syscalls (`AUDIT_ARCH_I386`) from the `__USER32_CS` segment (`0x23`).
     pub(in crate::backend::linux) const fn syscall_audit_arch(&self) -> u32 {
         const COMPAT_CODE_SEGMENT: u64 = 0x23;
         if self.0.cs == COMPAT_CODE_SEGMENT {
@@ -240,10 +241,12 @@ impl Registers {
         self.0.rax
     }
 
+    /// Clears `orig_rax` to `-1` so the kernel will not auto-restart an interrupted syscall on resume.
     pub(in crate::backend::linux) const fn cancel_syscall_restart(&mut self) {
         self.0.orig_rax = u64::MAX;
     }
 
+    /// `orig_rax` is set to `-1` so a signal arriving before entry cannot trigger syscall restart.
     pub(in crate::backend::linux) const fn prepare_syscall(
         &mut self,
         number: libc::c_long,
@@ -263,6 +266,7 @@ impl Registers {
         self.0.rip == at.get().wrapping_add(SYSCALL_INSTRUCTION.len() as u64)
     }
 
+    /// Returns true if the kernel stopped inside a syscall that will rewind `rip` and restart on resume.
     pub(in crate::backend::linux) const fn restarts_call(&self) -> bool {
         const ERESTARTSYS: i64 = 512;
         const ERESTARTNOINTR: i64 = 513;
@@ -289,6 +293,7 @@ impl Registers {
         registers.set(FS_BASE, self.0.fs_base);
         registers.set(GS_BASE, self.0.gs_base);
         if self.restarts_call() {
+            // The kernel has not finalized the return value yet and will clobber `rax` on restart.
             registers.remove(RAX);
         }
 
@@ -506,6 +511,7 @@ pub(in crate::backend::linux) const fn is_program_counter(register: RegisterId) 
 
 pub(in crate::backend::linux) const FLOATING_REGISTERS_SIZE: usize = 512;
 
+/// Raw 512-byte `FXSAVE` area returned by `PTRACE_GETFPREGS`.
 pub(in crate::backend::linux) type FloatingRegisters = Arc<[u8; FLOATING_REGISTERS_SIZE]>;
 
 const FXSAVE_X87_OFFSET: usize = 32;

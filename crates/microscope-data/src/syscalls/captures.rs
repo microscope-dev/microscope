@@ -35,6 +35,10 @@ pub trait Memory {
     fn read(&mut self, address: u64, buffer: &mut [u8]) -> std::io::Result<usize>;
 }
 
+/// Chooses whether an argument is read at entry or exit.
+///
+/// `execve` and `execveat` always read at entry because a successful exec
+/// replaces the caller's address space before exit.
 fn read_at(call: &str, direction: Direction) -> ReadAt {
     if matches!(direction, Direction::In) || call.starts_with("execve") {
         ReadAt::Entry
@@ -77,6 +81,7 @@ fn bytes(
     }
 }
 
+/// Reads a NUL-terminated string one page at a time so an unmapped page past the NUL does not cause a fault.
 fn string(memory: &mut dyn Memory, address: u64, limit: usize) -> (Vec<u8>, CaptureState) {
     let mut out = Vec::new();
     let mut at = address;

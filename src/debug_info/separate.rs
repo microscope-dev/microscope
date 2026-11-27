@@ -1,3 +1,9 @@
+//! Discovery and verification of separate and supplementary debug files.
+//!
+//! Resolves `.build-id`, `.gnu_debuglink`, `debuginfod`, `.gnu_debugaltlink` (`dwz`),
+//! and DWARF 5 `.debug_sup` files, verifying build IDs, CRC-32 checksums, and
+//! architecture before accepting a candidate.
+
 use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::ffi::OsStrExt as _;
@@ -28,6 +34,10 @@ pub struct DebugFile {
     pub data: Vec<u8>,
 }
 
+/// Result of searching for a separate debug file.
+///
+/// `rejected` records the first mismatched candidate only when no valid match
+/// is found, so callers can explain why a nearby `.debug` file was skipped.
 #[derive(Default)]
 pub struct Search {
     pub found: Option<DebugFile>,
@@ -44,6 +54,8 @@ pub enum Supplementary {
 
 impl DebugFileSearch {
     pub fn new(options: &DebugFileOptions) -> Self {
+        // Under nextest, avoid picking up host debug directories or debuginfod
+        // environment variables unless explicitly requested.
         let machine = std::env::var_os("NEXTEST_RUN_ID").is_none();
         let mut directories = options.directories.clone();
         if machine {
@@ -286,6 +298,8 @@ impl DebugFileSearch {
         }
 
         let hex = hex(build_id);
+        // Scope authenticated downloads by (origin, token) hash under `auth/` with
+        // owner-only permissions so private symbols never leak into the shared cache.
         let auth_cached = self.credentials.as_ref().and_then(|creds| {
             self.cache.as_ref().map(|cache| {
                 cache

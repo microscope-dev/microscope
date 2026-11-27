@@ -13,6 +13,10 @@ const BEFORE = 3;
 
 const MOST = 12;
 
+/**
+ * Collects unique expressions on `line` and up to `BEFORE` preceding lines (clamped to `first`),
+ * capped at `MOST` total so stepping does not flood the backend with evaluations.
+ */
 export function inlineExpressions(
   text: string,
   line: number,
@@ -46,6 +50,10 @@ export function shownInline(row: Row): boolean {
   return !row.truncated && !row.text.startsWith("{") && !row.text.startsWith("<unavailable");
 }
 
+/**
+ * Evaluates inline expressions around the active frame's line and tracks changes across stops.
+ * Keyed by both `at` and `writes` so in-place variable edits invalidate values at the same stop.
+ */
 export function useInlineValues(
   at: () => At | null,
   path: () => string,

@@ -1,3 +1,6 @@
+//! Resolves V8 function-name breakpoints by querying `Profiler.getBestEffortCoverage` and
+//! mapping UTF-16 code-unit offsets back to `(line, column)` positions.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 

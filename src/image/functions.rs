@@ -1,3 +1,9 @@
+//! Logical functions, out-of-line/inline code instances, and breakpoint entries.
+//!
+//! Functions are indexed by name (with `DW_AT_main_subprogram` entries also
+//! aliased under `"main"`), while code instances are indexed by address range
+//! and carry precomputed [`EntryRecord`]s for breakpoint placement.
+
 use rayon::iter::{
     IndexedParallelIterator as _, IntoParallelRefIterator as _, ParallelIterator as _,
 };
@@ -477,6 +483,8 @@ fn add_instances(
     Ok(())
 }
 
+/// Coroutine bodies beat DWARF prologue ends because `poll`'s prologue runs on
+/// every re-poll, whereas `CoroutineBody` fires only on `Unresumed`.
 fn recommended_entries(
     instances: &[CodeInstanceInfo],
     code_ranges: &[Interval],

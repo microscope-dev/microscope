@@ -1,3 +1,6 @@
+//! Gates `169.254.169.254` metadata probes behind DMI/hypervisor hints so
+//! bare-metal hosts never wait on link-local timeouts.
+
 use std::{net::IpAddr, time::Duration};
 
 use serde::{Deserialize, Serialize};

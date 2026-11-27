@@ -68,6 +68,8 @@ impl StepSkips {
 }
 
 fn expression(glob: &str) -> String {
+    // Enable `(?s)` so wildcards still match paths containing newlines;
+    // relative globs anchor at a component boundary `(?:^|/)`.
     let mut expression = String::from(if glob.starts_with('/') {
         "(?s)^"
     } else {

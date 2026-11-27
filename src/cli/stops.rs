@@ -78,6 +78,8 @@ pub struct Activation {
 
 type Key = (ExecutionContext, String, VirtualAddress, String);
 
+/// Keyed by `(execution, function, frame_address, name)` so recursive calls or
+/// different threads do not falsely diff against each other.
 #[derive(Debug, Default)]
 pub struct Changes {
     stop: Option<StopId>,

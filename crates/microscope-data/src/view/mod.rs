@@ -1,3 +1,8 @@
+//! Read-only JSON and binary-column query facade over a `Capture`.
+//!
+//! Shared by the local `microscope web` server and hosted viewers; callers
+//! dispatch RPC method names through `CaptureView::answer`.
+
 mod inspect;
 mod profile;
 pub mod protocol;

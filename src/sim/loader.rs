@@ -1,3 +1,10 @@
+//! Static and PIE ELF64 loader for simulated processes.
+//!
+//! Parses `PT_LOAD` segments once into shared `Arc<Page>`s so spawning and
+//! forking are cheap and code-integrity checks can skip untouched pages via
+//! `Arc::ptr_eq`. Builds a Linux-compatible initial stack (`argc`, `argv`,
+//! `envp`, and auxiliary vector).
+
 use std::sync::Arc;
 
 use object::{Object as _, ObjectSegment as _, SegmentFlags};

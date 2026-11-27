@@ -1,3 +1,9 @@
+//! Tree-walking interpreter for bound [`Program`]s.
+//!
+//! Enforces step budgets via `Machine::charge`, turns `Stop::Missing` into a
+//! presentable [`InspectedValue`] tagged with the failing span, and never writes
+//! to target memory directly (assignments return encoded bytes in [`Outcome`]).
+
 use std::cmp::Ordering;
 
 use super::dynamic;
@@ -31,7 +37,7 @@ pub enum Outcome<P> {
         span: Span,
     },
 
-    /// stores.
+    /// Dynamic-variable assignment; callers read the target handle from `Program::assigned_object`.
     AssignDynamic { value: Assigned<P>, span: Span },
 
     AssignRegister {
@@ -1014,6 +1020,8 @@ impl<M: Machine> Interpreter<'_, M> {
         }
     }
 
+    /// Assignments require exact, lossless fitting into the target type rather
+    /// than silently truncating or rounding as C casts do.
     fn fit(&mut self, ty: &Ty, operand: &Node<M::Object, M::Step>) -> Evaluated<M::Place> {
         let span = operand.span;
         let value = scalar(self.eval(operand)?);

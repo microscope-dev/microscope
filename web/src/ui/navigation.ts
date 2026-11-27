@@ -36,6 +36,7 @@ export function go(
   const path = at === null ? `/s/${session}` : stopPath(session, at);
   navigate(toHref(path, search as Record<string, unknown>), { replace });
 
+  // Signal an explicit navigation after the router settles so Documents re-opens/reveals the target.
   if (!look || options?.ask) {
     queueMicrotask(asked);
   }

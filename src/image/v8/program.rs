@@ -1,3 +1,9 @@
+//! Register-based, forward-only interpreter for Torque-generated `ScopeInfo` slice programs.
+//!
+//! Every generated program is validated at compile time by `check`: all jumps
+//! must go strictly forward (`target > pc`) and calls are depth-bounded by
+//! `MAX_DEPTH`, guaranteeing termination without a fuel counter.
+
 pub(super) const OBJECT: i64 = 1;
 
 const MAX_DEPTH: usize = 32;

@@ -181,6 +181,8 @@ export function ScopeBar() {
     });
   }
 
+  // One shared SSE stream feeds all linked panes for live relative ranges.
+  // Pauses when the tab is hidden to avoid holding idle server streams open.
   const streamKey = createMemo(() => {
     if (
       !isActive() ||
@@ -436,6 +438,8 @@ export function ScopeBar() {
     },
   );
 
+  // On relative ranges, flush live agents before bumping revision so recently
+  // sampled data is visible immediately on manual refresh.
   const onManualRefresh = () => {
     if (flushing()) {
       return;

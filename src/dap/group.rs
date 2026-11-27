@@ -1,3 +1,8 @@
+//! Multi-process DAP routing: serves child member sessions over a private Unix socket.
+//!
+//! When a process group spawns a followed child, the parent session sends a
+//! `startDebugging` reverse request containing the socket path and member number.
+
 use std::path::PathBuf;
 
 use microscope::{GroupHandle, Member};

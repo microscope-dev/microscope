@@ -117,6 +117,10 @@ interface SimpleState {
   closing: string | null;
 }
 
+/**
+ * Lightweight StreamLanguage factory for languages without Lezer packages (Odin, Fortran, D,
+ * Nim, Ada), handling nested block comments, raw strings, doubled quotes, and Ada `'` attributes.
+ */
 function simple(syntax: Syntax) {
   const keywords = new Set(syntax.keywords.split(" "));
   const blocks = syntax.blockComments ?? [];
@@ -362,6 +366,10 @@ function readPythonString(stream: StringStream, state: PythonState, closing: str
   state.closing = triple || continued ? closing : null;
 }
 
+/**
+ * Scans Python f/t-strings while tracking nested `{...}` fields, `:` format specs, inner brackets,
+ * and nested string literals so quotes or braces inside expressions do not close the outer string.
+ */
 function readFormattedString(stream: StringStream, state: PythonState) {
   assert(state.formatted, "reading a plain string as formatted");
   const closing = state.closing;
@@ -581,6 +589,7 @@ export const highlighting = syntaxHighlighting(tokenStyle);
 
 export type Painted = [text: string, token: string][];
 
+/** Parses joined lines as one document so multiline comments/strings highlight accurately, then splits tokens back per line. */
 export function paintLines(path: string, lines: readonly string[]): Painted[] {
   const found = language(path);
   const grammar =

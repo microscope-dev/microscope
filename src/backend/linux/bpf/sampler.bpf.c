@@ -1,11 +1,5 @@
-
-
-
-
-
-
-
-
+// Perf-event BPF programs for in-kernel CPython/V8 stack walking (`python_sample`) and
+// standalone sample thinning (`thin_sample`).
 #include <linux/bpf.h>
 #include <linux/bpf_perf_event.h>
 #include <bpf/bpf_helpers.h>
@@ -134,6 +128,8 @@ static __always_inline int kept(void)
 	if (now < boundary)
 		epoch ^= 1;
 
+	// Drop samples inside `boundary +/- guard` so clock skew between PERF_SAMPLE_TIME
+	// and bpf_ktime_get_ns() cannot place a kept sample on the wrong side of `boundary`.
 	u64 guard = share_entry(SHARE_GUARD);
 	tally(epoch * 2);
 	if (now + guard > boundary && now < boundary + guard)
@@ -195,6 +191,7 @@ struct task_struct___sample {
 static __always_inline struct kernel_sample_record kernel_record(struct bpf_perf_event_data *ctx)
 {
 	struct kernel_sample_record record = { .syscall = ~0ULL, .abi = 3 };
+	// Only attribute a syscall when the sample interrupted kernel mode (`cs & 3 == 0`).
 	if (ctx->regs.cs & 3)
 		return record;
 	struct task_struct___sample *task = (void *)bpf_get_current_task_btf();
@@ -290,6 +287,8 @@ static __always_inline int v8_sample(struct bpf_perf_event_data *ctx, u32 tgid, 
 
 
 
+	// If the perf sample fired in kernel mode, switch to the task's saved userspace pt_regs
+	// so the V8 frame-pointer walk starts from userspace `rbp`/`rip`.
 	struct pt_regs regs = ctx->regs;
 	if (!(regs.cs & 3)) {
 		void *user = (void *)bpf_task_pt_regs(bpf_get_current_task_btf());

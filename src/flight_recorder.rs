@@ -1,3 +1,9 @@
+//! Debug-build in-memory ring buffer and bounded log stream for post-mortem
+//! diagnostics.
+//!
+//! When a stream hits `MAX_STREAM_BYTES`, it rewrites the file from the ring
+//! buffer so the newest lines are always preserved within the size cap.
+
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::fmt::{self, Write as _};

@@ -1,3 +1,8 @@
+//! Interactive terminal hotkey (`o`) and detached browser-opener helper for `microscope web`.
+//!
+//! Spawns a double-forked `web-opener` daemon in its own session (`setsid`) so launched
+//! browsers are insulated from `SIGINT` on the server's terminal and leave no zombies.
+
 use std::ffi::OsString;
 use std::io::{self, BufRead as _, IsTerminal as _, PipeWriter, Read as _, Write as _};
 use std::process::{Command, ExitCode, Stdio};

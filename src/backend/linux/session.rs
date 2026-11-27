@@ -20,6 +20,9 @@ pub(super) enum Session {
 
     Traced(Traced),
 
+    /// The main inferior has exited or detached, but forked children are still awaiting
+    /// their initial `ptrace` stop so inherited software breakpoints can be scrubbed.
+    /// Any new launch/attach is held in `deferred` until all orphans are settled.
     Draining {
         orphans: Orphans,
 

@@ -1,3 +1,9 @@
+//! Breakpoint policy accounting across stops.
+//!
+//! Tracks the history of `Policy` versions (conditions, hit conditions,
+//! logpoints, enabled state, temporary lifetime) so asynchronous edits while
+//! running still admit exact verification of hit counts and stop reasons.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{HitCondition, ProcessId, StateSnapshot, StopReason, ThreadState};

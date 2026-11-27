@@ -21,6 +21,11 @@ export function normalizeScope(raw: Partial<ViewScope> | null | undefined): View
   };
 }
 
+/**
+ * Serializes a `ViewScope` to URL search params, omitting the default `m1`
+ * refresh interval and `custom` compare specs (which do not fit compactly in
+ * query params).
+ */
 export function scopeToSearch(scope: ViewScope): string {
   const params = new URLSearchParams();
   if (scope.org_id !== null && scope.org_id !== undefined) {
@@ -185,6 +190,11 @@ export const DEPLOY_LANE_HEIGHT = 11;
 const DEPLOY_LANES = 3;
 const DEPLOY_GAP = 4;
 
+/**
+ * Greedily packs deploy marker labels into `DEPLOY_LANES` horizontal tracks so
+ * overlapping labels stack cleanly. Labels that would overflow `right` flip to
+ * `anchor: "end"`, and markers that collide in all tracks get `lane: null` (line only).
+ */
 export function placeDeployLabels<T extends { x: number; display: string }>(
   deploys: readonly T[],
   right: number,

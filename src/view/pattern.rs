@@ -1,3 +1,8 @@
+//! Matches `.views` type patterns against normalized [`TypeIdentity`]s.
+//!
+//! Captures generic type and const arguments for use during view binding, and
+//! enforces consistency when the same capture name appears more than once.
+
 use crate::eval::types::TypeSource;
 use crate::type_identity::same_integer;
 use crate::{GoKind, IntegerValue, SourceLanguage, TypeArgument, TypeIdentity, TypeReference};
@@ -14,6 +19,8 @@ pub enum Captured {
 
 pub type Captures = Vec<(String, Captured)>;
 
+/// `Language::Any` intentionally excludes dynamic languages (Python, JS/TS)
+/// because their runtime object models require language-specific views.
 #[must_use]
 pub const fn language_matches(language: Language, actual: SourceLanguage) -> bool {
     matches!(
@@ -92,6 +99,8 @@ fn matches_into(
         return arguments_match(pattern, identity, types, captures, depth);
     }
 
+    // `identity.path` already strips C++ inline namespaces during DWARF indexing;
+    // filtering them from `pattern.path` lets patterns that spell `std::__1::...` still match.
     let path = pattern
         .path
         .iter()

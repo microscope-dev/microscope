@@ -321,6 +321,9 @@ pub(super) fn calls(
     });
 }
 
+/// Most calls are visited on `Seen::Before` so closed fds still resolve;
+/// `connect` is visited on `Seen::After` so its newly bound remote endpoint is
+/// already present in `FdTable`.
 pub(super) fn known(
     trace: &Trace,
     selection: &Selection,

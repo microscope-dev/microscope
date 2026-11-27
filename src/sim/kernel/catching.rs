@@ -1,3 +1,8 @@
+//! Kernel-side ground truth for active syscall catchpoints (`Catching`).
+//!
+//! Tracks catchpoint rules so the kernel can flag syscalls that bypassed
+//! `PTRACE_SYSCALL` or were resumed without reporting a stop.
+
 use std::collections::BTreeMap;
 
 use super::Tid;

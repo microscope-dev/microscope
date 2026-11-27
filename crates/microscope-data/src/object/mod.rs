@@ -1,3 +1,6 @@
+//! Self-describing, checksummed columnar object container (`USCOPEOB` v2) used
+//! for local capture files, upload posts, WAL batches, and rolled-up objects.
+
 pub mod codec;
 pub mod filter;
 pub mod tables;
@@ -466,6 +469,10 @@ pub fn derive_key_seed(kind: ObjectKind, level: ObjectLevel, created_at: i64, wr
     XxHash3_64::oneshot(&buf)
 }
 
+/// Computes a domain-separated `xxHash3` checksum over `section_body`.
+///
+/// Binds the hash to tenant IDs, `part_index`, `kind`, and `section_key` so
+/// sections cannot be spliced across parts, tenants, or objects.
 #[must_use]
 pub fn section_checksum(
     key_seed: u64,
@@ -923,6 +930,9 @@ impl<'a> ObjectReader<'a> {
         Self::open_inner(bytes, false, true)
     }
 
+    /// Opens an object and, if the final `TRAILER_MAGIC` is missing, scans
+    /// backward for the last valid `CHECKPOINT_MAGIC` whose part list and
+    /// section checksums all verify.
     pub fn open_recoverable(bytes: &'a [u8]) -> Result<Self, ObjectError> {
         Self::open_inner(bytes, true, true)
     }

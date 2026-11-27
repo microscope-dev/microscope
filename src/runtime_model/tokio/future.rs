@@ -1,3 +1,6 @@
+//! Recovers a Tokio task's concrete `Future` address and type from its
+//! type-erased `Header` via the monomorphized `poll` function in its vtable.
+
 use std::sync::Arc;
 
 use super::{TokioRuntime, records};
@@ -16,6 +19,9 @@ pub(super) struct FutureLayout {
 }
 
 impl FutureLayout {
+    /// Binds `Cell<T, S>` offsets by extracting the generic arguments from the
+    /// vtable's `poll<T, S>` symbol, bridging from the type-erased `Header`
+    /// back to the concrete future stored in `Stage::Running`.
     fn bind(image: &dyn RuntimeImage, poll: ImageAddress) -> Result<Self, Arc<str>> {
         let name = image
             .function_name(poll)

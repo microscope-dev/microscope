@@ -1,3 +1,9 @@
+//! Cached unwind sections (`.eh_frame`, `.debug_frame`, Go `pclntab`) and static frame analyses.
+//!
+//! Stores raw unwind bytes alongside prebuilt FDE interval indexes and
+//! statically analyzed stub/restored/proved frame ranges so stack unwinding
+//! avoids rescanning ELF sections on load.
+
 use zerocopy::little_endian::{U32, U64};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
@@ -271,6 +277,11 @@ pub struct FdeLookup<'a> {
 }
 
 impl<'a> FdeLookup<'a> {
+    /// Finds the FDE section offset covering `address`.
+    ///
+    /// Valid FDEs parsed before `first_error` remain usable; lookups that hit at
+    /// or past `error_offset`, or miss when `first_error` is set, surface
+    /// [`FdeMiss::Malformed`] because the unparsed tail may cover `address`.
     pub fn lookup(self, address: u64) -> Result<usize, FdeMiss<'a>> {
         let first = index::containing(self.entries, ImageAddress::new(address)).min();
         match (first, self.first_error) {

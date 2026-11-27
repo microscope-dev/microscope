@@ -86,6 +86,14 @@ export function parseDashboardsHash(
   return { tab: path, org };
 }
 
+/**
+ * Active dashboard/session state and background persistence.
+ *
+ * Opening a dashboard immediately creates a backing session in the background
+ * (`pendingCreate`). The first scope or layout edit promotes the view from
+ * `/d/<id>` to `/s/<sessionId>` (`wantMoveToSession` -> `movedToSession`) so
+ * the user's exploration becomes shareable without mutating the source dashboard.
+ */
 export interface ActiveViewState {
   active: boolean;
   mode: "dashboard" | "session";
@@ -225,6 +233,12 @@ export function setPendingSessionCreation(
   void finish();
 }
 
+/**
+ * Snapshot and enqueue any unsaved edits before switching views or unmounting.
+ * Captures state synchronously before resetting dirty flags so route transitions
+ * cannot drop pending changes, and awaits `pendingCreate` if the session ID has
+ * not arrived yet.
+ */
 export function flushActiveViewSave(keepPendingCreate = false): void {
   const cur = activeView.getState();
   const shouldFlush =
@@ -326,12 +340,20 @@ export function updateViewScope(
   }
 }
 
+/**
+ * Serializes all session create/update requests so out-of-order responses cannot
+ * overwrite newer scope or layout edits.
+ */
 function enqueueSave(task: () => Promise<void>): Promise<void> {
   const next = saveChain.then(task, task);
   saveChain = next.catch(() => {});
   return next;
 }
 
+/**
+ * Keeps the user's relative time range across saves; the server normalizes/resolves
+ * other fields (like org_id) but should not replace a sliding relative window.
+ */
 function mergeSavedScope(current: ViewScope, saved: ViewScope, orgId: number): ViewScope {
   const normalized = normalizeScope({ ...saved, org_id: orgId });
   if (current.time_range.kind === "relative") {
@@ -371,6 +393,8 @@ function flushSessionSaveNow(
       ...(layout === undefined ? {} : { layout }),
       pin: false,
     });
+    // Only clear dirty state or adopt the server's scope if no newer local edit
+    // happened while this save was in flight.
     if (viewMutationSeq === seqBefore) {
       viewDirty = false;
     }

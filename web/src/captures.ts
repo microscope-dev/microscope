@@ -25,6 +25,7 @@ export function captureDownloadUrl(captureId: number): string {
   return `/api/captures/${captureId}/download`;
 }
 
+/** Decodes an `application/vnd.microscope.framed` HTTP body: 4-byte LE JSON length, UTF-8 JSON object, then trailing binary payload. */
 export function decodeFramedResponse<T extends Record<string, unknown>>(
   buffer: ArrayBuffer,
 ): T & { payload: Uint8Array } {

@@ -1,3 +1,7 @@
+//! Pure enrollment and token-refresh state machine (`Machine`), decoupled from
+//! I/O and wall clocks so retry backoff, revocation, and re-enrollment can be
+//! tested deterministically.
+
 use std::time::Duration;
 
 pub const FIRST_RETRY: Duration = Duration::from_secs(10);
@@ -146,6 +150,9 @@ impl Machine {
         }
     }
 
+    /// Pulls the next token refresh forward, clamped to `MIN_REFRESH` (or
+    /// `MIN_REFRESH_LOOPBACK`) after `last_token` to avoid tight refresh loops
+    /// when a server rejects an otherwise fresh token.
     pub const fn request_refresh(&mut self, now: Instant) {
         if let State::Enrolled { refresh_at, .. } = &mut self.state
             && self.failures == 0

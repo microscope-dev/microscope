@@ -73,6 +73,13 @@ export function inputPaths(inputs: DrawInput[]): Record<string, string | null> {
   return Object.fromEntries(inputs.map((input) => [input.name, input.path]));
 }
 
+/**
+ * Decodes a protocol `Datum` tree, resolving `numbers` and `bytes` slices from the
+ * accompanying binary `bytes` payload.
+ *
+ * Slices are copied out of `bytes.buffer` so multi-byte `TypedArray` views are always
+ * aligned and do not retain the entire payload buffer.
+ */
 export function decode(datum: Datum, bytes: Uint8Array): Value {
   switch (datum.t) {
     case "bool":

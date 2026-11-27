@@ -314,6 +314,10 @@ pub const fn copy_span(tail: u64, header: RingHeader) -> (Range<u64>, u64) {
     (start..end, start.saturating_sub(tail))
 }
 
+/// Earliest ring position guaranteed not to be clobbered by a concurrent writer.
+///
+/// A writer can occupy up to `MOST_EVENT_RECORDS` consecutive slots before
+/// advancing `head`, so slots within that distance of wraparound are discarded.
 pub const fn first_whole(head: u64, size: u8) -> u64 {
     (head + MOST_EVENT_RECORDS).saturating_sub(1 << size)
 }
@@ -450,6 +454,9 @@ impl Decoder {
     }
 }
 
+/// Converts probe TSC timestamps to monotonic nanoseconds by linear interpolation
+/// between two anchor pairs spaced at least `ANCHOR_SPACING` apart to avoid
+/// noisy frequency estimates over short intervals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Anchors {
     previous: (u64, u64),

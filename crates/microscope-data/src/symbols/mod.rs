@@ -1,3 +1,8 @@
+//! ELF symbol extraction, debug-only stripping, and compact `SymbolIndex` encoding.
+//!
+//! All parsing and decoding runs under an explicit `ParseBudget` so untrusted
+//! binaries and symbol indexes cannot exhaust memory or CPU on a symbol server.
+
 mod extract;
 mod index;
 mod parse;
@@ -94,6 +99,10 @@ pub fn is_placeholder_symbol_name(name: &str) -> bool {
     name.starts_with("<unnamed ") && name.ends_with('>')
 }
 
+/// Hard resource limits enforced during ELF parsing and `SymbolIndex` decoding.
+///
+/// Guards against decompression bombs, cyclic DWARF DIE graphs, and oversized
+/// symbol tables on both servers (`SERVER`) and fuzzers (`FUZZ`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParseBudget {
     pub max_input_bytes: usize,
@@ -268,6 +277,10 @@ pub fn read_elf_build_id_from_file(path: &Path) -> io::Result<Option<BuildId>> {
     read_elf_build_id_from_reader(&mut file)
 }
 
+/// Extracts the GNU build ID by seeking only to ELF headers and `PT_NOTE`/`SHT_NOTE` regions.
+///
+/// Avoids mapping or reading multi-gigabyte binaries just to check whether a
+/// symbol server already has their symbols.
 #[expect(
     clippy::too_many_lines,
     reason = "handles ELF32/64 program-header and section-header note tables in one streaming pass"

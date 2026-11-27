@@ -56,6 +56,10 @@ export function updatePaneParams(id: PaneId, patch: Record<string, Json | undefi
   });
 }
 
+/**
+ * Freezes relative windows to an absolute range when unlinking a pane (with a 60s
+ * forward cushion for in-flight ingest) so the pane stops sliding with live updates.
+ */
 function freezeTimeRangeNow(range: TimeRange, nowNs: number): TimeRange {
   if (range.kind !== "relative") {
     return range;
@@ -99,6 +103,12 @@ export interface PaneScopeResult {
   streamed: () => StreamedPaneData | null;
 }
 
+/**
+ * Resolves a fleet pane's effective scope, session, and data source.
+ * Linked panes follow `activeView` and suppress per-pane HTTP polling (`queryKey === "idle"`)
+ * while the shared SSE stream is active for the current `streamKey`; unlinked panes
+ * persist their own frozen `unlinkedScope` in `pane.params`.
+ */
 export function usePaneScope(id: () => PaneId, pane: () => Pane): PaneScopeResult {
   const now = useAccount();
   const barScope = useActiveView((v) => v.scope);

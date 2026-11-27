@@ -1,3 +1,7 @@
+//! Pairs BPF-collected Python and V8 stack walks with `perf` samples, resolves
+//! frame metadata from live target memory, and synthesizes GIL and V8 isolate
+//! label spans.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -68,6 +72,8 @@ struct Span {
     end: i64,
 }
 
+/// Assigns stable sequential IDs to V8 isolate pointers while distinguishing
+/// address reuse after all threads holding a prior isolate have exited.
 #[derive(Debug, Default)]
 struct IsolateNumbers {
     last: u64,
@@ -686,6 +692,9 @@ pub(super) struct DrainedV8 {
     unreadable: bool,
 }
 
+/// Eagerly resolves V8 frame names at drain time while target heap objects are
+/// still live, deferring final code-ownership selection to `DrainedV8::settle`
+/// once subsequent `mmap` records have been processed.
 fn drain_v8(
     stack: &sampler::V8Stack<'_>,
     owner: &dyn Fn(u64) -> Option<Owner>,

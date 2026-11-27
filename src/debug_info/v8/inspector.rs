@@ -1,3 +1,9 @@
+//! Recovers Node.js inspector agent, WebSocket URL, session-close, and startup
+//! checkpoint layouts from `x86_64` machine code.
+//!
+//! Uses bounded abstract interpretation (`flow_arguments`) over exported `GetWsUrl`
+//! accessors and template-matched constructor proofs for stripped Node 24 builds.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -147,6 +153,12 @@ pub(super) fn named_function(object: &object::File<'_>, name: &str) -> Option<(u
     found
 }
 
+/// Recovers `SameThreadInspectorSession::Dispatch` on stripped Node 24 builds
+/// where the anonymous-namespace symbol is hidden.
+///
+/// Matches the inlined `SameThreadInspectorSession` construction inside the
+/// exported `Agent::Connect`, validates its vtable in `.data.rel.ro`, and checks
+/// both the deleting destructor and the `Dispatch` prologue.
 #[expect(
     clippy::too_many_lines,
     reason = "the constructor branches and vtable form one proof"
@@ -653,6 +665,11 @@ fn arguments(
     )
 }
 
+/// Bounded path-sensitive abstract interpreter over a single function body.
+///
+/// Starts with `arguments[0]` (`this`) as `Expr::Object(0)` and requires every
+/// reachable path to `callee` to pass identical field-offset expressions in
+/// `arguments[1..4]`.
 fn flow_arguments(
     bytes: &[u8],
     address: u64,

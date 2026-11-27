@@ -1,3 +1,7 @@
+//! Ground-truth container memory walkers (`vec`, `list`, `table`) for
+//! verifying type-visualizer presentation, pagination consistency, and
+//! cycle/check-failure refusals.
+
 use crate::{
     InspectedValue, InspectionLimits, PresentedCount, PresentedShape, ValueChildPage,
     ValueChildRelationship, VariableState, VariableValueSource, ViewProblem,

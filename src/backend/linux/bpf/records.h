@@ -1,9 +1,5 @@
-
-
-
-
-
-
+// Binary ABI shared between the BPF programs and Rust (`sampler.rs`, `syscalls/bpf.rs`).
+// Field layouts are verified against `.BTF` at test time via `assert_mirrors!`.
 #pragma once
 
 typedef unsigned char u8;

@@ -1,3 +1,8 @@
+//! Maps V8 frame and closure-context variables to hardware watchpoint addresses.
+//!
+//! Refuses storage that V8 moves or rebinds implicitly—optimized frames, `with` objects, resumable
+//! generator/async frames, block-scoped registers, and mutable context cells.
+
 use std::sync::Arc;
 
 use super::objects::{Object, Problem, Reader, address_at};

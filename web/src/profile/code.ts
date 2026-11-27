@@ -97,6 +97,12 @@ export interface InlineTree {
   lines: Map<string, TreeLine>;
 }
 
+/**
+ * Builds the inline call tree from disassembled instruction rows.
+ * `instruction.lines` arrives innermost-to-outermost, so we walk it reversed;
+ * `inside` accumulates inclusive weight across all inlined descendants while
+ * `own` is credited only to the innermost line.
+ */
 export function inlineTree(rows: readonly CodeRow[]): InlineTree {
   const calls = new Map<string, TreeCall>();
   const lines = new Map<string, TreeLine>();
@@ -208,6 +214,11 @@ export type SourceEntry =
 
 export const FOLD = 4;
 
+/**
+ * Flattens the inline tree and source files into display entries for the source pane.
+ * Top-level frames (`depth === 0`) include surrounding context lines; expanded
+ * inline frames (`depth > 0`) fold gaps of at least `FOLD` untouched lines.
+ */
 export function sourceEntries(
   tree: InlineTree,
   files: readonly ProfileSourceFile[],
@@ -300,6 +311,11 @@ function hottest(lines: readonly TreeLine[]): TreeLine[] {
     .toSorted((a, b) => b.inside - a.inside || b.total - a.total);
 }
 
+/**
+ * Assigns distinct hues to the top `TINTS` hottest lines at each level, shifting
+ * expanded children by `SHADES` so source lines and their assembly rows stay
+ * visually paired.
+ */
 export function tintsOf(tree: InlineTree, open: ReadonlySet<string>): Map<string, number> {
   const tints = new Map<string, number>();
   const shade = (lines: readonly TreeLine[], hue: (at: number) => number) => {
@@ -372,6 +388,12 @@ function everyLine(tree: InlineTree): TreeLine[] {
   return all;
 }
 
+/**
+ * Picks the initial line to focus when opening the source/assembly split.
+ * Prefers the explicitly requested function (e.g. when viewing an inlined-only
+ * callee); otherwise attributes each instruction to its innermost non-library
+ * frame (`ownCodeAt`) so the view opens on user code rather than stdlib internals.
+ */
 export function openingLine(
   tree: InlineTree,
   rows: readonly CodeRow[],

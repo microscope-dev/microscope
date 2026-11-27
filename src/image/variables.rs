@@ -1,3 +1,8 @@
+//! Local variables, parameters, globals, closures, return conventions, and DWARF procedures.
+//!
+//! Shared scope ranges, enclosing instances, and frame bases are deduplicated
+//! into [`ScopeRecord`] so individual [`ObjectRecord`]s stay compact.
+
 use std::sync::Arc;
 
 use zerocopy::little_endian::{U16, U32, U64};
@@ -816,6 +821,10 @@ fn function_starts(functions: &[Function]) -> Result<Vec<FunctionStartRecord>, T
         .collect())
 }
 
+/// Finds the function covering `address` using `starts` grouped by equal `start`.
+///
+/// Grouping equal `start` values breaks ties in ascending `function` (DWARF)
+/// order while scanning `start`s backward until `prefix_max_end <= address`.
 fn function_at(
     starts: &[FunctionStartRecord],
     address: ImageAddress,

@@ -44,6 +44,11 @@ interface FieldRef {
   current: HTMLInputElement | undefined;
 }
 
+/**
+ * Bidirectional sync between `machinesWindow` and the URL hash: opening pushes a single history
+ * entry, in-window navigation replaces it, closing pops it back if we pushed it, and deep-linked
+ * hashes are parked in `waiting` until auth resolves.
+ */
 function useUrl() {
   const history = useHistory();
   const open = useMachinesWindow((window) => window.open);

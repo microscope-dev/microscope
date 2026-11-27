@@ -1,3 +1,10 @@
+//! Continuous state-invariant oracles comparing debugger `Truth` against the
+//! simulated `Kernel`.
+//!
+//! Checks code integrity (every `0xcc` trap is owned and its original byte is
+//! remembered), site ownership, all-stop consistency, breakpoint hit
+//! accounting, clean session teardown, and undisturbed program transparency.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 

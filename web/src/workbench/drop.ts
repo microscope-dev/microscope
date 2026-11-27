@@ -32,6 +32,14 @@ export interface Drop {
   readonly highlight: Rect;
 }
 
+/**
+ * Resolves the drop target and preview highlight rectangle under `point`.
+ *
+ * Hit-test priority: floating windows (top-to-bottom), docked tab strips,
+ * outer dock `EDGE` band, then docked group bodies (outer `BAND` splits the
+ * group; center appends as a tab). Pass `bodies = false` when dragging a
+ * floating window so it only docks onto strips or dock edges.
+ */
 export function resolveDrop(measured: Measured, point: Point, bodies = true): Drop | null {
   for (const window of measured.floating.toReversed()) {
     if (inside(window.strip, point)) {
@@ -144,6 +152,11 @@ function around(group: MeasuredGroup): Rect {
 
 export type Direction = "left" | "right" | "up" | "down";
 
+/**
+ * Finds the nearest group in `direction` from `from` by screen geometry.
+ * Allows 1px subpixel overlap (`apart >= -1`), requires positive perpendicular
+ * overlap, and breaks near-ties (`<= 1px`) by largest overlap.
+ */
 export function neighbor(
   rects: ReadonlyMap<GroupId, Rect>,
   from: GroupId,

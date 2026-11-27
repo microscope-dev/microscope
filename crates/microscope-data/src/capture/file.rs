@@ -57,6 +57,9 @@ impl<W: std::io::Write> Writer<W> {
         self.writer.written_bytes()
     }
 
+    /// Encodes `capture` as an object part and appends a recovery checkpoint
+    /// (`CHECKPOINT_MAGIC`) so crash-truncated files still read back up to the
+    /// last flushed chunk.
     pub fn chunk(&mut self, capture: &Capture) -> std::io::Result<()> {
         let (starts_at, raw_end) = capture.span();
         let ends_at = raw_end.max(starts_at);
@@ -125,6 +128,8 @@ pub fn read(bytes: &[u8]) -> Result<Read, FileError> {
     read_budgeted(bytes, CAPTURE_DECODE_BUDGET_BYTES)
 }
 
+/// Opens a capture with checkpoint recovery enabled and enforces a cumulative
+/// decompressed byte budget across all chunks before merging multi-chunk files.
 pub fn read_budgeted(bytes: &[u8], max_decompressed_bytes: usize) -> Result<Read, FileError> {
     let _span = crate::span!("capture read");
     if bytes.len() < OBJECT_HEADER_LEN || bytes.first_chunk::<8>() != Some(&FILE_MAGIC) {

@@ -1,3 +1,8 @@
+//! Minimal Linux `x86_64` syscall table for golden test programs.
+//!
+//! Every served call is recorded in `Kernel::served` so `tracing::TraceModel`
+//! can cross-check BPF syscall event encoding and statistics folding.
+
 use nix::errno::Errno;
 use nix::libc;
 

@@ -1,3 +1,6 @@
+//! Counting [`GlobalAlloc`] wrapper backed by cache-line-aligned per-thread
+//! atomic slots so allocation tracking avoids cross-thread contention.
+
 #![allow(unsafe_code, reason = "a global allocator is an unsafe trait")]
 
 use std::alloc::{GlobalAlloc, Layout};
@@ -283,6 +286,12 @@ fn count(bytes: i64, new_block: bool) {
     });
 }
 
+/// Claims a dedicated per-thread [`Slot`] on a thread's first allocation.
+///
+/// Marks the thread as `SlotUse::Shared` before touching `RELEASE` so any
+/// re-entrant allocation during TLS destructor registration does not recurse,
+/// and records a `base` snapshot so reusing a previously released slot keeps
+/// process-wide totals continuous.
 #[cold]
 fn claim(cell: &Cell<ThreadCounts>) {
     let mut counts = cell.get();

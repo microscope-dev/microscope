@@ -6,6 +6,14 @@ use super::SymbolError;
 const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
 pub const GO_TEXT_SECTION_NAME: &str = ".microscope.go_text";
 
+/// Repacks an ELF64 binary keeping only debug, note, symtab, and `gopclntab` payloads.
+///
+/// Discarded sections become `SHT_NOBITS` instead of being removed so section
+/// indices, `sh_link` references, and virtual addresses stay intact. For Go
+/// binaries, resolves `textStart` before stripping writable data sections and
+/// stores it in `.microscope.go_text` so `gopclntab` remains symbolizable
+/// without `moduledata`. Returns the original bytes if repacking would not
+/// shrink the file.
 #[expect(
     clippy::too_many_lines,
     reason = "repacks ELF64 program headers, debug/symtab sections, and updated section headers in one pass"

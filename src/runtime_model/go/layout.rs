@@ -1,3 +1,9 @@
+//! DWARF-bound field offsets, symbols, and status constants for Go's runtime.
+//!
+//! Sub-layouts (`goroutines`, `threads`, `labels`) are bound independently so a
+//! missing optional feature (such as `pprof` labels) does not disable core
+//! goroutine inspection.
+
 use std::sync::Arc;
 
 use super::super::{Member, RuntimeImage};
@@ -75,6 +81,8 @@ pub enum GStatus {
 }
 
 impl Statuses {
+    /// Classifies a raw `g.atomicstatus` word after masking off the `_Gscan`
+    /// GC stack-scanning bit.
     pub fn classify(&self, status: u64) -> GStatus {
         let base = status & !self.scan;
         let is = |known: Option<u64>| Some(base) == known;
@@ -175,6 +183,8 @@ pub struct Threads {
 impl Threads {
     fn bind(image: &dyn RuntimeImage) -> Result<Self, Missing> {
         let tls_g = match image.thread_local("runtime.tlsg") {
+            // Static Linux `x86_64` Go binaries without a `runtime.tlsg` symbol
+            // store the current `g` pointer at `fs:-8`.
             None => ThreadLocal::Offset(-8),
             Some(Ok(place)) => place,
             Some(Err(reason)) => {

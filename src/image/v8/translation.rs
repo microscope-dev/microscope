@@ -1,3 +1,9 @@
+//! Version-keyed V8 deoptimization [`TranslationOpcode`] tables.
+//!
+//! Compile-time assertions verify that every `(major, minor)` version is unique
+//! and that JS frame opcodes form a prefix of frame opcodes, which
+//! [`Translations::is_js_frame`] and [`Translations::is_frame`] rely on.
+
 use std::sync::Arc;
 
 use super::V8Version;

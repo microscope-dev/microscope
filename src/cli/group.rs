@@ -138,6 +138,10 @@ impl Cli {
         }
     }
 
+    /// Waits until the group event stream catches up to a single-member stop or exit.
+    ///
+    /// This ensures sibling notices emitted before the stop are printed in order, and
+    /// recovers by inspecting `GroupHandle` state if the broadcast channel lagged.
     pub(super) async fn member_execution_end(
         &self,
         reason: &StopReason,

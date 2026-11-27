@@ -9,6 +9,10 @@ pub struct Taken {
     pub python: Option<Vec<u8>>,
 }
 
+/// Per-thread matcher for stack records that arrive ahead of their syscall or signal record.
+///
+/// Blocking syscalls stash their entry-time stack in `waiting` keyed by `Tid` (matching `entered`
+/// timestamps on exit) so intervening signals cannot steal it; non-blocking calls and signals consume `next`.
 #[derive(Default)]
 pub struct Pairs {
     python: BTreeMap<Tid, Vec<u8>>,

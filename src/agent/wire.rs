@@ -38,6 +38,9 @@ const ENROLL_KEY_CHECK: usize = 8;
 const ENROLL_KEY_LEN: usize = ENROLL_KEY_PREFIX.len() + ENROLL_KEY_BODY + ENROLL_KEY_CHECK;
 const BASE32: &[u8; 32] = b"abcdefghijklmnopqrstuvwxyz234567";
 
+/// Builds the NUL-delimited, domain-separated signing payload binding algorithm,
+/// protocol context, origin, HTTP method/path, and body so signatures cannot be
+/// replayed across endpoints or servers.
 #[must_use]
 pub fn signed_message(origin: &str, path: &str, body: &[u8]) -> Vec<u8> {
     assert!(!origin.contains('\0') && !path.contains('\0'));

@@ -1,3 +1,9 @@
+//! Non-stopping live stack walking for V8 isolates.
+//!
+//! Reads V8's `ThreadLocalTop` (`c_entry_fp`, `js_entry_sp`, and fast-C-call state) to walk
+//! published frames while JavaScript calls into native code, refusing to walk during GC,
+//! deoptimization, `WebAssembly`, or unsafely nested isolate entries.
+
 use super::Statics;
 use super::frames;
 use super::objects::{Problem, Reader};

@@ -1,3 +1,6 @@
+//! DWARF type-layout navigation helpers for reading Rust/Tokio structs and
+//! tagged enums without hardcoded offsets.
+
 use std::sync::Arc;
 
 use super::{RuntimeImage, RuntimeStop};
@@ -16,6 +19,8 @@ pub struct Field {
     pub ty: TypeReference,
 }
 
+/// Resolves a concrete type definition by qualified name, skipping incomplete
+/// forward declarations.
 pub fn named(image: &dyn RuntimeImage, name: &str) -> Result<TypeReference, Missing> {
     image
         .types_named(name)
@@ -187,6 +192,8 @@ fn unsigned(value: IntegerValue) -> Option<u64> {
     }
 }
 
+/// Bound layout of a Rust tagged enum (`TypeKind::Variant`) with a stored
+/// discriminant tag.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sum {
     name: Arc<str>,
@@ -272,6 +279,9 @@ impl Sum {
             .ok_or_else(|| format!("{} has no variant {name}", self.name).into())
     }
 
+    /// Reads the enum's discriminant from target memory and returns the active
+    /// variant, falling back to `VariantSelection::Default` for niche-encoded
+    /// variants.
     pub fn active(
         &self,
         stop: &dyn RuntimeStop,

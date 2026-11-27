@@ -245,6 +245,8 @@ impl<P: LinuxTraceOps> Controller<P> {
 
         let executable_inode = self.main.identity.inode;
 
+        // Include non-executable ELF headers listed in `link_map` (e.g. data-only
+        // shared objects or libraries whose code segment has not been mapped separately).
         let code_less = headers
             .into_iter()
             .filter(|mapping| {
@@ -471,6 +473,8 @@ pub(super) fn load_bias_in(
         .ok_or_else(|| backend_error(LinuxError::LoadBias(executable.to_owned())))
 }
 
+/// Reads `/proc/<pid>/maps`, falling back to any thread's `task/*/maps` when the
+/// leader's maps file is empty (for instance, after the leader exited as a zombie).
 pub(super) fn read_maps(pid: Pid) -> std::io::Result<String> {
     let maps = fs::read_to_string(format!("/proc/{pid}/maps"))?;
     if !maps.is_empty() {

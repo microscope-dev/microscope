@@ -194,6 +194,8 @@ pub fn decode_event_bundle_budgeted(
     }
 }
 
+/// Tracks per-thread range boundaries so delta-encoded timestamps reset to
+/// `base_time` at each thread's start instead of encoding large backward jumps.
 struct ResetCursor<'a> {
     ranges: &'a [ThreadRange],
     idx: usize,

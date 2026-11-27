@@ -1,3 +1,8 @@
+//! Rebuilds chronological `TraceEvent` streams from capture syscall and note tables.
+//!
+//! Interleaves `capture.syscall_notes` into `capture.syscalls` using each
+//! note's `calls` index so `FdTable` and `ProcessTree` replay events in order.
+
 use std::sync::Arc;
 
 use crate::capture::Capture;

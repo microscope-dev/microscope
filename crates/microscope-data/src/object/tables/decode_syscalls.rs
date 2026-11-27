@@ -10,6 +10,9 @@ use super::{
 use crate::capture::Capture;
 use crate::capture::records::{NONE, Syscall, SyscallStat, UNSEEN};
 
+/// Decodes paged `(abi, number)`-grouped syscall columns, restoring `UNSEEN`
+/// timestamps from the 2-bit `unseen` mask where `exit_times` substituted
+/// `entered` to keep deltas near zero.
 #[expect(
     clippy::too_many_lines,
     reason = "decodes paged grouped syscall columns per abi and number"
@@ -186,6 +189,8 @@ pub(super) fn decode_syscalls(
     Ok(syscalls)
 }
 
+/// Decodes `SyscallBlobs`, separating per-argument captures from `SyscallNote`
+/// blobs multiplexed under `NOTE_BLOBS_ARGUMENT` (`u8::MAX`).
 #[expect(
     clippy::too_many_lines,
     reason = "decodes grouped syscall capture blobs and note blobs"

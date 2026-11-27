@@ -1,3 +1,11 @@
+//! Manages the private temporary directory (`/tmp/<prefix>...`) used to stage
+//! a runtime agent's shared library and per-generation bootstrap scripts inside
+//! the target process's mount namespace.
+//!
+//! Every file operation uses `openat`/`fstatat` with `O_NOFOLLOW` and checks
+//! `(st_dev, st_ino)` ownership and sticky-bit/UID invariants to resist TOCTOU
+//! races and avoid removing files the target may still execute.
+
 use std::collections::BTreeMap;
 use std::io::{Read as _, Write as _};
 use std::os::fd::OwnedFd;

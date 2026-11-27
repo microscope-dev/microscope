@@ -1,3 +1,7 @@
+//! Converts raw per-CPU `perf` record streams into a time-ordered `Capture`,
+//! resolving mappings, JIT code, stack unwinds, BPF interpreter outputs,
+//! off-CPU intervals, and in-process probe events.
+
 mod cuts;
 mod held;
 mod modules;
@@ -238,10 +242,13 @@ struct Located {
 
 const LOCATED_KEPT: usize = 4;
 
+/// Controls whether probe control blocks are discovered ahead of record ingestion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Loads {
     AsMapped,
 
+    /// Pre-scans `mmap` records, defers heavy DWARF loading, and pauses record
+    /// processing at pending images until probe rings are enabled.
     AfterProbes,
 }
 
@@ -258,6 +265,11 @@ struct Share {
     kept: u64,
 }
 
+/// Time-orders per-CPU `perf` records up to a watermark and builds a `Capture`.
+///
+/// Records past the watermark (or after a probe/mapping sync stop) stay in `held`
+/// across drains until all CPUs have caught up, preserving causal ordering for
+/// mappings, context switches, and BPF `Output`/`Sample` pairing.
 pub struct Processor {
     builder: CaptureBuilder,
     rules: FrameRules,

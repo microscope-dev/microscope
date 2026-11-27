@@ -101,6 +101,10 @@ export function Frame(props: { children?: JSX.Element }) {
   );
 }
 
+/**
+ * Global capture-phase keydown handler so workbench/debugger shortcuts win over pane handlers
+ * and browser defaults, while standing down when modal windows are open or an element owns Escape.
+ */
 function useKeys() {
   const { run } = useCommands();
   const listener = (event: KeyboardEvent) => {
@@ -120,6 +124,7 @@ function useKeys() {
       if (typing && event.key === "Escape" && document.activeElement instanceof HTMLElement) {
         const box = document.activeElement;
 
+        // Defer blur until after the current keydown dispatch so the input can handle Escape first.
         setTimeout(() => box.blur(), 0);
       }
       return;

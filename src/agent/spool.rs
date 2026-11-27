@@ -1,3 +1,7 @@
+//! Crash-safe on-disk chunk spool with atomic writes, strict owner binding
+//! (`server` + `agent_id`), bounded FIFO eviction, and lock-free batch assembly
+//! via `SpoolSnapshot`.
+
 use std::{
     collections::BTreeMap,
     fs::{self, DirBuilder, File, OpenOptions},
@@ -152,6 +156,8 @@ impl Spool {
         Ok(number)
     }
 
+    /// Binds the spool to a `(server, agent_id)` owner, purging queued chunks
+    /// on mismatch so data from one identity is never uploaded under another.
     pub fn bind_owner(
         &mut self,
         server: &str,
@@ -409,6 +415,8 @@ impl Spool {
         self.entries.range(..=number).next().is_some()
     }
 
+    /// Evicts oldest chunks until `total_bytes <= max_bytes`, always keeping
+    /// at least one chunk so a single large chunk is not immediately dropped.
     fn evict(&mut self) -> io::Result<()> {
         let mut evicted = false;
         while self.total_bytes > self.max_bytes && self.entries.len() > 1 {

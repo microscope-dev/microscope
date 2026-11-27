@@ -1,3 +1,8 @@
+//! Core debugging, symbolication, expression evaluation, and profiling library.
+//!
+//! Frontends (CLI, DAP, web) drive sessions through [`DebuggerHandle`] and
+//! [`ProcessGroup`], while the platform backend owns the tracer thread.
+
 #![cfg_attr(
     not(test),
     deny(
@@ -403,6 +408,10 @@ fn event_capacity() -> usize {
         .unwrap_or(EVENT_CAPACITY)
 }
 
+/// Owns a live debug session and its backend controller thread.
+///
+/// Holds a reserved `shutdown_permit` on the request channel so shutdown and
+/// `Drop` can always deliver a stop message even if the queue is full.
 pub struct Debugger {
     handle: DebuggerHandle,
     controller: Option<backend::ControllerJoin>,

@@ -1,3 +1,6 @@
+//! Untimed lead-in records (such as stack payloads) stay grouped with the timed record that
+//! follows them in the same ring so they are never split across cutoff boundaries.
+
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, VecDeque};
 

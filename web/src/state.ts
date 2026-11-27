@@ -8,6 +8,13 @@ export interface Store<T> {
   read(): T;
 }
 
+/**
+ * Creates a shallow-merged store backed by per-key SolidJS signals.
+ *
+ * `read()` returns a tracking Proxy so `useSelector` only recomputes when
+ * properties actually read by the selector change. Signal creation is skipped
+ * on the server (`isServer`) to avoid retaining reactive graphs during SSR.
+ */
 export function createState<T>(initial: T | (() => T)): Store<T> {
   let current = typeof initial === "function" ? (initial as () => T)() : initial;
   const anySignal = isServer ? null : createSignal(0, { ownedWrite: true });
@@ -120,6 +127,7 @@ export function useSelector<T, R>(
       const tracked = store.read();
       const selected = select(tracked);
       if ((selected as unknown) === (tracked as unknown)) {
+        // Selecting the root object subscribes to any key change and unwraps the Proxy.
         if (typeof tracked === "object" && tracked !== null) {
           Reflect.ownKeys(tracked);
         }

@@ -69,6 +69,7 @@ impl Renderers {
     }
 
     pub fn console(color: bool, root: PathBuf) -> Self {
+        // Leaked once per session so `Renderer` stays `Copy` without refcounting.
         let look: &'static Look = Box::leak(Box::new(Look {
             palette: Palette::new(
                 terminal::ThemeName::Default,

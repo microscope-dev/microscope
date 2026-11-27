@@ -84,6 +84,11 @@ pub fn spells(mangled: &str, name: &str) -> bool {
                 .is_some_and(|qualifiers| qualifiers.starts_with(' ')))
 }
 
+/// Cheap substring pre-filter checked against mangled symbol names before
+/// paying for full demangling.
+///
+/// Includes Itanium operator encodings and `std::` abbreviations so searches
+/// for operators or standard types don't false-negative.
 #[derive(Debug, Clone, Copy)]
 pub struct Clue<'a> {
     word: &'a str,

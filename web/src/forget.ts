@@ -33,6 +33,14 @@ function marks(model: Model): Marks {
   };
 }
 
+/**
+ * Selectively invalidates cached RPC answers and remembered value strings
+ * (used for change highlighting) based on what changed between two debugger
+ * state snapshots (`before` -> `after`).
+ *
+ * Returns `true` only when the session itself changed so callers can reset
+ * per-session tab state and console output.
+ */
 export function forget(before: Marks, after: Marks, answers: Cache, values: Recall): boolean {
   if (before.session !== after.session) {
     answers.clear();

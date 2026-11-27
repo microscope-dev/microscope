@@ -1,3 +1,9 @@
+//! Main ELF and DWARF debug-information loader and CFI unwinder.
+//!
+//! Coordinates separate/supplementary/split DWARF loading, parallel unit indexing
+//! (functions, line tables, types, variables, call sites), on-disk image caching,
+//! and `.eh_frame`/`.debug_frame` stack unwinding.
+
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -267,6 +273,10 @@ struct Units<'data> {
     inherited_languages: Vec<Option<gimli::DwLang>>,
 }
 
+/// Lazy raw-DIE cursor that skips unread attributes on advance.
+///
+/// Passes inspect each DIE's tag and depth via `next` and only call `decode`
+/// for DIEs they care about, avoiding attribute decoding on irrelevant entries.
 pub(super) struct DieWalk<'a, 'data> {
     raw: gimli::EntriesRaw<'a, Reader<'data>>,
     entry: gimli::DebuggingInformationEntry<Reader<'data>>,
@@ -2480,6 +2490,12 @@ fn undescribed_frames(
     frames.extend(found.into_iter().flat_map(|(_, found)| found));
 }
 
+/// Repairs epilogue CFI where GCC/Clang pop callee-saved registers and advance
+/// CFA without emitting `DW_CFA_restore`.
+///
+/// Without repair, stale `Offset` rules point below `RSP` (outside `perf`'s
+/// copied stack window); proving register preservation to `ret` lets the
+/// unwinder keep their live values.
 fn restored_returns<'data, S>(
     section: &S,
     bases: &BaseAddresses,
@@ -2796,6 +2812,8 @@ impl UnwindInfo for DwarfUnwindInfo {
             .unwrap_or(result)
     }
 
+    /// Unwinds one frame using a five-tier fallback: `.eh_frame`, `.debug_frame`,
+    /// stub push rules, statically proved `x86_64` frames, and Go `.gopclntab`.
     fn unwind(
         &self,
         address: ImageAddress,

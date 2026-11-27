@@ -43,6 +43,8 @@ impl Trace {
     }
 }
 
+/// Distinguishes real debugger bugs from unmodeled kernel/CPU behavior or
+/// bugs in the simulator itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureKind {
     Debugger,
@@ -103,6 +105,8 @@ impl Failure {
         }
     }
 
+    /// Stable failure key with run-specific numbers and struct details
+    /// stripped, used to keep shrinking locked onto the same bug.
     #[must_use]
     pub fn signature(&self) -> String {
         let words = self.message.split(['{', '[']).next().unwrap_or_default();

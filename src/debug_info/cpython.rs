@@ -1,3 +1,10 @@
+//! Discovers CPython runtime metadata and struct layouts from ELF binaries.
+//!
+//! CPython 3.13+ embeds a `_Py_DebugOffsets` table in `.PyRuntime` prefixed with
+//! `"xdebugpy"`. Because that table omits internal fields needed for inspection,
+//! we cross-check it against pre-generated header layouts and merge the two;
+//! CPython 3.12 relies solely on exact-version generated layouts.
+
 mod schemas;
 
 #[rustfmt::skip]
@@ -275,6 +282,10 @@ fn describe(
     (version, flags, from_table(version, free_threaded, table))
 }
 
+/// Distro and standalone builds can differ in compile-time options that shift
+/// fields not present in `_Py_DebugOffsets`, so we reject the binary if no
+/// generated build agrees with the table or if agreeing builds disagree on the
+/// remaining fields.
 fn from_table(
     version: PyVersion,
     free_threaded: bool,
@@ -304,6 +315,7 @@ fn from_table(
             continue;
         };
 
+        // Standard builds still reserve slots for these free-threaded fields (typically 0).
         if !free_threaded
             && matches!(
                 field,

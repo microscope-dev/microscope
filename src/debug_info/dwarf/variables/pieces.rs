@@ -1,3 +1,6 @@
+//! Translates evaluated DWARF location pieces (`DW_OP_piece` / `DW_OP_bit_piece`)
+//! into `ValueStorage`, coalescing adjacent memory and undefined pieces.
+
 use std::sync::Arc;
 
 use gimli::{Location, Piece, Reader as _, RunTimeEndian, Value};

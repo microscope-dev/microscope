@@ -1,3 +1,7 @@
+//! Watchpoint hit accounting comparing reported `WatchpointHit`
+//! stops against kernel-logged accesses, byte baselines, and `WatchAccess`
+//! semantics (including `WatchAccess::Change` suppressing unchanged stores).
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::hits::{Known, Policy};

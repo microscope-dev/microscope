@@ -1,3 +1,8 @@
+//! Helper subcommand (`microscope dap-launcher`) run inside a DAP client's terminal.
+//!
+//! Connects back to the adapter's Unix socket and blocks on a 1-byte ack so the
+//! debugger is attached before `exec` replaces this process with the target program.
+
 use std::ffi::OsString;
 use std::io::{self, Read as _};
 use std::os::unix::net::UnixStream;

@@ -1,3 +1,10 @@
+//! Detects anonymous executable mappings that are verbatim copies of code from a
+//! loaded module (e.g. V8 remapping embedded builtins) or JIT-generated code.
+//!
+//! When a runtime copies a code page that already has a software breakpoint
+//! installed, this module scrubs the copied trap byte and rewinds any thread
+//! that hits a copied trap before refresh runs.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::sync::Arc;

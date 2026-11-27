@@ -1,3 +1,8 @@
+//! Generated Linux x86 (`x86_64`, `x86_32`, `x32`) syscall number and kernel entry tables.
+//!
+//! Compile-time assertions verify ascending order so number-keyed lookups can
+//! use binary search.
+
 use super::model::{Abi, SyscallId};
 
 mod generated {

@@ -1,3 +1,8 @@
+//! Per-stop integer reference table for DAP frames, variable containers, and targets.
+//!
+//! Reference numbers stay within signed 32-bit bounds for client compatibility and
+//! monotonically increase across `clear()` calls so stale handles never alias new ones.
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -7,6 +12,7 @@ use microscope::{
     VariableKind,
 };
 
+/// Cap at `i32::MAX` because many DAP clients store references in signed 32-bit ints.
 const MAX_REFERENCE: i64 = i32::MAX as i64;
 
 #[derive(Debug, Clone)]

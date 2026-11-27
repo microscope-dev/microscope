@@ -33,6 +33,11 @@ interface Expansion {
 
 const ExpansionContext = createContext<Expansion | null>(null);
 
+/**
+ * URL-backed expansion context (`look.x`) that records values in `recall` to highlight changes
+ * across stops. Use `LocalExpansion` for ephemeral trees (e.g. console output) and `Earlier`
+ * around stale previous-stop data so it does not overwrite `recall` history.
+ */
 export function LinkedExpansion(props: { children: JSX.Element }) {
   const focus = useFocus();
   const change = useLook();
@@ -80,6 +85,7 @@ function useExpansion(): Expansion {
 }
 
 export function RowList(props: { rows: readonly Row[]; parent: string; depth: number }) {
+  // Append an occurrence index because shadowed locals or map entries can share `row.name`.
   const items = createMemo(() => {
     const seen = new Map<string, number>();
     return props.rows.map((row) => {

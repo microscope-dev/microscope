@@ -1,3 +1,9 @@
+//! Expression type system bridging debuggee types and synthetic language types.
+//!
+//! Combines target [`TypeReference`]s with synthetic types ([`Ty::Exact`],
+//! [`Ty::Int`], [`Ty::Float`], [`Ty::Pointer`], [`Ty::Dynamic`]) and classifies
+//! them into [`Category`] for binding and interpretation.
+
 use std::sync::Arc;
 
 use super::number::{FloatFormat, IntType};
@@ -77,6 +83,9 @@ pub trait TypeSource {
 
 const MAX_WRAPPERS: usize = 64;
 
+/// Unwraps typedefs, qualifiers, and distinct named aliases to the underlying type.
+///
+/// Stops after `MAX_WRAPPERS` hops to avoid infinite loops on cyclic debug info.
 pub fn representation(
     types: &dyn TypeSource,
     mut ty: TypeReference,
@@ -345,6 +354,12 @@ fn language_type_id(leaf: &Ty, depth: u32) -> Option<u32> {
     Some((depth << 20) + leaf)
 }
 
+/// Assigns a stable synthetic [`TypeReference`] to any expression [`Ty`].
+///
+/// Non-program leaf types live in [`LANGUAGE_IMAGE`] with pointer depth packed
+/// into the high bits of `TypeId`. Pointers to program types fold `(image, depth)`
+/// downward from `LANGUAGE_IMAGE` into the reserved upper half of `ModuleImageId`
+/// (`>= LANGUAGE_IMAGES`) so they never collide with real module images.
 pub fn type_reference(ty: &Ty) -> TypeReference {
     let mut depth = 0_u32;
     let mut leaf = ty;

@@ -86,6 +86,8 @@ struct ControlBridgeState {
     pipeline: Option<PipelineControl>,
 }
 
+/// Background long-poll worker; `stop()` detaches the thread instead of joining
+/// so shutdown never blocks on an in-flight 65s poll.
 struct PollHandle {
     bridge: Arc<(Mutex<ControlBridgeState>, Condvar)>,
     thread: Option<thread::JoinHandle<()>>,

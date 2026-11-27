@@ -78,6 +78,9 @@ pub enum FramePointerRule {
     NoUnwindInfo,
 }
 
+/// Probes `unwind` at `address` with synthetic `RBP`/`RSP` values and a
+/// bitwise-inverting memory reader to test whether CFI preserves the standard
+/// frame-pointer chain (`CFA == RBP + 16`, saved `RBP` at `[RBP]`, caller at `[RBP + 8]`).
 pub fn frame_pointer_rule<U: UnwindInfo + ?Sized>(
     unwind: &U,
     address: ImageAddress,
@@ -164,6 +167,9 @@ pub struct FrameContext {
 
 const DENSE_REGISTERS: usize = 64;
 
+/// Registers `0..64` live in a dense inline array guarded by the `known` bitmask
+/// to avoid heap allocation on hot unwind paths; higher register numbers spill
+/// into the sorted `others` vector.
 #[derive(Clone, PartialEq, Eq)]
 pub struct RegisterFile {
     known: u64,

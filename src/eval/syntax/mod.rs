@@ -1,3 +1,11 @@
+//! Context-free expression parser, AST, and round-tripping printer.
+//!
+//! Parsing does not consult a symbol table. Because C-style casts like
+//! `(T) - x`, `(T) * x`, and `(T) & x` are syntactically ambiguous with binary
+//! operators until `T` is resolved as a type or value, [`Expression`] pre-parses
+//! all `2^N` interpretations (capped by [`MAX_AMBIGUITIES`]) and lets `bind`
+//! select the matching reading via a bitmask.
+
 pub mod ast;
 mod lexer;
 mod parser;
@@ -45,6 +53,12 @@ impl Span {
     }
 }
 
+/// Syntax dialect controlling which built-ins and forms are accepted.
+///
+/// `Console` accepts user REPL/watch expressions (including tuple keys for map
+/// indexing). `View` is used inside `.views` files, enabling low-level layout
+/// intrinsics (`offsetof`, `container_of`, `global`, `inner`) and forbidding
+/// tuples.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dialect {
     Console,

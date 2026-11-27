@@ -1,3 +1,10 @@
+//! Language and async runtime models for inspecting managed tasks, stacks,
+//! exceptions, dynamic values, and interpreted frames.
+//!
+//! Each runtime implements [`RuntimeModel`] against two narrow abstractions:
+//! [`RuntimeImage`] for static debug info and [`RuntimeStop`] for target
+//! memory and thread state at a stop.
+
 mod agents;
 pub use agents::{
     AgentFailure, AgentRequestTicket, AgentRetirement, AgentRetirementProof, BootstrapTicket,
@@ -40,6 +47,11 @@ use crate::{
     VirtualAddress,
 };
 
+/// Result paired with non-fatal diagnostic gaps encountered while reading
+/// target state.
+///
+/// Runtime queries return partial data rather than failing outright when a
+/// single goroutine, shard, or label set is unreadable or mid-mutation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Partial<T> {
     pub value: T,
@@ -69,6 +81,11 @@ pub struct ImageSymbol {
     pub size: Option<u64>,
 }
 
+/// Static debug-info view of a loaded binary used during runtime detection and
+/// layout binding.
+///
+/// Kept as a narrow trait over [`ModuleImage`] so runtime models stay decoupled
+/// from DWARF/ELF internals and can be tested with synthetic images.
 pub trait RuntimeImage: std::fmt::Debug {
     fn producers(&self) -> Vec<&str>;
 
@@ -203,6 +220,8 @@ pub enum ReportedValue {
 
 pub type ReportedLocals = Result<Arc<[ReportedLocal]>, Arc<str>>;
 
+/// Live target view at a single debugger stop (memory, threads, TLS, and
+/// load bias).
 pub trait RuntimeStop {
     fn reported_locals(&self, _frame: VirtualAddress) -> Option<ReportedLocals> {
         None
@@ -291,6 +310,12 @@ pub trait RuntimeStop {
 
 type ThreadIdPairs = Arc<[(ThreadId, TargetThreadId)]>;
 
+/// Per-stop aligned block cache for target memory reads and thread identity
+/// lookups.
+///
+/// Coalesces small struct-field reads into fixed-size blocks and tracks which
+/// blocks were touched so non-stopping live stack walks (`stop.runs()`) can
+/// batch-read pages via `read_each` to reduce tearing.
 #[derive(Debug)]
 pub struct StopMemory {
     blocks: std::cell::RefCell<std::collections::BTreeMap<u64, Block>>,
@@ -549,14 +574,22 @@ pub enum TaskContext {
     },
 }
 
+/// Directive returned by [`RuntimeModel::cross`] when the unwinder reaches a
+/// runtime stack-switching frame.
 #[derive(Debug, Clone)]
 pub enum Crossing {
+    /// Keep unwinding normally on the current stack.
     Stay,
 
+    /// Switch to the returned registers and re-unwind the same frame on the
+    /// target stack (used when a call returns across stacks).
     Resume(RegisterFile),
 
+    /// Switch directly to the returned registers as the next caller frame
+    /// (used when a runtime trampoline abandons the current stack).
     Continue(RegisterFile),
 
+    /// Stop unwinding; this frame is the bottom of the stack.
     Outermost,
 }
 
@@ -607,6 +640,10 @@ pub enum HookPlace {
     Companion(&'static str),
 }
 
+/// Compare-and-swap patch against target memory.
+///
+/// Callers verify `expected` matches current target bytes before writing
+/// `bytes` so stale arming writes cannot clobber concurrent runtime state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeWrite {
     pub address: VirtualAddress,
@@ -626,7 +663,7 @@ pub enum HookEvent {
         description: Arc<str>,
     },
 
-    /// The agent applied this generation of its whole desired state. The
+    /// The agent applied this generation of its whole desired state.
     Armed { generation: u64 },
 
     /// Nothing the user sees: the thread goes on.
@@ -637,16 +674,16 @@ pub enum HookEvent {
         report: RuntimeException,
     },
 
-    /// under these numbers, at one event of one thread, which stop once.
+    /// One or more managed breakpoints hit together at a single thread event.
     Breakpoint { numbers: Vec<u64> },
 
-    /// as the runtime judges it: the thread reached where the step stops.
+    /// The armed runtime step finished at its target location.
     StepEnded { number: u64 },
 
-    /// The step the runtime was armed with under this number stopped where
+    /// The armed runtime step stopped before reaching its target location.
     StepIncomplete { number: u64, description: Arc<str> },
 
-    /// to call native code at `target`, where it ends if the code is the
+    /// The armed runtime step is about to enter native code at `target`.
     StepCalls { number: u64, target: VirtualAddress },
 
     Assigned {
@@ -731,6 +768,11 @@ pub enum HeldPlace {
     Within(u64),
 }
 
+/// Runtime-specific inspection and control interface implemented per detected
+/// language or async runtime (Go, Rust, Tokio, Python, Node).
+///
+/// Most methods default to no-op or unsupported so each runtime only implements
+/// the capabilities it owns.
 pub trait RuntimeModel: Send + Sync + std::fmt::Debug {
     fn tasks(
         &self,
@@ -1697,7 +1739,7 @@ pub enum InterpretedKind {
         length: u64,
     },
 
-    /// An object of a class that holds no value of a built-in type, which
+    /// User-defined class instance without a built-in scalar or collection value.
     Instance,
 
     Other,

@@ -62,6 +62,13 @@ export interface DashboardStreamCallbacks {
   onFatal?: (status: number) => void;
 }
 
+/**
+ * Opens the dashboard SSE stream over `POST /api/query/stream`.
+ * Uses `fetch` instead of `EventSource` because subscriptions send a JSON body
+ * (scope + pane specs). Aborts and reconnects with exponential backoff (500ms..5s)
+ * if the initial `status` event does not arrive within 5s or on transient errors;
+ * 400/401/403/404 and 503 responses are fatal (408/429 reconnect with backoff).
+ */
 export function openDashboardStream(
   body: { scope: ViewScope; session_id?: number; panes: StreamPaneSpec[] },
   callbacks: DashboardStreamCallbacks,
@@ -214,6 +221,11 @@ export function openDashboardStream(
   };
 }
 
+/**
+ * Estimates how far behind live data is using the server-side delta
+ * (`serverTimeNs - newestDataNs`) plus local time elapsed since receipt,
+ * avoiding skew between client and server clocks.
+ */
 export function computeLagMs(
   newestDataNs: number | null,
   serverTimeNs: number | null,

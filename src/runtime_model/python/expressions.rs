@@ -1,3 +1,8 @@
+//! Side-effect-free expression evaluation over stopped `CPython` frames.
+//!
+//! Resolves locals, closure cells, globals, and builtins, and probes `dict` hash tables directly
+//! by reproducing `CPython`'s hash functions (`SipHash`, numeric, and tuple `xxHash`) out of process.
+
 use std::sync::Arc;
 
 use super::code::{CodeId, CodeTable};

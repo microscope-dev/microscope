@@ -1,3 +1,8 @@
+//! Out-of-process `asyncio.Task` enumeration and suspended await-chain reconstruction.
+//!
+//! Discovers tasks from both live per-thread and interpreter exited-thread doubly-linked lists,
+//! and walks suspended coroutine stacks by reading the awaited object from each frame's stack slot.
+
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 

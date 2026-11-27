@@ -75,6 +75,8 @@ pub struct Executable {
     c_library: linux::CLibrary,
 }
 
+/// Cross-run cache of parsed `DebugInfo` keyed by path and `FileStamp` so restarts and
+/// multi-process groups avoid reparsing unchanged binaries and shared libraries.
 #[derive(Clone, Default)]
 pub struct KeptModules(Arc<std::sync::Mutex<std::collections::BTreeMap<PathBuf, KeptModule>>>);
 
@@ -147,6 +149,8 @@ pub fn executable_source(path: &Path) -> Result<ExecutableSource> {
 
 const MAX_INTERPRETERS: usize = 4;
 
+/// Follows `#!` chains up to the Linux kernel's depth limit (`BINPRM_MAX_RECURSION` = 4)
+/// so debug info is loaded from the actual ELF interpreter while `launch_path` stays the script.
 fn script_interpreter(program: &Path) -> Result<PathBuf> {
     let mut current = program.to_owned();
 
@@ -293,6 +297,8 @@ pub enum ControllerMessage {
 }
 
 impl ControllerMessage {
+    /// Run-control commands, `waitpid` events, and agent timeouts jump ahead of queued
+    /// read-only inspection requests so a busy UI cannot stall stop handling or shutdown.
     pub(crate) const fn preempts_inspection(&self) -> bool {
         matches!(
             self,

@@ -1,3 +1,7 @@
+//! Variable assignment in interpreted frames (Python via the in-process runtime
+//! agent and JavaScript via the CDP inspector), which requires briefly resuming
+//! the target so the runtime performs the mutation safely.
+
 use std::sync::Arc;
 
 use nix::unistd::Pid;
@@ -230,6 +234,11 @@ impl<P: LinuxTraceOps> Controller<P> {
         }
     }
 
+    /// Verifies that it is safe to run an in-process agent assignment on `pid`.
+    ///
+    /// Requires the thread to be stopped at an agent hook, free of pending signals,
+    /// and the sole thread in the interpreter so no other thread observes partial
+    /// state or deadlocks on the GIL.
     fn assignable(&self, pid: Pid, runtime: RuntimeId, span: Span) -> Result<()> {
         let inferior = self.session.inferior().ok_or(Error::NotRunning)?;
         let bound = self

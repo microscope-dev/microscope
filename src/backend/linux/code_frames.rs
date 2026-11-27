@@ -43,6 +43,8 @@ impl<P: InspectionOps> Controller<P> {
             };
 
             let after_call = activation != 0 || stack.after_call;
+            // On x86_64, `rbp + 16 == cfa` indicates the frame prologue has finished
+            // pushing the saved frame pointer, so frame-pointer-relative slots are valid.
             let entered = after_call
                 || physical
                     .registers

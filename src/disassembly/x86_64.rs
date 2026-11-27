@@ -238,6 +238,8 @@ fn indirect(
     )]
     let encoded = &bytes[..instruction.len()];
 
+    // Re-decode under AMD rules to bail out on ambiguous encodings whose
+    // indirect-branch semantics differ between Intel and AMD.
     let amd =
         iced_x86::Decoder::with_ip(64, encoded, instruction.ip(), DecoderOptions::AMD).decode();
     if amd.code() != instruction.code() {

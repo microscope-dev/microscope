@@ -1,3 +1,6 @@
+//! Periodic task and thread snapshotter that briefly observes a running process
+//! to capture async/goroutine wait stacks and thread labels.
+
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -1247,6 +1250,9 @@ impl LiveRuntime<'_> {
         }
     }
 
+    /// Walks a running thread's interpreted frames without stopping it,
+    /// bracketing the walk with `/proc/<pid>/task/<tid>/syscall` and
+    /// context-switch counts so torn reads are discarded.
     fn published_thread(
         &self,
         tid: u32,
@@ -1306,6 +1312,9 @@ impl LiveRuntime<'_> {
         Ok(Some(frames))
     }
 
+    /// Unwinds a parked task optimistically without stopping the process,
+    /// re-reading touched 4 KiB stack pages or double-walking future chains
+    /// and rechecking task context to reject torn reads.
     fn frames(&self, task: &runtime_model::RuntimeTask) -> Result<Option<Vec<WaitFrame>>, String> {
         let task_ref = runtime_model::TaskRef {
             number: task.number,

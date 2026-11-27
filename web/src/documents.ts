@@ -90,6 +90,7 @@ export function documentsGroup(layout: Layout, files: readonly string[] = []): G
   return found?.id ?? layout.focused;
 }
 
+/** Syncs source tabs and the active document view into layout, keeping an empty "" source pane when files is empty so settle does not prune the group. */
 export function arrange(
   layout: Layout,
   files: readonly string[],

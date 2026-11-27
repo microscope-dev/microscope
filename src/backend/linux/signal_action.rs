@@ -1,3 +1,6 @@
+//! Delivers SIGUSR1 to open Node's inspector only after an injected `rt_sigaction` probe
+//! confirms Node's handler is installed (default SIGUSR1 terminates the process).
+
 use crate::backend::linux::Registers;
 use crate::backend::linux::arch::SYSCALL_INSTRUCTION;
 use std::time::Duration;

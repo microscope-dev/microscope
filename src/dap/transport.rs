@@ -32,6 +32,7 @@ pub enum TransportError {
 pub struct Frame {
     pub body: Vec<u8>,
 
+    /// Whether the frame carried an `Origin` header, used to reject browser requests.
     pub origin: bool,
 }
 

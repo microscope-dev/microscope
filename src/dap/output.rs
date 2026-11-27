@@ -88,6 +88,8 @@ pub fn pieces(text: &str, limit: usize) -> impl Iterator<Item = &str> {
     })
 }
 
+/// Decodes as much of `bytes` as is valid UTF-8, leaving any incomplete trailing
+/// multi-byte sequence buffered until the next read (or replacing it at `end`).
 pub fn decode(bytes: &mut Vec<u8>, end: bool) -> String {
     let mut text = String::new();
     let mut rest = &bytes[..];

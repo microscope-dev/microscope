@@ -14,6 +14,11 @@ use crate::image::{StrId, Strings};
 pub use builder::CaptureBuilder;
 pub use records::*;
 
+/// Normalized, table-oriented recording of samples, off-CPU intervals, zones,
+/// tasks, and syscalls.
+///
+/// Cross-table references use `u32` row indices (`NONE` when absent) and are
+/// verified once by `Capture::validate` so hot accessors can index directly.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Capture {
     pub strings: Vec<u8>,
@@ -253,6 +258,12 @@ impl Capture {
             .map(|(kind, _, _, bytes)| (kind, bytes.len() as u64))
     }
 
+    /// Verifies all cross-table indices, DAG/ordering invariants, and
+    /// string/blob bounds.
+    ///
+    /// Enforces that stack parents precede children, per-thread sample and
+    /// off-CPU ranges tile their tables in time order, zones at one depth do
+    /// not overlap, and gaps are disjoint.
     #[expect(
         clippy::too_many_lines,
         reason = "one check per table keeps every promise the tables make in one place"

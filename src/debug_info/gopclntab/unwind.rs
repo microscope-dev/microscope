@@ -1,3 +1,8 @@
+//! Stack unwinding for Go frames using `.gopclntab` PC-to-SP tables.
+//!
+//! Go does not emit `.eh_frame` for Go functions and may strip `.debug_frame`,
+//! so unwinding relies on `pcsp` deltas plus prologue-derived `RBP` save ranges.
+
 use std::sync::Arc;
 
 use super::{GoFunction, GoTable};
@@ -91,6 +96,8 @@ impl GoUnwind {
         })
     }
 
+    /// Go's `pcsp` measures the frame size below the saved return address, so the
+    /// caller's `RSP` on entry sits one 8-byte return-address slot above it.
     pub fn cfa(
         &self,
         address: ImageAddress,
@@ -145,6 +152,9 @@ impl GoUnwind {
         })())
     }
 
+    /// On `x86_64`, Go pushes `RBP` directly below the return address (`cfa - 8`),
+    /// placing it at `cfa - 16`; before any stack adjustment (`delta == 0`) in
+    /// non-assembly Go code, the caller's `RBP` is still live in the register.
     pub fn caller_frame_pointer(
         &self,
         address: ImageAddress,

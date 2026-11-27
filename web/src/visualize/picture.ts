@@ -204,6 +204,11 @@ interface Totals {
   points: number;
 }
 
+/**
+ * Strictly validates an untrusted picture returned from the renderer sandbox.
+ * Enforces plain objects, allowlisted properties, safe color and SVG path-data
+ * grammars, and global shape/point/pixel/depth budgets to prevent injection or DoS.
+ */
 export function validate(value: unknown): Picture {
   const where = "the picture";
   const picture = object(value, where);
@@ -494,6 +499,7 @@ export function isLine(item: Shape): boolean {
   return item.type === "line" || item.type === "polyline";
 }
 
+/** Releases GPU memory for any transferred `ImageBitmap`s in a picture when it is discarded or fails validation. */
 export function closeImages(picture: unknown): void {
   if (typeof ImageBitmap === "undefined") {
     return;

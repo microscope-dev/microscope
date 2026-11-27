@@ -11,6 +11,11 @@ struct Block([u8; TABLE_ALIGNMENT]);
 
 const _: () = assert!(align_of::<Block>() == TABLE_ALIGNMENT);
 
+/// 64-byte-aligned byte buffer backed by either heap blocks or a read-only
+/// `mmap`.
+///
+/// Alignment guarantees zero-copy `zerocopy` table reads; calling
+/// `as_mut_bytes` on a mapped buffer copies it to the heap first.
 pub struct AlignedBytes {
     storage: Storage,
     length: usize,
@@ -83,6 +88,9 @@ impl AlignedBytes {
         Some(aligned)
     }
 
+    /// Maps `file` read-only after verifying it is a regular file owned by the
+    /// current effective UID and not writable by group or others (`0o022`),
+    /// preventing another user from mutating or truncating memory behind `&[u8]`.
     #[allow(unsafe_code, reason = "mapping a file is unsafe")]
     pub fn map(file: &std::fs::File, length: usize) -> std::io::Result<Self> {
         use std::os::unix::fs::MetadataExt as _;
@@ -277,6 +285,9 @@ pub fn read_input(path: &Path) -> std::io::Result<(Vec<u8>, FileStamp)> {
     Ok(read_snapshot(path, MAX_INPUT, &mut |_| {}, vector)?)
 }
 
+/// Opens `path` with `O_PATH` before checking `is_file` and reopening via
+/// `/proc/self/fd`, avoiding both blocking on FIFOs/devices and `stat`-then-`open`
+/// TOCTOU races.
 pub fn read_named(path: &Path) -> std::io::Result<Vec<u8>> {
     use std::os::fd::AsRawFd as _;
     use std::os::unix::fs::OpenOptionsExt as _;
@@ -302,6 +313,9 @@ fn vector(length: usize) -> Option<Vec<u8>> {
 
 const READ_ATTEMPTS: u32 = 3;
 
+/// Reads a lock-free consistent snapshot of `path` by comparing `FileStamp`
+/// before and after the read (plus a 1-byte EOF probe), retrying up to
+/// `READ_ATTEMPTS` times if the file changes concurrently.
 pub fn read_snapshot<B: AsMut<[u8]>>(
     path: &Path,
     limit: u64,

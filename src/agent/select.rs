@@ -1,3 +1,7 @@
+//! Scans `/proc` and container/systemd metadata to classify running processes
+//! against local and remote selection rules (with pod and environment opt-out
+//! taking precedence).
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File},

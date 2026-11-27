@@ -1,3 +1,8 @@
+//! Decoder for `.debug_microscope_views` ELF sections embedded in binaries.
+//!
+//! Lets libraries ship `.views` definitions, Wasm kernels, and JS renderers
+//! alongside debug info in a simple length-prefixed binary record stream.
+
 use std::sync::Arc;
 
 use super::ViewSet;
@@ -112,6 +117,8 @@ fn records<'a>(module: &str, bytes: &'a [u8]) -> Records<'a> {
     };
 
     while let Some(&byte) = bytes.get(position) {
+        // Linkers may insert zero-byte alignment padding when concatenating
+        // `.debug_microscope_views` sections from multiple object files.
         if byte == 0 {
             position += 1;
             continue;

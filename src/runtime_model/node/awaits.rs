@@ -1,3 +1,9 @@
+//! Reconstructs V8 async await chains out of process from an executing resume closure.
+//!
+//! Follows each pending `JSPromise` through its single `PromiseReaction` (including `Promise.all`,
+//! `Promise.allSettled`, and `Promise.any` combinators) and decodes each suspended generator's
+//! bytecode offset.
+
 use std::collections::BTreeSet;
 use std::sync::Arc;
 

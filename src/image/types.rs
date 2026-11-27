@@ -1,3 +1,9 @@
+//! Flattened DWARF type graph and lazy per-`TypeId` decode cache.
+//!
+//! Each [`TypeRecord`] stores a tagged `kind` plus polymorphic `parts`,
+//! `detail`, and `value` fields indexing into kind-specific side tables
+//! (members, bases, variants, enumerators, dimensions, and identities).
+
 use std::sync::{Arc, OnceLock};
 
 use zerocopy::little_endian::{I128, U16, U32, U64, U128};
@@ -1569,6 +1575,10 @@ const fn member_layout(layout: u8, offset: u64, bit_size: u64) -> RecordMemberLa
     }
 }
 
+/// Lazily decodes and caches [`TypeNode`]s per [`TypeId`] over an [`Arc<Image>`].
+///
+/// Using per-slot [`OnceLock`]s avoids decoding a binary's entire type graph
+/// upfront while handing out stable `&TypeNode` references to callers.
 #[derive(Debug)]
 pub struct TypeTable {
     image: Arc<Image>,

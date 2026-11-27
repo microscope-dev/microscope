@@ -44,6 +44,8 @@ pub async fn serve(
     let (answers, mut pending) = mpsc::channel::<Message>(PENDING_ANSWERS);
 
     loop {
+        // Prioritize client frames and fresh watch snapshots over queued replies/broadcasts;
+        // lagged broadcasts are dropped rather than disconnecting slow tabs.
         let outgoing = tokio::select! {
             biased;
             incoming = socket.recv() => match incoming {
@@ -130,6 +132,8 @@ fn dispatch(
 
         let answer = match answered {
             Ok((result, bytes)) => {
+                // Binary payloads (e.g. visualizer buffers) precede their JSON `Result`
+                // frame, prefixed with the 8-byte little-endian request `id` for pairing.
                 if !bytes.is_empty() {
                     let mut frame = Vec::with_capacity(8 + bytes.len());
                     frame.extend_from_slice(&id.to_le_bytes());

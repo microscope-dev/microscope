@@ -1,3 +1,6 @@
+//! Resolves DWARF `DW_OP_entry_value` parameters and synthetic tail-call frames
+//! by lazily unwinding callers and matching call sites across tail-call chains.
+
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -316,6 +319,8 @@ impl<'a, P: InspectionOps> Callers<'a, P> {
             .ok_or_else(|| VariableRuntimeError::Fatal(format!("module {id} is not loaded").into()))
     }
 
+    /// Rejects call-site matching in shared libraries when another module exports a
+    /// symbol with the same name, since ELF interposition could redirect the call.
     fn entered_as_described(
         &self,
         module: ModuleId,
@@ -439,6 +444,8 @@ impl<P: InspectionOps> Chain<'_, '_, '_, P> {
     }
 }
 
+/// `VariableRuntime` for an intermediate tail-called frame whose registers, CFA,
+/// and stack memory were overwritten; only nested `entry_value` resolution works.
 struct TailCallFrame<'f, 'c, 'r, 'a, P: InspectionOps> {
     chain: &'f mut Chain<'c, 'r, 'a, P>,
     links: &'f [CallSiteId],

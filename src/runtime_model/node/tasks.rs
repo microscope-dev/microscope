@@ -1,3 +1,9 @@
+//! Enumerates `Node.js` active `libuv` handles, requests, timers, and thread-pool jobs across main
+//! and worker environments.
+//!
+//! Packs task numbers into a `u64` using `WORKER_SHIFT` to namespace worker threads and `POOL_JOB`
+//! to distinguish `libuv` worker-pool jobs from `async_id` handles.
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 

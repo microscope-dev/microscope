@@ -1,3 +1,6 @@
+//! Decodes Go panics, runtime throws, and fatal signals into exception reports
+//! matching Go's own formatting.
+
 use std::sync::Arc;
 
 use super::layout::{Missing, constant, member, offset, symbol};
@@ -60,6 +63,9 @@ pub struct Hooks {
 impl Hooks {
     pub fn bind(image: &dyn RuntimeImage) -> Self {
         let entry = |name: &str| symbol(image, name).ok();
+        // Hook `runtime.gopanic` past its prologue because `morestack` stack growth
+        // restarts `gopanic` from entry and would fire an entry trap twice; fatal
+        // hooks stop directly at entry.
         let panic = image.function_body("runtime.gopanic");
         let fatal_panic = entry("runtime.fatalpanic");
         let throws = ["runtime.throw", "runtime.fatal"]
@@ -244,6 +250,9 @@ impl Reader<'_> {
             .ok_or_else(|| format!("{what} is unreadable").into())
     }
 
+    /// Walks the `runtime._panic.link` chain recursively so oldest panics print
+    /// first, skipping `goexit` sentinels and indenting nested panics to match
+    /// Go's `printpanics`.
     fn panics(&self, panic: u64, depth: usize) -> Result<String, Arc<str>> {
         if depth == MAX_PANICS {
             return Err(format!("more than {MAX_PANICS} panics are chained").into());
@@ -430,6 +439,9 @@ impl Reader<'_> {
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 
+    /// Decodes a Go `abi.Name` (1-byte header + varint length + UTF-8 bytes)
+    /// relative to the owning module's `types` section, stripping the leading
+    /// `*` when `TFlagExtraStar` is set.
     fn type_name(&self, ty: u64) -> Result<String, Arc<str>> {
         let layout = self.layout;
         let offset = read_unsigned(

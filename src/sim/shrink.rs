@@ -1,3 +1,9 @@
+//! Two-phase failure minimizer for failing simulation runs.
+//!
+//! First simplifies the `Swarm` shape (turning off features and lowering
+//! request counts), then delta-debugs each `Stream` in the `Tape` while
+//! preserving the original `Failure::signature`.
+
 use std::fmt::Write as _;
 
 use super::Corpus;

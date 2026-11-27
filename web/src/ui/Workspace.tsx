@@ -45,6 +45,10 @@ import {
   type Wants,
 } from "./panes";
 
+/**
+ * URL-driven view state shared by every debugger pane: the current stop/thread/task/frame (`at`),
+ * query parameters (`look`), fetched backtrace, and why live queries are suspended (`stale`).
+ */
 export interface Focus {
   session: string;
   state: State;
@@ -163,6 +167,10 @@ export function Workbench(props: {
   );
 }
 
+/**
+ * Reconciles the persisted dock layout with the route's mode (`wants`), stashing the user's
+ * debug layout via `setAside` when leaving a session so returning restores it intact.
+ */
 function useArranged(wants: () => Wants, start: () => () => Layout) {
   const refused = restoreLayout();
   let arranged: Wants | null = null;
@@ -208,6 +216,7 @@ function useConnectWhenRefused(wants: () => Wants) {
         return;
       }
       const refused = current === "unauthorized" || current === "unreachable";
+      // Delay on unreachable so brief reconnect blips do not yank focus to the Connect pane.
       const timer = refused
         ? setTimeout(
             () => showPane(KIND.connect),
@@ -225,6 +234,10 @@ function useConnectWhenRefused(wants: () => Wants) {
 
 const UNREACHABLE_FOR_MS = 1000;
 
+/**
+ * Auto-advances an unpinned tab's URL to new stops while keeping `latestLook` out of the
+ * reactive tracking graph so look-only query edits do not re-trigger stop navigation.
+ */
 function useFollowing(session: () => string, at: () => At | null, look: () => Look) {
   const state = useModel((model) => model.state);
   const pinned = useTab((current) => current.pinned);
@@ -322,6 +335,7 @@ function usePresence(at: () => At | null, trace: () => Backtrace | undefined) {
       if (!isOpen) {
         return;
       }
+      // Debounce so rapid stepping does not flood collaborators with presence updates.
       const timer = setTimeout(() => {
         void connection.request("setFocus", { focus: { url, label } }).catch(() => {});
       }, 150);

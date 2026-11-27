@@ -1,3 +1,10 @@
+//! Walks Rust async `Future` await chains in target memory using DWARF
+//! coroutine state layouts.
+//!
+//! Transparently unwraps pointers, `Pin`, `dyn Future` trait objects,
+//! single-field coroutine wrappers, and known combinator holders in [`HOLDERS`]
+//! until reaching a leaf future or terminal state.
+
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -11,6 +18,11 @@ pub const MAX_DEPTH: usize = 256;
 
 const MAX_WRAPPERS: usize = 16;
 
+/// Known transparent future wrappers `(module_path, type_name, field_or_variant_path)`.
+///
+/// Includes single-field wrappers like `ManuallyDrop`, `MaybeDangling`, and
+/// `CatchUnwind` because `Shape::Wrapper` only unwraps single-field structs
+/// whose field is directly a DWARF coroutine.
 const HOLDERS: [(&[&str], &str, &[&str]); 10] = [
     (&["tracing", "instrument"], "Instrumented", &["inner"]),
     (&["tracing", "instrument"], "WithDispatch", &["inner"]),
@@ -98,6 +110,11 @@ pub fn walk(
     walk_choosing(image, stop, future, ty, &mut |_, _, _| StateChoice::Stored)
 }
 
+/// How to determine a coroutine's active state during [`walk_choosing`].
+///
+/// While a coroutine is actively being polled on a thread, its stored
+/// discriminant in memory may be stale; callers with live frame context can
+/// supply `Chosen` or `Unknown` instead of trusting `Stored`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StateChoice {
     Stored,
@@ -107,6 +124,8 @@ pub enum StateChoice {
     Unknown,
 }
 
+/// Walks an await chain starting at `future` and returns frames ordered
+/// innermost-first to match native call stacks.
 pub fn walk_choosing(
     image: &dyn RuntimeImage,
     stop: &dyn RuntimeStop,
@@ -338,6 +357,7 @@ enum Shape {
     /// A pointer to the future of the target type.
     Pointer(TypeReference),
 
+    /// `core::pin::Pin<P>` wrapping a pointer to the inner future.
     Pinned {
         pointer: TypeReference,
         layout: RecordMemberLayout,

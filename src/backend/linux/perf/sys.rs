@@ -484,6 +484,8 @@ impl RingMemory {
         }
 
         if available > size {
+            // The kernel lapped `data_tail` or reported an impossible span; discard rather than
+            // reading torn bytes and advance `data_tail` to resync.
             self.untrusted += 1;
             self.word(DATA_TAIL).store(head, Ordering::Release);
             return 0;
@@ -644,6 +646,7 @@ impl Poller {
             if flags.intersects(ended)
                 && let Some(ring) = ring
             {
+                // Detach hung-up rings (exited tasks) so `epoll_wait` does not busy-spin on `EPOLLHUP`.
                 let _ = epoll::delete(&self.epoll, &ring.fd);
             }
         }

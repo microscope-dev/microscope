@@ -1,3 +1,9 @@
+//! Go runtime model for goroutines, stack switches, cgo boundaries, profiler
+//! labels, interface dynamic types, and panic/fatal hooks.
+//!
+//! All struct offsets and status constants are resolved from DWARF at bind
+//! time rather than hardcoded per Go release.
+
 mod exceptions;
 mod layout;
 mod types;
@@ -29,6 +35,9 @@ const SIGBUS: i32 = 7;
 const SIGFPE: i32 = 8;
 const SIGSEGV: i32 = 11;
 
+/// Signals owned by the Go runtime: `SIGURG` drives async goroutine preemption
+/// and can be deferred during stepping; `SIGBUS`, `SIGFPE`, and `SIGSEGV` are
+/// caught by Go's signal handler to turn faults into panics.
 const SIGNALS: RuntimeSignals = RuntimeSignals {
     deferrable: &[SIGURG],
     handled: &[SIGBUS, SIGFPE, SIGSEGV],
@@ -609,6 +618,12 @@ impl RuntimeModel for GoRuntime {
         exceptions::exception(&self.hooks, &self.exceptions, stop, hook, registers)
     }
 
+    /// Follows Go stack switches (`systemstack`, `morestack`, `mcall`, `gogo`,
+    /// `cgo`, and `vDSO` calls) back onto the caller's stack during unwinding.
+    ///
+    /// Returns [`Crossing::Stay`] when the unwinder is already on the target
+    /// side of the transition, and [`Crossing::Outermost`] at `runtime.clone`'s
+    /// child stack boundary or when no user goroutine (`curg`) is bound.
     fn cross(
         &self,
         stop: &dyn RuntimeStop,
@@ -633,6 +648,8 @@ impl RuntimeModel for GoRuntime {
             }
             Some("runtime.cgocallback") => return self.cross_callback(stop, thread, frame),
             Some("runtime.morestack" | "runtime.mcall") => Switch::Abandons,
+            // Go's vDSO wrappers switch to `g0` and stash the goroutine's `RSP`
+            // in `R12` while setting `m.vdsoSP` non-zero.
             Some("runtime.nanotime1" | "runtime.vgetrandom1") => {
                 let r12 = register(R12, "r12")?;
                 let gs = self
@@ -730,6 +747,11 @@ impl RuntimeModel for GoRuntime {
 }
 
 impl GoRuntime {
+    /// Crosses from `g0` back to the calling goroutine stack inside
+    /// `runtime.asmcgocall`.
+    ///
+    /// Go stores the goroutine's saved `RSP` as an offset from `stack.hi` (not
+    /// a raw address) so it remains valid if `copystack` relocates the stack.
     fn cross_cgo_call(
         &self,
         stop: &dyn RuntimeStop,
@@ -808,12 +830,17 @@ impl GoRuntime {
     }
 }
 
+/// How a Go runtime assembly trampoline transitions between stacks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Switch {
+    /// Returns to the caller on the original stack (`runtime.systemstack`).
     Returns,
 
+    /// Never returns to the system stack; resumes the goroutine at `g.sched`
+    /// (`runtime.morestack`, `runtime.mcall`).
     Abandons,
 
+    /// Switches from `g0` into a goroutine (`gogo`).
     Resumes,
 }
 
@@ -951,6 +978,10 @@ impl GoRuntime {
     }
 }
 
+/// Distinguishes Go runtime-internal goroutines from user program goroutines.
+///
+/// Entries in `runtime.*` are treated as internal except known user entry
+/// points (`runtime.main`, `runtime.corostart`, `runtime.handleAsyncEvent`).
 #[derive(Debug, Default)]
 struct Internal {
     program: Vec<ImageAddress>,

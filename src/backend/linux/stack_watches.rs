@@ -1,3 +1,9 @@
+//! Tracks hardware watchpoints on movable runtime task stacks (such as Go goroutine stacks).
+//!
+//! Plants internal breakpoints on the runtime's stack-mover entry and its return address:
+//! while a watched task's stack is being copied, its watchpoints are temporarily unarmed
+//! to avoid false hits and then re-armed at the new stack's equivalent `below_top` offset.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use nix::unistd::Pid;

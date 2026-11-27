@@ -1,3 +1,7 @@
+//! Deferred symbolization for recordings captured with `symbols_later`,
+//! verifying on-disk binaries by content digest before falling back to build-ID
+//! lookup.
+
 use std::path::PathBuf;
 
 use super::Profile;

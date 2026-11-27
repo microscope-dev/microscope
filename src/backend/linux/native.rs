@@ -353,6 +353,8 @@ pub(super) trait LinuxTraceOps: InspectionOps {
     }
 }
 
+/// Live `ptrace` handle pinned to the OS thread that created it (`!Send` plus runtime checks)
+/// because Linux rejects `ptrace` calls from any thread other than the tracee's tracer.
 pub(super) struct LinuxPtrace {
     owner: ThreadId,
     not_send: PhantomData<Rc<()>>,
@@ -1177,6 +1179,8 @@ pub(super) fn trace_options(exit_kill: bool) -> Options {
     }
 }
 
+/// Rewrites mapped file paths through `/proc/<pid>/root` when the tracee runs in a
+/// different mount namespace or chroot, matching by inode to confirm the same file.
 fn in_process_root(pid: Pid, files: &mut [ModuleMapping]) {
     use std::os::unix::fs::MetadataExt as _;
     for mapping in files {

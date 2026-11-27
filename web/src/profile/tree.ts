@@ -1,6 +1,12 @@
 import { assert } from "../assert";
 import type { ProfileKey, ProfileTree } from "../protocol";
 
+/**
+ * Struct-of-arrays call tree in preorder traversal.
+ * `end[node]` is the exclusive index past `node`'s subtree, allowing O(1)
+ * sibling iteration (`child = tree.end[child]`) and subtree pruning without
+ * child pointer arrays.
+ */
 export interface CallTree {
   count: number;
   own: Float64Array;
@@ -72,6 +78,12 @@ export function treeFromColumns(columns: {
   };
 }
 
+/**
+ * Decodes the column-major little-endian binary tree payload:
+ * `own[count]` (f64), `total[count]` (f64), `key[count]` (u32), `depth[count]` (u32),
+ * optionally followed by `baseOwn[count]` and `baseTotal[count]` (f64) for diffs
+ * (24 or 40 bytes per node).
+ */
 export function decodeTree(answer: ProfileTree, payload: Uint8Array | undefined): CallTree {
   const count = answer.nodes;
   const bytes = payload ?? new Uint8Array();
@@ -159,6 +171,11 @@ export interface Rect {
   width: number;
 }
 
+/**
+ * Computes normalized `[0, 1]` flamegraph rectangles. Ancestors above `zoom`
+ * span full width; subtrees narrower than `narrowest` are skipped in one jump
+ * via `tree.end[node]`.
+ */
 export function layout(tree: CallTree, zoom: number | null, narrowest: number): Rect[] {
   assert(narrowest >= 0, `narrowest rectangle ${narrowest} is negative`);
   const rects: Rect[] = [];
@@ -211,6 +228,11 @@ export function hit(rects: readonly Rect[], depth: number, x: number): Rect | nu
   return null;
 }
 
+/**
+ * Finds all nodes matching `marks` and their combined weight. Only the outermost
+ * matching ancestor contributes `tree.total[node]` so nested matches are not
+ * double-counted, while matching descendants are still collected in `nodes`.
+ */
 export function matching(tree: CallTree, marks: (name: string) => boolean) {
   const nodes = new Set<number>();
   let weight = 0;

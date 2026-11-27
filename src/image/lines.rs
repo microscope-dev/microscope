@@ -1,3 +1,9 @@
+//! Compact DWARF line-program tables and query indexes.
+//!
+//! Splits hot 12-byte [`LineRow`]s and 8-byte [`RowAddress`]es from rare
+//! 64-bit overflow/VLIW fields in [`LineExtra`], alongside prebuilt indexes
+//! for address ranges, `(file, line)` statements, and prologue/epilogue marks.
+
 use std::path::PathBuf;
 
 use rayon::iter::{
@@ -38,6 +44,11 @@ impl Record for RowAddress {
     const KIND: TableKind = TableKind::LineAddresses;
 }
 
+/// Compact 12-byte line-program row paired by index with [`RowAddress`].
+///
+/// Lines or columns that meet or exceed [`WIDE_LINE`]/[`WIDE_COLUMN`], or rows
+/// with a non-zero `operation_index`, `discriminator`, or `isa`, set
+/// [`row_flags::EXTRA`] and spill their full values into [`LineExtra`].
 #[repr(C)]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned,
@@ -427,6 +438,11 @@ impl LineTables {
         Ok(tables)
     }
 
+    /// Trims line ranges that run past a subsequent function start.
+    ///
+    /// DWARF line sequences can extend through inter-function padding or into
+    /// an adjacent function; clipping prevents attributing that code to the
+    /// preceding function's last line.
     pub fn clip_at(&mut self, function_starts: &[ImageAddress]) {
         debug_assert!(
             function_starts.is_sorted_by(|earlier, later| earlier < later),
@@ -528,6 +544,11 @@ impl LineTables {
     }
 }
 
+/// Address-sorted index of public line rows for range and point queries.
+///
+/// `reaches[i]` stores the running maximum `sequence_end` across `order[..=i]`,
+/// letting [`Self::line_at`] stop scanning backward once no earlier sequence
+/// can still cover the queried address.
 #[derive(Debug)]
 pub struct StatementsByAddress<'a> {
     tables: &'a LineTables,

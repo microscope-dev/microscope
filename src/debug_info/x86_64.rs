@@ -1,3 +1,9 @@
+//! `x86_64` prologue and epilogue instruction analysis.
+//!
+//! Used to verify whether a function prefix is pure frame setup and argument
+//! homing (safe for breakpoint prologue skipping) and whether epilogue tails
+//! preserve caller registers.
+
 use iced_x86::{
     Code, Decoder, DecoderOptions, FlowControl, Instruction, InstructionInfoFactory, Mnemonic,
     OpAccess, OpKind, Register,
@@ -84,6 +90,8 @@ const MAX_RETURN_INSTRUCTIONS: usize = 32;
 
 pub(super) const ALL_CALLEE_SAVED: u32 = (1 << CALLEE_SAVED.len()) - 1;
 
+/// Proves popped callee-saved registers stay intact to `ret` when epilogue
+/// CFI drops their stack slots without `DW_CFA_restore`.
 pub(super) struct Epilogues {
     info: InstructionInfoFactory,
 }

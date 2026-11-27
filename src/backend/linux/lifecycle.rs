@@ -1,3 +1,8 @@
+//! Inferior launch, `PTRACE_SEIZE` attach, `fork`/`vfork`/`exec` tracking, detach, and shutdown.
+//!
+//! Multi-thread attach loops over `/proc/<pid>/task` until no unseized threads remain and
+//! verifies `process_start_time` to reject PID reuse during attach.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -2076,6 +2081,8 @@ impl<P: LinuxTraceOps> Controller<P> {
         Ok(())
     }
 
+    /// Lifts all parent `0xCC` traps before resuming a vforking parent because the `vfork` child
+    /// shares the parent's `mm_struct` until `exec` or `_exit`.
     pub(super) fn settle_vfork_windows(&mut self) -> Result<bool> {
         let Some(inferior) = self.session.inferior_mut() else {
             return Ok(false);

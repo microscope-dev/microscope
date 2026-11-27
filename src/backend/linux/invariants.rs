@@ -1,3 +1,8 @@
+//! Debug-build structural invariant checks for `Controller` and `Inferior`.
+//!
+//! Checks are strided by state size (`invariant_check_stride`) so large binaries and
+//! many-thread targets stay fast while small tests check every message.
+
 use std::collections::BTreeSet;
 
 use super::session::Session;

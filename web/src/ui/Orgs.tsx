@@ -136,6 +136,11 @@ export function useAction(): {
   };
 }
 
+/**
+ * Fetches async data keyed by `key()` with stale-response cancellation. Passing `keepFor()`
+ * preserves the previous data across sub-key changes sharing the same `keepFor` value to avoid
+ * flashing a loading state.
+ */
 export function useLoaded<T>(
   load: () => Promise<T>,
   key: () => string,

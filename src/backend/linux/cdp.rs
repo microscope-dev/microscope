@@ -1,3 +1,6 @@
+//! Dedicated-thread Chrome `DevTools` Protocol (`CDP`) `WebSocket` transport with nested
+//! `NodeWorker` session tunneling (`sendMessageToWorker` / `receivedMessageFromWorker`).
+
 use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -94,7 +97,7 @@ pub(super) enum Incoming {
     /// A message the transport could not take as a reply or an event.
     Malformed { session: Session, reason: Arc<str> },
 
-    /// inspector answered the close, having ended microscope's session.
+    /// The transport ended; `answered` is true when the inspector replied to the close frame.
     Closed { reason: Arc<str>, answered: bool },
 }
 
@@ -267,6 +270,8 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Re-arms `TCP_QUICKACK` after every read so loopback `CDP` request/reply exchanges do not
+/// stall on Linux's 40 ms delayed-ACK timer.
 struct QuickAck(TcpStream);
 
 impl Read for QuickAck {

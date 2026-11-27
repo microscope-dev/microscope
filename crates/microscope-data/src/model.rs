@@ -58,6 +58,10 @@ os_id!(Pid);
 os_id!(Tid);
 
 impl Pid {
+    /// Converts a thread-group leader's `Tid` into its `Pid`.
+    ///
+    /// On Linux the process ID equals the leader thread's ID; keeping this
+    /// conversion explicit prevents accidentally mixing `Pid` and `Tid`.
     #[must_use]
     pub const fn led_by(leader: Tid) -> Self {
         Self(leader.0)
@@ -113,6 +117,9 @@ impl TargetDescription {
     };
 }
 
+/// Semantic classification of a frame or function (e.g. runtime internal,
+/// signal trampoline, interpreter) so unwinders and UIs can filter or annotate
+/// non-user code without hardcoding symbol names.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum CodeRole {
     #[default]

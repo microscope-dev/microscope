@@ -1,3 +1,7 @@
+//! Parser and evaluator for inline `// MARK:` and `// EXPECT:` assertions in
+//! golden C source files, used to verify variable inspection and expression
+//! evaluation at stopped source lines.
+
 use std::collections::BTreeMap;
 use std::fmt;
 

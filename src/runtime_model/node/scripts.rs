@@ -1,3 +1,8 @@
+//! Per-process cache of V8 `Script` paths, `SharedFunctionInfo` names, and scanned line endings.
+//!
+//! Validates cached entries with `ScriptProof` and `FunctionProof` fingerprints to detect GC
+//! relocation or object reuse, and incrementally scans source text for newline offsets on demand.
+
 use std::collections::HashMap;
 use std::sync::Arc;
 

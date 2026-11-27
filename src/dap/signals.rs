@@ -1,3 +1,6 @@
+//! Maps DAP `setExceptionBreakpoints` filters to signal policies, language exceptions,
+//! and syscall catchpoints.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 

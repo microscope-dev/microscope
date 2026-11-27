@@ -86,6 +86,15 @@ export function rememberSize(layout: Layout, window: GroupId): void {
   }
 }
 
+/**
+ * Starts a tab or floating-window drag gesture.
+ *
+ * DOM measurements and overlay elements are deferred until the pointer moves
+ * `THRESHOLD` px so plain clicks stay cheap. After a real drag, a one-shot
+ * capture listener swallows the trailing `click`, and `land` aborts if the
+ * layout mutated mid-drag. Holding `Shift` forces floating a tab; `Alt`
+ * disables window edge snapping.
+ */
 function press(event: PointerEvent & { currentTarget: HTMLElement }, source: Source): void {
   const dockElement = event.currentTarget.closest<HTMLElement>("[data-part=dock]");
   if (!dockElement) {

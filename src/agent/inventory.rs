@@ -1,3 +1,8 @@
+//! Host, cloud, Kubernetes, and network inventory for agent enrollment.
+//!
+//! To stay within `MAX_BYTES`, `encode` pops interfaces from the end of the
+//! name-sorted list, then drops `network`, `tags`, and `host_ids`.
+
 use std::{collections::BTreeMap, net::IpAddr};
 
 use serde::Serialize;

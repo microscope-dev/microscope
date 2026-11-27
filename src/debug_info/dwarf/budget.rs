@@ -1,3 +1,8 @@
+//! Memory-budget metering for DWARF loading.
+//!
+//! Caps decoded metadata proportionally to input size (above a fixed floor) so
+//! malformed or adversarial DWARF cannot trigger unbounded allocation.
+
 use super::DwarfError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

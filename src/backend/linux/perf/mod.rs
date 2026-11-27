@@ -192,6 +192,10 @@ pub enum Hold {
     Ended,
 }
 
+/// Bitmask of active pause reasons (`Hold`); sampling stays disabled until all holders release.
+///
+/// Tracks `[start, end]` intervals while `Hold::Behind` is set so profile analysis can account
+/// for backpressure pauses.
 #[derive(Debug, Default)]
 struct Gate {
     held: u8,
@@ -391,6 +395,8 @@ impl Events {
         let mut opened = std::collections::BTreeSet::new();
         let mut owner = None;
 
+        // Re-scan `/proc` until a full pass finds no new threads or descendants, since new tasks
+        // can spawn before `INHERIT` takes effect on already-attached threads.
         loop {
             let mut all_threads = Vec::new();
             let mut last_err = None;

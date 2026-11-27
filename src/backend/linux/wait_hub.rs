@@ -1,3 +1,9 @@
+//! Dedicated `waitpid(-1, __WALL | WNOHANG)` thread demultiplexing wait events across controllers.
+//!
+//! Uses adaptive backoff polling (woken immediately by `HubEdge::wake` on every resume or
+//! interrupt) and per-member backlogs so a full controller channel never blocks `waitpid`
+//! for sibling processes in a group.
+
 use std::collections::{BTreeMap, VecDeque};
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -132,6 +138,8 @@ pub(super) struct HubEdge {
 }
 
 impl HubEdge {
+    /// Temporarily diverts wait statuses for `pid` to a synchronous channel (used during
+    /// injected `rt_sigaction` probes). Unconsumed statuses are re-routed in order on drop.
     pub(super) fn intercept(&self, pid: Pid) -> Option<DirectWait> {
         let (sender, receiver) = std::sync::mpsc::channel();
         let mut routes = self.shared.lock();
@@ -174,6 +182,8 @@ impl HubEdge {
         self.shared.failed.load(Ordering::Acquire)
     }
 
+    /// Deactivates this member and waits for two full waiter `epoch` ticks so any `waitpid`
+    /// already in flight before deactivation has finished routing and draining its backlog.
     pub(super) fn stop_and_join(&self, mut serve: impl FnMut()) {
         if let Some(member) = self.shared.lock().members.get_mut(&self.key) {
             member.active = false;

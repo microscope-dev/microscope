@@ -1,3 +1,10 @@
+//! Golden test program corpus loaded from `tests/golden` and
+//! `build/golden`.
+//!
+//! Each `Program` bundles its compiled `Variant` binaries, expected `Run`
+//! outputs, precomputed DWARF `Facts`, optional visualizer views, and inline
+//! `// MARK:` source assertions.
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 

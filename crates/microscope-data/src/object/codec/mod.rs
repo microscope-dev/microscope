@@ -1,3 +1,7 @@
+//! Paged, multi-frame columnar section encoder and decoder (`SectionWriter`,
+//! `SectionReader`) with per-page key-range pruning, `zstd` compression, and
+//! `DecodeBudget` memory accounting.
+
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::ops::Range;
@@ -146,6 +150,9 @@ pub fn compress_stream(raw: &[u8], zstd_level: i32) -> Result<(Codec, Vec<u8>), 
     }
 }
 
+/// Tracks live decompressed and materialized bytes across an object decode
+/// (`release` frees page temporaries between pages) to bound peak memory
+/// against crafted or zip-bomb inputs.
 #[derive(Debug)]
 pub struct DecodeBudget {
     limit: usize,
@@ -301,6 +308,9 @@ impl SectionWriter {
         }
     }
 
+    /// Starts a new independently compressed column frame within the current
+    /// page so readers using `SectionReader::read_page_frames` can decode core
+    /// columns while skipping heavier columns (e.g. syscall arguments).
     pub fn next_frame(&mut self) -> Result<(), ObjectError> {
         if self.current_frames.len() >= 16 {
             return Err(ObjectError::Limit("too many column frames in page"));
@@ -656,6 +666,8 @@ fn encode_page_frames(
         raw_buf.extend_from_slice(frame.groups.as_bytes());
         write_varint(frame.columns.len() as u64, &mut raw_buf);
 
+        // `bypass_buf` holds high-entropy `Binned2b` mantissa bits verbatim
+        // outside zstd, avoiding wasted compression work on incompressible bits.
         let mut bypass_buf = Vec::new();
         for col in &frame.columns {
             let enc_group = if col.group == WHOLE_SECTION_GROUP {

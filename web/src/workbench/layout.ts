@@ -64,6 +64,14 @@ export interface Pane {
   readonly params: Json;
 }
 
+/**
+ * Immutable workbench layout tree.
+ *
+ * `root` holds the docked split/group tree; `floating` is z-ordered from bottom
+ * to top (last element is topmost). `links` stores shared JSON state referenced
+ * by `pane.params.link` and is ref-counted on `close`. All IDs (`pN`, `gN`,
+ * `sN`, `lN`) are allocated from the monotonic `next` counter.
+ */
 export interface Layout {
   readonly root: Node;
 
@@ -352,6 +360,7 @@ export function float(layout: Layout, pane: PaneId, rect: Rect): Layout {
 export function setParams(layout: Layout, pane: PaneId, params: Json): Layout {
   const found = layout.panes[pane];
 
+  // Reject link rebinding here; links are owned by `openLinked` and ref-counted in `close`.
   if (
     !found ||
     linkOf({ ...found, params }) !== linkOf(found) ||
@@ -559,6 +568,11 @@ function replaceNode(node: Node, id: GroupId | SplitId, by: Node): Node {
   };
 }
 
+/**
+ * Restores canonical layout invariants after any mutation: prunes empty groups,
+ * flattens same-axis nested splits, renormalizes split weights to 1, repairs
+ * `focused`/`maximized`/`hidden`, and asserts `checkLayout` in dev builds.
+ */
 function settle(layout: Layout): Layout {
   assert(Number.isSafeInteger(layout.next), "layout ids exhausted");
   const before = groups(layout);

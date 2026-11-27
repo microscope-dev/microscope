@@ -1,3 +1,6 @@
+//! Walks suspended Rust async coroutine chains, splices driven futures and
+//! interpreted frames into physical backtraces, and inspects saved coroutine locals.
+
 use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -417,6 +420,8 @@ impl<P: InspectionOps> Controller<P> {
         })
     }
 
+    /// Finds the address of the coroutine object currently being polled by a running
+    /// `poll` body by matching outer coroutine frames down the await chain.
     pub(super) fn polled_future(
         &self,
         pid: nix::unistd::Pid,
@@ -1004,6 +1009,8 @@ struct Spliced {
 }
 
 impl Spliced {
+    /// Marks ordinary/wrapper frames inside an interpreter's debug agent as
+    /// `CodeRole::Interpreter` so agent internals stay hidden behind user frames.
     fn hide_inside_agent(&mut self) {
         let Some(agent) = self.frames.iter().position(|frame| {
             matches!(frame.kind, FrameKind::Interpreted { .. })

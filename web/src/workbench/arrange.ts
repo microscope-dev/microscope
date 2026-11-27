@@ -103,6 +103,7 @@ export function shiftTab(by: 1 | -1): void {
   }
   const index = group.tabs.indexOf(pane);
 
+  // `move` uses pre-removal indices and subtracts 1 when moving right within the same group.
   const to = by === 1 ? index + 2 : index - 1;
   change((layout) => move(layout, pane, { type: "tab", group: group.id, index: to }));
   focusTab(pane);

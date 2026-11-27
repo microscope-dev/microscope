@@ -446,6 +446,8 @@ impl<P: InspectionOps> Controller<P> {
             return Arc::clone(choice);
         }
 
+        // Insert an empty sentinel first to break cycles when a view's binding
+        // recursively queries the view choice of a mutually-referencing type.
         self.views
             .choices
             .borrow_mut()

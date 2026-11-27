@@ -1,3 +1,9 @@
+//! Filtering, stack rewriting, and aggregation queries over a `Capture`.
+//!
+//! Every query selects samples (or task waits, plus optional syscall leaves),
+//! rewrites each stack according to `Look` and `Transform`, and aggregates into
+//! a flat `CallTree`, per-key `Costs`, or time-bucketed timeline lanes.
+
 use std::collections::BTreeMap;
 
 use foldhash::HashMap;
@@ -175,6 +181,10 @@ pub enum Transform {
     CollapseCycles,
 }
 
+/// Flat, structure-of-arrays call tree laid out in depth-first preorder.
+///
+/// Each node `i` owns the contiguous subtree `i..end[i]`, with sibling subtrees
+/// ordered by descending `total` weight and `parent[i] == NONE` for roots.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CallTree {
     pub key: Vec<u32>,
@@ -544,6 +554,10 @@ fn kept_calls(capture: &Capture, keys: &Keys<'_>, query: &Query, mut take: impl 
     }
 }
 
+/// Turns kept syscalls into synthetic leaf groups weighted by uncovered wall time.
+///
+/// Any sample weight recorded on the same thread during `[entered, exited)` is
+/// subtracted so on-CPU time already attributed to samples is not double-counted.
 fn call_groups(capture: &Capture, keys: &Keys<'_>, query: &Query) -> Vec<Group> {
     let by_thread: HashMap<u32, &[crate::capture::records::Sample]> = capture
         .sample_ranges
@@ -681,6 +695,8 @@ struct Paths<'a> {
     on_path: Vec<u32>,
 }
 
+/// Collapses call cycles by rewinding to each repeated key's first index,
+/// resetting only touched `on_path` slots to stay `O(path.len())`.
 #[expect(
     clippy::indexing_slicing,
     reason = "every key on the path is below `keys`, which `on_path` covers, and a \
@@ -800,6 +816,10 @@ impl<'a> Paths<'a> {
     }
 }
 
+/// Expects `path` in callee-to-caller order; truncates above the first
+/// `CodeRole::Dispatch` frame (keeping `Dispatch` as the outer caller),
+/// collapses intermediate runtime frames into a synthetic `[task]` frame, and
+/// strips `CodeRole::Wrapper` frames from all stacks.
 fn tasks(keys: &Keys<'_>, path: &mut Vec<u32>) {
     if let Some(dispatch) = path
         .iter()
